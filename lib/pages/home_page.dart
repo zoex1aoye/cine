@@ -1,0 +1,1416 @@
+import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:ui';
+import '../api/mubu_api_client.dart';
+import '../api/mubu_storage.dart';
+import '../models/mubu_models.dart';
+import '../widgets/movie_info_dialog.dart';
+import '../widgets/movie_card.dart';
+import '../widgets/movie_sliver_grid.dart';
+import 'player_page.dart';
+import 'category_filter_page.dart';
+import 'search_page.dart';
+import 'tag_videos_page.dart';
+
+import '../api/mubu_ui_adapt.dart';
+
+// ─── Design Tokens ───────────────────────────────────────────
+const Color kRed = Color(0xFFE50914);
+const Color kBg = Color(0xFF070708);
+const Color kSurface = Color(0xFF0A0A0C);
+const Color kCard = Color(0xFF121215);
+const Color kGlass = Color(0xFF16161A);
+
+// ─── Root Page ───────────────────────────────────────────────
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  final _api = MubuApiClient.instance;
+
+  // Data
+  List<CategoryItem> _categories = [];
+  bool _loadingCategories = true;
+  List<TagItem> _tags = [];
+  Map<int, List<VideoItem>> _tagVideos = {};
+  bool _loading = true;
+  String? _error;
+
+  // Bookmarks & History lists
+  List<VideoItem> _bookmarksList = [];
+  List<VideoItem> _historyList = [];
+
+  // Unified Navigation State
+  // 0 = 首页/热门, 1 = 发现/多维筛选, 2 = 收藏夹, 3 = 历史
+  int _currentTabIndex = 0;
+  int? _filterCategoryId;
+  int? _selectedHomeCategoryId;
+
+  @override
+  void initState() {
+    super.initState();
+    _initAndLoad();
+    _loadBookmarksAndHistory();
+  }
+
+  Future<void> _initAndLoad() async {
+    setState(() {
+      _loadingCategories = true;
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await _api.init();
+      final cats = await _api.getHomeCategorys();
+      _categories = cats;
+      setState(() {
+        _loadingCategories = false;
+      });
+      if (cats.isNotEmpty) {
+        final filterCat = cats.firstWhere(
+          (c) => c.name != '推荐' && c.id != 88 && c.name.toLowerCase() != 'netflix' && c.id != 99,
+          orElse: () => cats.first,
+        );
+        _filterCategoryId = filterCat.id;
+        _selectedHomeCategoryId = cats.first.id;
+        await _loadHomeContent(cats.first.id);
+      }
+    } catch (e) {
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+        _loadingCategories = false;
+      });
+    }
+  }
+
+  /// 加载指定分类的推荐/首页内容（如电影、电视剧、短剧等）
+  /// [catId] 代表当前请求的分类 ID。
+  /// 此方法已做竞态条件（Race Condition）安全处理。
+  Future<void> _loadHomeContent(int catId) async {
+    setState(() {
+      _selectedHomeCategoryId = catId;
+      _loading = true;
+      _error = null;
+      _tagVideos = {};
+      _tags = [];
+    });
+    try {
+      // 1. 获取该大类下挂载的全部 Tags 标签（如: 小编首推、动作大片等）
+      final tags = await _api.getHomeTags(catId);
+      // 竞态防御：若在此网络请求期间用户点击切换了其他分类，则丢弃本次过期响应，不污染界面
+      if (catId != _selectedHomeCategoryId) return;
+
+      _tags = tags;
+      if (tags.isNotEmpty) {
+        // 2. 预先加载且仅加载第一个标签的前12个视频（用于渲染顶部 Hero Banner 轮播大图）
+        final firstTag = tags.first;
+        final firstVids = await _api.getTagVideos(firstTag.id, tpl: firstTag.template, count: 12);
+        // 竞态防御：再次在耗时操作后拦截检查
+        if (catId != _selectedHomeCategoryId) return;
+
+        _tagVideos[firstTag.id] = firstVids;
+      }
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+      });
+    } catch (e) {
+      // 捕获网络请求失败
+      if (catId != _selectedHomeCategoryId) return;
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _loadBookmarksAndHistory() async {
+    final b = await MubuStorage.getBookmarks();
+    final h = await MubuStorage.getHistory();
+    if (mounted) {
+      setState(() {
+        _bookmarksList = b;
+        _historyList = h;
+      });
+    }
+  }
+
+  void _playVideo(VideoItem video) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PlayerPage(video: video),
+      ),
+    ).then((_) => _loadBookmarksAndHistory());
+  }
+
+  void _showVideoInfo(VideoItem video) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator(color: kRed)),
+    );
+    try {
+      final detail = await _api.getVideoDetail(video.id, isShort: video.category == '短剧' || video.coverPath.contains('short'));
+      if (!mounted) return;
+      Navigator.pop(context);
+      if (detail != null) {
+        showDialog(
+          context: context,
+          builder: (ctx) => MovieInfoDialog(
+            detail: detail,
+            video: video,
+            imgDomain: _api.imgDomain,
+            onPlay: () {
+              Navigator.pop(ctx);
+              _playVideo(video);
+            },
+          ),
+        ).then((_) => _loadBookmarksAndHistory());
+      }
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context);
+    }
+  }
+
+
+
+  @override
+  Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+    final isDesktop = w >= 800;
+
+    return Scaffold(
+      backgroundColor: kBg,
+      body: Column(
+        children: [
+          _TopBar(
+            onNavTap: (i) {
+              setState(() {
+                _currentTabIndex = i;
+              });
+            },
+            onSearch: () {
+              Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchPage()));
+            },
+          ),
+          Expanded(
+            child: Row(
+              children: [
+                if (isDesktop)
+                  _LeftNavRail(
+                    categories: _categories,
+                    currentTabIndex: _currentTabIndex,
+                    selectedHomeCategoryId: _selectedHomeCategoryId,
+                    isLoading: _loadingCategories,
+                    onCategoryTap: (cat) {
+                      if (_currentTabIndex == 0 && _selectedHomeCategoryId == cat.id) {
+                        return;
+                      }
+                      setState(() {
+                        _currentTabIndex = 0;
+                      });
+                      _loadHomeContent(cat.id);
+                    },
+                    onFilterTap: () {
+                      if (_currentTabIndex == 1) return;
+                      setState(() {
+                        _currentTabIndex = 1;
+                      });
+                    },
+                  ),
+                Expanded(
+                  child: IndexedStack(
+                    index: _currentTabIndex,
+                    children: [
+                      _buildMainContent(), // 0: Home/Hot
+                      CategoryFilterPage(
+                        key: ValueKey(_filterCategoryId),
+                        initialCategoryId: _filterCategoryId,
+                      ), // 1: Discover
+                      _buildBookmarksView(), // 2: Bookmarks
+                      _buildHistoryView(), // 3: History
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: isDesktop
+          ? null
+          : BottomNavigationBar(
+              currentIndex: _currentTabIndex,
+              onTap: (i) {
+                if (i == 0) {
+                  if (_currentTabIndex == 0 &&
+                      _categories.isNotEmpty &&
+                      _selectedHomeCategoryId == _categories.first.id) {
+                    // 已经在默认首页推荐
+                  } else {
+                    setState(() {
+                      _currentTabIndex = 0;
+                    });
+                    if (_categories.isNotEmpty) {
+                      _loadHomeContent(_categories.first.id);
+                    }
+                  }
+                } else {
+                  setState(() {
+                    _currentTabIndex = i;
+                  });
+                }
+              },
+              backgroundColor: kSurface,
+              selectedItemColor: kRed,
+              unselectedItemColor: Colors.white30,
+              type: BottomNavigationBarType.fixed,
+              items: const [
+                BottomNavigationBarItem(icon: Icon(Icons.home), label: '首页'),
+                BottomNavigationBarItem(icon: Icon(Icons.tune), label: '筛选'),
+                BottomNavigationBarItem(icon: Icon(Icons.bookmark), label: '收藏'),
+                BottomNavigationBarItem(icon: Icon(Icons.history), label: '历史'),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildMainContent() {
+    if (_loading && _tags.isEmpty) {
+      return const Center(child: CircularProgressIndicator(color: kRed));
+    }
+    if (_error != null && _tags.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off, size: 56, color: Colors.white.withOpacity(0.15)),
+            const SizedBox(height: 16),
+            Text('加载失败', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
+            const SizedBox(height: 8),
+            Text(_error!, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 12)),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _initAndLoad,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: kRed,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return CustomScrollView(
+      slivers: [
+        // Hero banner
+        if (_tags.isNotEmpty && (_tagVideos[_tags.first.id]?.isNotEmpty ?? false))
+          SliverToBoxAdapter(
+            child: _HeroBanner(
+              tag: _tags.first,
+              video: _tagVideos[_tags.first.id]!.first,
+              imgDomain: _api.imgDomain,
+              onPlay: (v) => _playVideo(v),
+              onInfo: (v) => _showVideoInfo(v),
+            ),
+          ),
+
+        // Tag sections (Progressive scroll-based Lazy Loading)
+        for (final tag in _tags)
+          SliverToBoxAdapter(
+            child: _TagSection(
+              tag: tag,
+              imgDomain: _api.imgDomain,
+              onPlay: _playVideo,
+              onInfo: _showVideoInfo,
+              initialVideos: _tagVideos[tag.id],
+              onSeeAll: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => TagVideosPage(tag: tag),
+                  ),
+                );
+              },
+            ),
+          ),
+
+        const SliverPadding(padding: EdgeInsets.only(bottom: 60)),
+      ],
+    );
+  }
+
+  Widget _buildBookmarksView() {
+    if (_bookmarksList.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.bookmark_outline, size: 52, color: Colors.white24),
+            const SizedBox(height: 14),
+            const Text('暂无收藏影片', style: TextStyle(color: Colors.white38, fontSize: 14)),
+          ],
+        ),
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        const SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(24, 20, 24, 10),
+            child: Text(
+              '我的收藏',
+              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          sliver: MovieSliverGrid(
+            videos: _bookmarksList,
+            onPlay: _playVideo,
+            onInfo: _showVideoInfo,
+            onDelete: (video) async {
+              await MubuStorage.toggleBookmark(video);
+              await _loadBookmarksAndHistory();
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHistoryView() {
+    if (_historyList.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.history, size: 52, color: Colors.white24),
+            const SizedBox(height: 14),
+            const Text('暂无播放历史', style: TextStyle(color: Colors.white38, fontSize: 14)),
+          ],
+        ),
+      );
+    }
+    return CustomScrollView(
+      slivers: [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+            child: Row(
+              children: [
+                const Text(
+                  '播放历史',
+                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () async {
+                    await MubuStorage.clearHistory();
+                    await _loadBookmarksAndHistory();
+                  },
+                  icon: const Icon(Icons.delete_sweep, color: kRed, size: 18),
+                  label: const Text('清空历史', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+          ),
+        ),
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          sliver: MovieSliverGrid(
+            videos: _historyList,
+            onPlay: _playVideo,
+            onInfo: _showVideoInfo,
+            onDelete: (video) async {
+              await MubuStorage.deleteHistoryItem(video.id);
+              await _loadBookmarksAndHistory();
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── TOP BAR (Glass AppBar) ───────────────────────────────────
+class _TopBar extends StatelessWidget {
+  final ValueChanged<int> onNavTap;
+  final VoidCallback onSearch;
+
+  const _TopBar({
+    required this.onNavTap,
+    required this.onSearch,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: Container(
+          height: 64,
+          decoration: BoxDecoration(
+            color: kGlass.withOpacity(0.8),
+            border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Row(
+            children: [
+              _buildLogo(),
+              const Spacer(),
+
+              if (w >= 600)
+                _buildSearchBar()
+              else
+                IconButton(
+                  onPressed: onSearch,
+                  icon: Icon(Icons.search, color: Colors.white.withOpacity(0.6), size: 22),
+                ),
+
+              const SizedBox(width: 16),
+              _buildAvatar(context),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLogo() {
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white.withOpacity(0.1)),
+          ),
+          child: const Text(
+            '幕布',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 18,
+              letterSpacing: 4,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          'CINE',
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.3),
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 3,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onSearch,
+        child: Container(
+          width: 280,
+          height: 36,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.04),
+            borderRadius: BorderRadius.circular(99),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '搜索电影、电视剧、动漫...',
+                  style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 13),
+                ),
+              ),
+              Icon(Icons.search, size: 16, color: Colors.white.withOpacity(0.3)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatar(BuildContext context) {
+    return Theme(
+      data: Theme.of(context).copyWith(
+        hoverColor: Colors.white.withOpacity(0.05),
+        splashColor: Colors.transparent,
+        highlightColor: Colors.transparent,
+      ),
+      child: PopupMenuButton<int>(
+        tooltip: '用户菜单',
+        offset: const Offset(0, 48), // Float below the navbar
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: Colors.white.withOpacity(0.08)),
+        ),
+        color: kGlass.withOpacity(0.95),
+        elevation: 8,
+        onSelected: (index) {
+          onNavTap(index);
+        },
+        itemBuilder: (ctx) {
+          return [
+            const PopupMenuItem<int>(
+              value: 2,
+              height: 38,
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(Icons.bookmark_outline_rounded, size: 16, color: Colors.white70),
+                  SizedBox(width: 8),
+                  Text(
+                    '收藏夹',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const PopupMenuItem<int>(
+              value: 3,
+              height: 38,
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Icon(Icons.history_rounded, size: 16, color: Colors.white70),
+                  SizedBox(width: 8),
+                  Text(
+                    '历史记录',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ];
+        },
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: const Color(0xFF2A2A2E),
+                  border: Border.all(color: Colors.white.withOpacity(0.1)),
+                ),
+                child: Icon(Icons.person, size: 16, color: Colors.white.withOpacity(0.5)),
+              ),
+              if (MediaQuery.sizeOf(context).width >= 800) ...[
+                const SizedBox(width: 8),
+                Text(
+                  '用户',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.5),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(Icons.arrow_drop_down, size: 16, color: Colors.white.withOpacity(0.5)),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── LEFT NAV RAIL ───────────────────────────────────────────
+class _LeftNavRail extends StatefulWidget {
+  final List<CategoryItem> categories;
+  final int currentTabIndex;
+  final int? selectedHomeCategoryId;
+  final ValueChanged<CategoryItem> onCategoryTap;
+  final VoidCallback onFilterTap;
+  final bool isLoading;
+
+  const _LeftNavRail({
+    required this.categories,
+    required this.currentTabIndex,
+    required this.selectedHomeCategoryId,
+    required this.onCategoryTap,
+    required this.onFilterTap,
+    required this.isLoading,
+  });
+
+  @override
+  State<_LeftNavRail> createState() => _LeftNavRailState();
+}
+
+class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  IconData _getCategoryIcon(String name) {
+    if (name.contains('推荐') || name.contains('热门')) {
+      return Icons.local_fire_department_rounded;
+    } else if (name.contains('电影')) {
+      return Icons.movie_creation_outlined;
+    } else if (name.contains('电视剧')) {
+      return Icons.tv_rounded;
+    } else if (name.contains('短剧')) {
+      return Icons.video_library_outlined;
+    } else if (name.contains('动漫')) {
+      return Icons.auto_awesome_rounded;
+    } else if (name.contains('综艺')) {
+      return Icons.theater_comedy_rounded;
+    } else if (name.contains('纪录片')) {
+      return Icons.public_rounded;
+    } else if (name.toLowerCase().contains('netflix')) {
+      return Icons.video_collection_rounded;
+    }
+    return Icons.movie_outlined;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 80,
+      decoration: BoxDecoration(
+        color: kSurface,
+        border: Border(right: BorderSide(color: Colors.white.withOpacity(0.05))),
+      ),
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Column(
+          children: [
+            if (widget.isLoading)
+              AnimatedBuilder(
+                animation: _controller,
+                builder: (context, child) {
+                  return Opacity(
+                    opacity: 0.25 + 0.45 * _controller.value,
+                    child: Column(
+                      children: List.generate(8, (index) {
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Container(
+                            width: 64,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Column(
+                              children: [
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.04),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Container(
+                                  width: 32,
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withOpacity(0.04),
+                                    borderRadius: BorderRadius.circular(2),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
+                    ),
+                  );
+                },
+              )
+            else
+              ...widget.categories.map((cat) {
+                final isHot = cat.name == '推荐' || cat.id == 88;
+                final label = isHot ? '热门' : cat.name;
+                final icon = _getCategoryIcon(cat.name);
+                final active = widget.currentTabIndex == 0 && widget.selectedHomeCategoryId == cat.id;
+
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _railBtn(icon, label, active, () => widget.onCategoryTap(cat)),
+                );
+              }),
+
+            // Filter item
+            _railBtn(
+              Icons.tune,
+              '筛选',
+              widget.currentTabIndex == 1,
+              widget.onFilterTap,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _railBtn(IconData icon, String label, bool active, VoidCallback onTap) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          width: 64,
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: active ? Colors.white.withOpacity(0.05) : Colors.transparent,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: active ? kRed.withOpacity(0.1) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(
+                  icon,
+                  size: 22,
+                  color: active ? kRed : Colors.white.withOpacity(0.4),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                  color: active ? kRed : Colors.white.withOpacity(0.4),
+                  letterSpacing: 1,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── HERO BANNER ─────────────────────────────────────────────
+class _HeroBanner extends StatefulWidget {
+  final TagItem tag;
+  final VideoItem video;
+  final String imgDomain;
+  final ValueChanged<VideoItem> onPlay;
+  final ValueChanged<VideoItem> onInfo;
+
+  const _HeroBanner({
+    required this.tag,
+    required this.video,
+    required this.imgDomain,
+    required this.onPlay,
+    required this.onInfo,
+  });
+
+  @override
+  State<_HeroBanner> createState() => _HeroBannerState();
+}
+
+class _HeroBannerState extends State<_HeroBanner> {
+  bool _playHovered = false;
+  bool _infoHovered = false;
+  VideoDetail? _detail;
+  bool _loadingDetail = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchDetail();
+  }
+
+  @override
+  void didUpdateWidget(_HeroBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.video.id != widget.video.id) {
+      _fetchDetail();
+    }
+  }
+
+  Future<void> _fetchDetail() async {
+    if (!mounted) return;
+    setState(() {
+      _loadingDetail = true;
+      _detail = null;
+    });
+    try {
+      final detail = await MubuApiClient.instance.getVideoDetail(
+        widget.video.id,
+        isShort: widget.video.category == '短剧' || widget.video.coverPath.contains('short'),
+      );
+      if (mounted) {
+        setState(() {
+          _detail = detail;
+          _loadingDetail = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loadingDetail = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: UIAdapt.px(context, 420),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          if (widget.video.hasCover)
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              width: MediaQuery.of(context).size.width * 0.6,
+              child: CachedNetworkImage(
+                imageUrl: widget.video.coverUrl(widget.imgDomain),
+                fit: BoxFit.cover,
+                color: Colors.white.withOpacity(0.5),
+                colorBlendMode: BlendMode.modulate,
+                placeholder: (_, __) => Container(color: Colors.black38),
+                errorWidget: (_, __, ___) => const SizedBox.shrink(),
+              ),
+            ),
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: [kBg, kBg, Colors.transparent],
+                  stops: [0.0, 0.45, 1.0],
+                ),
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [kBg, Colors.transparent],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: UIAdapt.px(context, 40),
+            bottom: UIAdapt.px(context, 40),
+            right: UIAdapt.px(context, 40),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: UIAdapt.px(context, 8),
+                    vertical: UIAdapt.px(context, 3),
+                  ),
+                  decoration: BoxDecoration(
+                    color: kRed.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: kRed.withOpacity(0.3), width: 1),
+                  ),
+                  child: Text(
+                    widget.tag.name,
+                    style: TextStyle(
+                      color: kRed,
+                      fontSize: UIAdapt.fontSize(context, 10),
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+                SizedBox(height: UIAdapt.px(context, 16)),
+                Text(
+                  widget.video.title,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: UIAdapt.fontSize(context, 36),
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: -1,
+                  ),
+                ),
+                SizedBox(height: UIAdapt.px(context, 10)),
+                Row(
+                  children: [
+                    if (widget.video.score.isNotEmpty) ...[
+                      Icon(Icons.star, color: Colors.amber, size: UIAdapt.px(context, 14)),
+                      SizedBox(width: UIAdapt.px(context, 4)),
+                      Text(
+                        widget.video.score,
+                        style: TextStyle(
+                          color: Colors.amber,
+                          fontSize: UIAdapt.fontSize(context, 13),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      SizedBox(width: UIAdapt.px(context, 16)),
+                    ],
+                    if (widget.video.year.isNotEmpty)
+                      Text(
+                        widget.video.year,
+                        style: TextStyle(
+                          color: Colors.white.withOpacity(0.5),
+                          fontSize: UIAdapt.fontSize(context, 13),
+                        ),
+                      ),
+                  ],
+                ),
+                if (_detail != null && _detail!.description.isNotEmpty) ...[
+                  SizedBox(height: UIAdapt.px(context, 12)),
+                  SizedBox(
+                    width: MediaQuery.of(context).size.width * 0.5,
+                    child: Text(
+                      _detail!.description,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.6),
+                        fontSize: UIAdapt.fontSize(context, 14),
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                  SizedBox(height: UIAdapt.px(context, 20)),
+                ] else if (_loadingDetail) ...[
+                  SizedBox(height: UIAdapt.px(context, 12)),
+                  Container(
+                    width: MediaQuery.of(context).size.width * 0.35,
+                    height: UIAdapt.px(context, 14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  SizedBox(height: UIAdapt.px(context, 4)),
+                  Container(
+                    width: MediaQuery.of(context).size.width * 0.25,
+                    height: UIAdapt.px(context, 14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                  SizedBox(height: UIAdapt.px(context, 20)),
+                ] else ...[
+                  SizedBox(height: UIAdapt.px(context, 24)),
+                ],
+                Row(
+                  children: [
+                    // Play Button with Red Glow Shadow
+                    MouseRegion(
+                      onEnter: (_) => setState(() => _playHovered = true),
+                      onExit: (_) => setState(() => _playHovered = false),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOutCubic,
+                        transform: _playHovered
+                            ? (Matrix4.identity()..translate(0.0, -UIAdapt.px(context, 2.0)))
+                            : Matrix4.identity(),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [
+                            BoxShadow(
+                              color: kRed.withOpacity(_playHovered ? 0.5 : 0.35),
+                              blurRadius: UIAdapt.px(context, _playHovered ? 20 : 12),
+                              spreadRadius: 1,
+                              offset: Offset(0, UIAdapt.px(context, _playHovered ? 6 : 4)),
+                            ),
+                          ],
+                        ),
+                        child: ElevatedButton.icon(
+                          onPressed: () => widget.onPlay(widget.video),
+                          icon: Icon(Icons.play_circle_fill_rounded, size: UIAdapt.px(context, 20)),
+                          label: Text(
+                            '立即播放',
+                            style: TextStyle(
+                              fontSize: UIAdapt.fontSize(context, 14),
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: kRed,
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            minimumSize: Size(UIAdapt.px(context, 180), UIAdapt.px(context, 56)),
+                            padding: EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 24)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ).copyWith(
+                            backgroundColor: WidgetStateProperty.resolveWith((states) {
+                              if (states.contains(WidgetState.hovered)) {
+                                return const Color(0xFFF40F1D); // Lighter red for hover
+                              }
+                              return kRed;
+                            }),
+                          ),
+                        ),
+                      ),
+                    ),
+                    SizedBox(width: UIAdapt.px(context, 16)),
+                    // Glassmorphic Detail Button
+                    MouseRegion(
+                      onEnter: (_) => setState(() => _infoHovered = true),
+                      onExit: (_) => setState(() => _infoHovered = false),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOutCubic,
+                        transform: _infoHovered
+                            ? (Matrix4.identity()..translate(0.0, -UIAdapt.px(context, 2.0)))
+                            : Matrix4.identity(),
+                        child: ElevatedButton.icon(
+                          onPressed: () => widget.onInfo(widget.video),
+                          icon: Icon(Icons.info_outline_rounded, size: UIAdapt.px(context, 18)),
+                          label: Text(
+                            '影片详情',
+                            style: TextStyle(
+                              fontSize: UIAdapt.fontSize(context, 14),
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.white.withOpacity(0.05),
+                            foregroundColor: Colors.white,
+                            shadowColor: Colors.transparent,
+                            surfaceTintColor: Colors.transparent,
+                            elevation: 0,
+                            side: BorderSide(color: Colors.white.withOpacity(0.1)),
+                            minimumSize: Size(UIAdapt.px(context, 180), UIAdapt.px(context, 56)),
+                            padding: EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 20)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ).copyWith(
+                            backgroundColor: WidgetStateProperty.resolveWith((states) {
+                              if (states.contains(WidgetState.hovered)) {
+                                return Colors.white.withOpacity(0.12);
+                              }
+                              return Colors.white.withOpacity(0.05);
+                            }),
+                            side: WidgetStateProperty.resolveWith((states) {
+                              if (states.contains(WidgetState.hovered)) {
+                                return BorderSide(color: Colors.white.withOpacity(0.2));
+                              }
+                              return BorderSide(color: Colors.white.withOpacity(0.1));
+                            }),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── TAG SECTION (Stateful with Lazy Loading) ──────────────────
+class _TagSection extends StatefulWidget {
+  final TagItem tag;
+  final String imgDomain;
+  final ValueChanged<VideoItem> onPlay;
+  final ValueChanged<VideoItem> onInfo;
+  final VoidCallback onSeeAll;
+  final List<VideoItem>? initialVideos;
+
+  const _TagSection({
+    Key? key,
+    required this.tag,
+    required this.imgDomain,
+    required this.onPlay,
+    required this.onInfo,
+    required this.onSeeAll,
+    this.initialVideos,
+  }) : super(key: key);
+
+  @override
+  State<_TagSection> createState() => _TagSectionState();
+}
+
+class _TagSectionState extends State<_TagSection> {
+  List<VideoItem> _videos = [];
+  bool _loading = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialVideos != null) {
+      _videos = widget.initialVideos!;
+    } else {
+      _loadVideos();
+    }
+  }
+
+  Future<void> _loadVideos() async {
+    if (mounted) setState(() => _loading = true);
+    try {
+      final vids = await MubuApiClient.instance.getTagVideos(
+        widget.tag.id,
+        tpl: widget.tag.template,
+        count: 12,
+      );
+      if (mounted) {
+        setState(() {
+          _videos = vids;
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return _buildSkeletonLoader();
+    }
+    if (_error != null || _videos.isEmpty) {
+      return const SizedBox.shrink(); // Hide failed/empty tags quietly
+    }
+
+    final w = MediaQuery.of(context).size.width;
+    int cols = 4;
+    if (w >= 1400) {
+      cols = 6;
+    } else if (w >= 1100) {
+      cols = 5;
+    } else if (w >= 850) {
+      cols = 4;
+    } else if (w >= 600) {
+      cols = 3;
+    } else {
+      cols = 2;
+    }
+
+    final displayVideos = _videos.take(cols).toList();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                widget.tag.name,
+                style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: widget.onSeeAll,
+                child: Row(
+                  children: [
+                    Text('查看全部', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12)),
+                    Icon(Icons.chevron_right, size: 16, color: Colors.white.withOpacity(0.4)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          LayoutBuilder(
+            builder: (ctx, constraints) {
+              return Wrap(
+                spacing: 14,
+                runSpacing: 14,
+                children: displayVideos.map((v) {
+                  final cardWidth = (constraints.maxWidth - (cols - 1) * 14) / cols;
+                  return SizedBox(
+                    width: cardWidth,
+                    child: MovieCard(
+                      video: v,
+                      imgDomain: widget.imgDomain,
+                      onPlay: () => widget.onPlay(v),
+                      onInfo: () => widget.onInfo(v),
+                    ),
+                  );
+                }).toList(),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSkeletonLoader() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 120,
+            height: 20,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.04),
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          const SizedBox(height: 16),
+          const _SkeletonGrid(),
+        ],
+      ),
+    );
+  }
+}
+
+// pulsing skeleton shimmer effect widget
+class _SkeletonGrid extends StatefulWidget {
+  const _SkeletonGrid({Key? key}) : super(key: key);
+
+  @override
+  State<_SkeletonGrid> createState() => _SkeletonGridState();
+}
+
+class _SkeletonGridState extends State<_SkeletonGrid> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+    int cols = 4;
+    if (w >= 1400) cols = 6;
+    else if (w >= 1100) cols = 5;
+    else if (w >= 850) cols = 4;
+    else if (w >= 600) cols = 3;
+    else cols = 2;
+
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Opacity(
+          opacity: 0.25 + 0.45 * _controller.value,
+          child: LayoutBuilder(
+            builder: (ctx, constraints) {
+              final cardWidth = (constraints.maxWidth - (cols - 1) * 14) / cols;
+              return Wrap(
+                spacing: 14,
+                runSpacing: 14,
+                children: List.generate(cols, (index) {
+                  return SizedBox(
+                    width: cardWidth,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        AspectRatio(
+                          aspectRatio: 16 / 11,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.04),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: cardWidth * 0.7,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.04),
+                            borderRadius: BorderRadius.circular(3),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Container(
+                          width: cardWidth * 0.4,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.04),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+

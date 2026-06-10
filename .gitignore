@@ -1,0 +1,59 @@
+# 二进制安装包（原始分发文件）
+*.exe
+*.apk
+*.dmg
+
+# RE 解包产物
+/extracted/
+
+# Flutter 构建产物
+/build/
+/.dart_tool/
+.pub-cache/
+
+# Flutter 自动生成
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# Dart 工具缓存
+.pub/
+
+# IDE 配置
+.idea/
+*.iml
+*.iws
+
+# 运行时生成物
+/error.html
+
+# 系统文件
+.DS_Store
+
+# 日志
+*.log
+
+# 个人开发笔记与规划文档
+/devnotes.md
+/mubu_refactor_plan.md
+
+# 临时调试脚本与测试数据
+test/scratch_*
+test/*.json
+
+# 各平台临时编译文件
+/linux/flutter/ephemeral/
+/windows/flutter/ephemeral/
+/macos/Flutter/ephemeral/
+/ios/Flutter/ephemeral/
+
+# 本地配置与敏感信息
+**/local.properties
+**/key.properties
+/ios/Flutter/Generated.xcconfig
+/ios/Flutter/flutter_export_environment.sh
+
+# 环境变量与编辑器配置
+.env
+*.env
+.vscode/
