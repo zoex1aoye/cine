@@ -8,6 +8,7 @@
 
 # Flutter 构建产物
 /build/
+android/build/
 /.dart_tool/
 .pub-cache/
 
