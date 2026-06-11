@@ -13,6 +13,8 @@ import 'search_page.dart';
 import 'tag_videos_page.dart';
 
 import '../api/mubu_ui_adapt.dart';
+import '../api/mubu_constants.dart';
+import '../widgets/load_more_button.dart';
 
 // ─── Design Tokens ───────────────────────────────────────────
 const Color kRed = Color(0xFFE50914);
@@ -43,6 +45,19 @@ class _HomePageState extends State<HomePage> {
   List<VideoItem> _bookmarksList = [];
   List<VideoItem> _historyList = [];
 
+  // Bookmarks pagination
+  static const int _pageSize = 20;
+  int _bookmarkPage = 1;
+  bool _bookmarkHasMore = false;
+  bool _bookmarkLoadingMore = false;
+  final _bookmarkScrollController = ScrollController();
+
+  // History pagination
+  int _historyPage = 1;
+  bool _historyHasMore = false;
+  bool _historyLoadingMore = false;
+  final _historyScrollController = ScrollController();
+
   // Unified Navigation State
   // 0 = 首页/热门, 1 = 发现/多维筛选, 2 = 收藏夹, 3 = 历史
   int _currentTabIndex = 0;
@@ -52,8 +67,33 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _bookmarkScrollController.addListener(_onBookmarkScroll);
+    _historyScrollController.addListener(_onHistoryScroll);
     _initAndLoad();
     _loadBookmarksAndHistory();
+  }
+
+  void _onBookmarkScroll() {
+    if (!_bookmarkScrollController.hasClients) return;
+    final maxScroll = _bookmarkScrollController.position.maxScrollExtent;
+    final currentScroll = _bookmarkScrollController.position.pixels;
+    if (maxScroll - currentScroll <= 200) _loadMoreBookmarks();
+  }
+
+  void _onHistoryScroll() {
+    if (!_historyScrollController.hasClients) return;
+    final maxScroll = _historyScrollController.position.maxScrollExtent;
+    final currentScroll = _historyScrollController.position.pixels;
+    if (maxScroll - currentScroll <= 200) _loadMoreHistory();
+  }
+
+  @override
+  void dispose() {
+    _bookmarkScrollController.removeListener(_onBookmarkScroll);
+    _historyScrollController.removeListener(_onHistoryScroll);
+    _bookmarkScrollController.dispose();
+    _historyScrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _initAndLoad() async {
@@ -136,8 +176,46 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _bookmarksList = b;
         _historyList = h;
+        _bookmarkPage = 1;
+        _bookmarkHasMore = b.length > _pageSize;
+        _bookmarkLoadingMore = false;
+        _historyPage = 1;
+        _historyHasMore = h.length > _pageSize;
+        _historyLoadingMore = false;
       });
     }
+  }
+
+  /// Client-side pagination: returns items for the current page
+  List<VideoItem> _paginatedList(List<VideoItem> fullList, int page) {
+    final end = page * _pageSize;
+    if (end >= fullList.length) return fullList;
+    return fullList.sublist(0, end);
+  }
+
+  Future<void> _loadMoreBookmarks() async {
+    if (_bookmarkLoadingMore || !_bookmarkHasMore) return;
+    setState(() => _bookmarkLoadingMore = true);
+    // Simulate brief delay for visual feedback
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    setState(() {
+      _bookmarkPage++;
+      _bookmarkHasMore = _bookmarkPage * _pageSize < _bookmarksList.length;
+      _bookmarkLoadingMore = false;
+    });
+  }
+
+  Future<void> _loadMoreHistory() async {
+    if (_historyLoadingMore || !_historyHasMore) return;
+    setState(() => _historyLoadingMore = true);
+    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    setState(() {
+      _historyPage++;
+      _historyHasMore = _historyPage * _pageSize < _historyList.length;
+      _historyLoadingMore = false;
+    });
   }
 
   void _playVideo(VideoItem video) {
@@ -188,19 +266,21 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       backgroundColor: kBg,
-      body: Column(
-        children: [
-          _TopBar(
-            onNavTap: (i) {
-              setState(() {
-                _currentTabIndex = i;
-              });
-            },
-            onSearch: () {
-              Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchPage()));
-            },
-          ),
-          Expanded(
+      body: SafeArea(
+        child: Column(
+          children: [
+            if (isDesktop)
+              _TopBar(
+                onNavTap: (i) {
+                  setState(() {
+                    _currentTabIndex = i;
+                  });
+                },
+                onSearch: () {
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchPage()));
+                },
+              ),
+            Expanded(
             child: Row(
               children: [
                 if (isDesktop)
@@ -244,12 +324,19 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
       ),
+      ),
       bottomNavigationBar: isDesktop
           ? null
           : BottomNavigationBar(
-              currentIndex: _currentTabIndex,
+              currentIndex: _currentTabIndex >= 2 ? _currentTabIndex + 1 : _currentTabIndex,
               onTap: (i) {
-                if (i == 0) {
+                if (i == 2) {
+                  // Search button in the middle
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchPage()));
+                  return;
+                }
+                final adjustedIndex = i > 2 ? i - 1 : i;
+                if (adjustedIndex == 0) {
                   if (_currentTabIndex == 0 &&
                       _categories.isNotEmpty &&
                       _selectedHomeCategoryId == _categories.first.id) {
@@ -264,7 +351,7 @@ class _HomePageState extends State<HomePage> {
                   }
                 } else {
                   setState(() {
-                    _currentTabIndex = i;
+                    _currentTabIndex = adjustedIndex;
                   });
                 }
               },
@@ -275,6 +362,7 @@ class _HomePageState extends State<HomePage> {
               items: const [
                 BottomNavigationBarItem(icon: Icon(Icons.home), label: '首页'),
                 BottomNavigationBarItem(icon: Icon(Icons.tune), label: '筛选'),
+                BottomNavigationBarItem(icon: Icon(Icons.search), label: '搜索'),
                 BottomNavigationBarItem(icon: Icon(Icons.bookmark), label: '收藏'),
                 BottomNavigationBarItem(icon: Icon(Icons.history), label: '历史'),
               ],
@@ -364,6 +452,7 @@ class _HomePageState extends State<HomePage> {
       );
     }
     return CustomScrollView(
+      controller: _bookmarkScrollController,
       slivers: [
         const SliverToBoxAdapter(
           child: Padding(
@@ -377,7 +466,7 @@ class _HomePageState extends State<HomePage> {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           sliver: MovieSliverGrid(
-            videos: _bookmarksList,
+            videos: _paginatedList(_bookmarksList, _bookmarkPage),
             onPlay: _playVideo,
             onInfo: _showVideoInfo,
             onDelete: (video) async {
@@ -386,6 +475,39 @@ class _HomePageState extends State<HomePage> {
             },
           ),
         ),
+        if (_bookmarkLoadingMore)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(color: kRed, strokeWidth: 2),
+                ),
+              ),
+            ),
+          )
+        else if (_bookmarkHasMore)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: LoadMoreButton(onTap: _loadMoreBookmarks)),
+            ),
+          )
+        else if (_bookmarksList.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: Text(
+                  MubuConstants.reachedBottomWithCount(_bookmarksList.length),
+                  style: const TextStyle(color: Colors.white24, fontSize: 13),
+                ),
+              ),
+            ),
+          ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
       ],
     );
   }
@@ -404,6 +526,7 @@ class _HomePageState extends State<HomePage> {
       );
     }
     return CustomScrollView(
+      controller: _historyScrollController,
       slivers: [
         SliverToBoxAdapter(
           child: Padding(
@@ -430,7 +553,7 @@ class _HomePageState extends State<HomePage> {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
           sliver: MovieSliverGrid(
-            videos: _historyList,
+            videos: _paginatedList(_historyList, _historyPage),
             onPlay: _playVideo,
             onInfo: _showVideoInfo,
             onDelete: (video) async {
@@ -439,6 +562,39 @@ class _HomePageState extends State<HomePage> {
             },
           ),
         ),
+        if (_historyLoadingMore)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(color: kRed, strokeWidth: 2),
+                ),
+              ),
+            ),
+          )
+        else if (_historyHasMore)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: LoadMoreButton(onTap: _loadMoreHistory)),
+            ),
+          )
+        else if (_historyList.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 32),
+              child: Center(
+                child: Text(
+                  MubuConstants.reachedBottomWithCount(_historyList.length),
+                  style: const TextStyle(color: Colors.white24, fontSize: 13),
+                ),
+              ),
+            ),
+          ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
       ],
     );
   }
@@ -905,8 +1061,13 @@ class _HeroBannerState extends State<_HeroBanner> {
 
   @override
   Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+    final isSmall = w < 600;
+    // Netflix 风格：移动端短标签，大屏完整标签
+    final playLabel = isSmall ? '播放' : '立即播放';
+    final playMinW = isSmall ? 120.0 : UIAdapt.px(context, 150);
     return Container(
-      height: UIAdapt.px(context, 420),
+      height: isSmall ? 320 : UIAdapt.px(context, 420),
       margin: const EdgeInsets.only(bottom: 8),
       child: Stack(
         fit: StackFit.expand,
@@ -979,9 +1140,11 @@ class _HeroBannerState extends State<_HeroBanner> {
                 SizedBox(height: UIAdapt.px(context, 16)),
                 Text(
                   widget.video.title,
+                  maxLines: isSmall ? 1 : 2,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: Colors.white,
-                    fontSize: UIAdapt.fontSize(context, 36),
+                    fontSize: isSmall ? 20 : UIAdapt.fontSize(context, 36),
                     fontWeight: FontWeight.w900,
                     letterSpacing: -1,
                   ),
@@ -1051,7 +1214,9 @@ class _HeroBannerState extends State<_HeroBanner> {
                 ] else ...[
                   SizedBox(height: UIAdapt.px(context, 24)),
                 ],
+                // Netflix 风格：播放按钮宽而突出，详情按钮紧凑低调
                 Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     // Play Button with Red Glow Shadow
                     MouseRegion(
@@ -1078,7 +1243,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                           onPressed: () => widget.onPlay(widget.video),
                           icon: Icon(Icons.play_circle_fill_rounded, size: UIAdapt.px(context, 20)),
                           label: Text(
-                            '立即播放',
+                            playLabel,
                             style: TextStyle(
                               fontSize: UIAdapt.fontSize(context, 14),
                               fontWeight: FontWeight.bold,
@@ -1089,13 +1254,13 @@ class _HeroBannerState extends State<_HeroBanner> {
                             backgroundColor: kRed,
                             foregroundColor: Colors.white,
                             elevation: 0,
-                            minimumSize: Size(UIAdapt.px(context, 180), UIAdapt.px(context, 56)),
-                            padding: EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 24)),
+                            minimumSize: Size(playMinW, UIAdapt.px(context, 48)),
+                            padding: EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 20)),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ).copyWith(
                             backgroundColor: WidgetStateProperty.resolveWith((states) {
                               if (states.contains(WidgetState.hovered)) {
-                                return const Color(0xFFF40F1D); // Lighter red for hover
+                                return const Color(0xFFF40F1D);
                               }
                               return kRed;
                             }),
@@ -1103,51 +1268,33 @@ class _HeroBannerState extends State<_HeroBanner> {
                         ),
                       ),
                     ),
-                    SizedBox(width: UIAdapt.px(context, 16)),
-                    // Glassmorphic Detail Button
+                    SizedBox(width: UIAdapt.px(context, 12)),
+                    // Detail Icon Button (Netflix 风格 ℹ️ 纯图标)
                     MouseRegion(
                       onEnter: (_) => setState(() => _infoHovered = true),
                       onExit: (_) => setState(() => _infoHovered = false),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeOutCubic,
-                        transform: _infoHovered
-                            ? (Matrix4.identity()..translate(0.0, -UIAdapt.px(context, 2.0)))
-                            : Matrix4.identity(),
-                        child: ElevatedButton.icon(
-                          onPressed: () => widget.onInfo(widget.video),
-                          icon: Icon(Icons.info_outline_rounded, size: UIAdapt.px(context, 18)),
-                          label: Text(
-                            '影片详情',
-                            style: TextStyle(
-                              fontSize: UIAdapt.fontSize(context, 14),
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 0.5,
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () => widget.onInfo(widget.video),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          curve: Curves.easeOutCubic,
+                          transform: _infoHovered
+                              ? (Matrix4.identity()..scale(1.1))
+                              : Matrix4.identity(),
+                          width: UIAdapt.px(context, 28),
+                          height: UIAdapt.px(context, 28),
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.white.withOpacity(_infoHovered ? 0.08 : 0.02),
+                            border: Border.all(
+                              color: Colors.white.withOpacity(_infoHovered ? 0.15 : 0.05),
                             ),
                           ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white.withOpacity(0.05),
-                            foregroundColor: Colors.white,
-                            shadowColor: Colors.transparent,
-                            surfaceTintColor: Colors.transparent,
-                            elevation: 0,
-                            side: BorderSide(color: Colors.white.withOpacity(0.1)),
-                            minimumSize: Size(UIAdapt.px(context, 180), UIAdapt.px(context, 56)),
-                            padding: EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 20)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ).copyWith(
-                            backgroundColor: WidgetStateProperty.resolveWith((states) {
-                              if (states.contains(WidgetState.hovered)) {
-                                return Colors.white.withOpacity(0.12);
-                              }
-                              return Colors.white.withOpacity(0.05);
-                            }),
-                            side: WidgetStateProperty.resolveWith((states) {
-                              if (states.contains(WidgetState.hovered)) {
-                                return BorderSide(color: Colors.white.withOpacity(0.2));
-                              }
-                              return BorderSide(color: Colors.white.withOpacity(0.1));
-                            }),
+                          child: Icon(
+                            Icons.info_outline_rounded,
+                            size: UIAdapt.px(context, 16),
+                            color: Colors.white.withOpacity(_infoHovered ? 0.75 : 0.45),
                           ),
                         ),
                       ),

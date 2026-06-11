@@ -1,8 +1,8 @@
-# 荐片 Linux 客户端
+# 幕布 (Cine)
 
-![荐片 Linux 客户端](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-crimson?style=for-the-badge&logo=flutter)
+![幕布 (Cine)](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-crimson?style=for-the-badge&logo=flutter)
 
-荐片 Linux 客户端是一款基于 Flutter 与 `media_kit` (MPV 核心) 打造的高颜值、轻量级跨平台影视客户端。本项目专注于提供流畅的影视浏览、多维度智能筛选、本地播放记录以及极速的线路切换体验。
+幕布 (Cine) 是一款基于 Flutter 与 `media_kit` (MPV 核心) 打造的高颜值、轻量级跨平台影视客户端。本项目专注于提供流畅的影视浏览、多维度智能筛选、本地播放记录以及极速的线路切换体验。
 
 ---
 
@@ -25,6 +25,29 @@
 * **依赖库**：系统需安装有 `libmpv.so`（通常随 mpv 播放器一同安装，如 `sudo apt install mpv`）。
 
 ### 开发者编译指引
+
+#### 环境要求
+
+- Flutter SDK (推荐使用最新稳定版)
+- 已安装 `libmpv.so`（如 `sudo apt install mpv`）
+- Linux 桌面环境推荐安装 VA-API 驱动（`mesa-va-drivers` / `intel-media-driver`）
+
+#### 构建 Android 版本
+
+```bash
+# 1. 确保 Android 配置已更新
+#    settings.gradle.kts:  org.jetbrains.kotlin.android → 最新版本
+#    app/build.gradle.kts:  compileSdk → 最新 SDK 版本
+#    gradle-wrapper.properties:  Gradle 版本与 Kotlin 兼容
+
+# 2. 构建 APK
+flutter build apk --release --target-platform android-arm64
+```
+
+> **注意**：如果遇到 Kotlin 编译错误，通常是因为 pub.dev 上的插件使用了更新的 Kotlin 版本。请同步升级 `android/settings.gradle.kts` 中的 Kotlin 插件版本和 Gradle 版本，参见 [Kotlin 版本列表](https://kotlinlang.org/docs/releases.html)。
+
+#### 完整开发笔记
+
 请参考给开发者编写的 [开发笔记与逆向报告](devnotes.md)。
 
 ---

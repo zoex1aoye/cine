@@ -1,4 +1,4 @@
-package com.example.jianpian_linux
+package com.example.cine
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -1,6 +1,6 @@
 {
-    "name": "jianpian_linux",
-    "short_name": "jianpian_linux",
+    "name": "幕布",
+    "short_name": "幕布",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

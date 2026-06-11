@@ -1,15 +1,13 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
-import '../widgets/movie_card.dart';
 import '../widgets/movie_sliver_grid.dart';
 import '../widgets/movie_info_dialog.dart';
 import 'player_page.dart';
 
-import '../api/mubu_ui_adapt.dart';
+import '../widgets/load_more_button.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -22,7 +20,6 @@ class _SearchPageState extends State<SearchPage> {
   // ── Design tokens ──────────────────────────────────────────────────────
   static const _primaryRed  = Color(0xFFE50914);
   static const _bgColor     = Color(0xFF070708);
-  static const _cardBg      = Color(0xFF121215);
   static const _glassBg     = Color(0xFF16161A);
   static final _borderColor = Colors.white.withOpacity(0.05);
 
@@ -425,7 +422,7 @@ class _SearchPageState extends State<SearchPage> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 24),
-              child: Center(child: _LoadMoreButton(onTap: _loadMore)),
+              child: Center(child: LoadMoreButton(onTap: _loadMore)),
             ),
           )
         else if (!_hasMore && _results.isNotEmpty)
@@ -442,78 +439,6 @@ class _SearchPageState extends State<SearchPage> {
           ),
         const SliverPadding(padding: EdgeInsets.only(bottom: 24)),
       ],
-    );
-  }
-}
-
-class _LoadMoreButton extends StatefulWidget {
-  final VoidCallback onTap;
-  const _LoadMoreButton({required this.onTap});
-
-  @override
-  State<_LoadMoreButton> createState() => _LoadMoreButtonState();
-}
-
-class _LoadMoreButtonState extends State<_LoadMoreButton> {
-  static const _primaryRed = Color(0xFFE50914);
-  static const _glassPanel = Color(0xFF16161A);
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 13),
-              decoration: BoxDecoration(
-                color: _hovered ? _primaryRed : _glassPanel.withOpacity(0.8),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(
-                  color: _hovered ? _primaryRed : Colors.white.withOpacity(0.08),
-                ),
-                boxShadow: _hovered
-                    ? [
-                        BoxShadow(
-                          color: _primaryRed.withOpacity(0.3),
-                          blurRadius: 16,
-                          offset: const Offset(0, 4),
-                        ),
-                      ]
-                    : [],
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.expand_more_rounded,
-                    size: 18,
-                    color: _hovered ? Colors.white : Colors.white70,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    MubuConstants.loadMore,
-                    style: TextStyle(
-                      color: _hovered ? Colors.white : Colors.white70,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

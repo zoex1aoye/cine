@@ -1,15 +1,13 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
-import '../widgets/movie_card.dart';
 import '../widgets/movie_sliver_grid.dart';
 import '../widgets/movie_info_dialog.dart';
 import 'player_page.dart';
 
-import '../api/mubu_ui_adapt.dart';
+import '../widgets/load_more_button.dart';
 
 class TagVideosPage extends StatefulWidget {
   final TagItem tag;
@@ -27,12 +25,12 @@ class _TagVideosPageState extends State<TagVideosPage> {
   // ── Design tokens ──────────────────────────────────────────────────────
   static const _primaryRed  = Color(0xFFE50914);
   static const _bgColor     = Color(0xFF070708);
-  static const _cardBg      = Color(0xFF121215);
   static const _glassBg     = Color(0xFF16161A);
   static final _borderColor = Colors.white.withOpacity(0.05);
 
   // ── State ──────────────────────────────────────────────────────────────
   final _api = MubuApiClient.instance;
+  final _scrollController = ScrollController();
   final List<VideoItem> _videos = [];
 
   int _page = 1;
@@ -43,7 +41,17 @@ class _TagVideosPageState extends State<TagVideosPage> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     _loadMore();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final maxScroll = _scrollController.position.maxScrollExtent;
+    final currentScroll = _scrollController.position.pixels;
+    if (maxScroll - currentScroll <= 200) {
+      _loadMore();
+    }
   }
 
   // ── Data ───────────────────────────────────────────────────────────────
@@ -85,6 +93,13 @@ class _TagVideosPageState extends State<TagVideosPage> {
         _error = '加载数据失败';
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
   }
 
   // ── Navigation ─────────────────────────────────────────────────────────
@@ -147,7 +162,7 @@ class _TagVideosPageState extends State<TagVideosPage> {
     );
   }
 
-  // ── Top bar with breadcrumbs ───────────────────────────────────────────
+  // ── Top bar ─────────────────────────────────────────────────────────────
   Widget _buildTopBar() {
     return ClipRRect(
       child: BackdropFilter(
@@ -164,8 +179,12 @@ class _TagVideosPageState extends State<TagVideosPage> {
             border: Border(bottom: BorderSide(color: _borderColor)),
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Breadcrumb: current tag name
+              // Back-to-home icon button on the left
+              _BackButton(onTap: _goHome),
+              const SizedBox(width: 16),
+              // Current tag name
               Expanded(
                 child: Text(
                   widget.tag.name,
@@ -177,8 +196,6 @@ class _TagVideosPageState extends State<TagVideosPage> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              // Back-to-home button with icon + label
-              _BackToHomeButton(onTap: _goHome),
             ],
           ),
         ),
@@ -238,6 +255,7 @@ class _TagVideosPageState extends State<TagVideosPage> {
       color: _primaryRed,
       backgroundColor: _glassBg,
       child: CustomScrollView(
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
         slivers: [
           // Results count
@@ -276,7 +294,12 @@ class _TagVideosPageState extends State<TagVideosPage> {
               ),
             )
           else if (_hasMore && _videos.isNotEmpty)
-            SliverToBoxAdapter(child: _buildLoadMoreButton())
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(child: LoadMoreButton(onTap: _loadMore)),
+              ),
+            )
           else if (!_hasMore && _videos.isNotEmpty)
             SliverToBoxAdapter(
               child: Padding(
@@ -295,97 +318,26 @@ class _TagVideosPageState extends State<TagVideosPage> {
       ),
     );
   }
-
-  Widget _buildLoadMoreButton() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 28),
-      child: Center(
-        child: GestureDetector(
-          onTap: _loadMore,
-          child: MouseRegion(
-            cursor: SystemMouseCursors.click,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-              decoration: BoxDecoration(
-                color: _primaryRed.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: _primaryRed.withOpacity(0.3)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.expand_more, color: _primaryRed, size: 18),
-                  const SizedBox(width: 6),
-                  Text(
-                    MubuConstants.loadMore,
-                    style: const TextStyle(
-                      color: _primaryRed,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
-class _BackToHomeButton extends StatefulWidget {
+class _BackButton extends StatelessWidget {
   final VoidCallback onTap;
-  const _BackToHomeButton({required this.onTap});
-
-  @override
-  State<_BackToHomeButton> createState() => _BackToHomeButtonState();
-}
-
-class _BackToHomeButtonState extends State<_BackToHomeButton> {
-  bool _hovered = false;
+  const _BackButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: _hovered
-                ? Colors.white.withOpacity(0.1)
-                : Colors.white.withOpacity(0.05),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: _hovered
-                  ? Colors.white.withOpacity(0.2)
-                  : Colors.white.withOpacity(0.1),
-            ),
+            color: Colors.white.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.arrow_back_rounded,
-                size: 14,
-                color: _hovered ? Colors.white : Colors.white.withOpacity(0.8),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '返回首页',
-                style: TextStyle(
-                  color: _hovered ? Colors.white : Colors.white.withOpacity(0.8),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
+          child: const Icon(Icons.arrow_back_ios_new, color: Colors.white70, size: 18),
         ),
       ),
     );

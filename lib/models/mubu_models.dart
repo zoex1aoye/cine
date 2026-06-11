@@ -1,8 +1,6 @@
 // lib/models/mubu_models.dart
 // Unified data models for Mubu client
 
-import 'dart:convert';
-
 /// Video item model
 class VideoItem {
   final int id;

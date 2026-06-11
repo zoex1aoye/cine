@@ -1,5 +1,5 @@
-name: jianpian_linux
-description: "荐片 Linux 客户端"
+name: cine
+description: "幕布 - 跨平台影视客户端"
 publish_to: 'none'
 version: 1.0.0+1
 
