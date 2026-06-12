@@ -56,6 +56,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
   // UI state
   bool _expanded = false;
+  final LayerLink _lineLink = LayerLink();
 
   @override
   void initState() {
@@ -425,7 +426,10 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
+    final height = MediaQuery.of(context).size.height;
     final isWide = width >= 900;
+    final isLandscape = width >= 600 && width > height;
+    final useRowLayout = isWide || isLandscape;
 
     return PopScope(
       canPop: true,
@@ -443,27 +447,27 @@ class _PlayerPageState extends State<PlayerPage> {
                 children: [
                   _buildTopHeader(),
                   Expanded(
-                    child: isWide
+                    child: useRowLayout
                         ? Padding(
-                            padding: const EdgeInsets.all(28),
+                            padding: EdgeInsets.all(isWide ? 28 : 12),
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                // Left video panel
+                                // Left video panel — always 16:9
                                 Expanded(
-                                  flex: 65,
+                                  flex: isWide ? 65 : 66,
                                   child: AspectRatio(
                                     aspectRatio: 16 / 9,
                                     child: _buildVideoPlayerContainer(),
                                   ),
                                 ),
-                                const SizedBox(width: 28),
+                                SizedBox(width: isWide ? 28 : 12),
                                 // Right detail / episodes panel
                                 Expanded(
-                                  flex: 35,
+                                  flex: isWide ? 35 : 34,
                                   child: SingleChildScrollView(
                                     physics: const BouncingScrollPhysics(),
-                                    child: _buildMovieInfoAndEpisodes(true),
+                                    child: _buildMovieInfoAndEpisodes(useRowLayout),
                                   ),
                                 ),
                               ],
@@ -472,9 +476,12 @@ class _PlayerPageState extends State<PlayerPage> {
                         : SingleChildScrollView(
                             child: Column(
                               children: [
-                                AspectRatio(
-                                  aspectRatio: 16 / 9,
-                                  child: _buildVideoPlayerContainer(),
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                                  child: AspectRatio(
+                                    aspectRatio: 16 / 9,
+                                    child: _buildVideoPlayerContainer(),
+                                  ),
                                 ),
                                 _buildMovieInfoAndEpisodes(false),
                               ],
@@ -493,11 +500,13 @@ class _PlayerPageState extends State<PlayerPage> {
                   ),
                 ),
 
-              // 4. Floating line dropdown card
+              // 4. Floating line dropdown card (anchored below line label)
               if (_expanded && _sources.isNotEmpty)
-                Positioned(
-                  top: MediaQuery.of(context).padding.top + 56,
-                  right: 24,
+                CompositedTransformFollower(
+                  link: _lineLink,
+                  offset: const Offset(0, 8),
+                  targetAnchor: Alignment.bottomLeft,
+                  followerAnchor: Alignment.topLeft,
                   child: _buildLineDropdownCard(),
                 ),
             ],
@@ -507,14 +516,27 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  /// 搜索页同款玻璃态圆形图标按钮
+  Widget _glassIconButton(IconData icon, {required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: Container(
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.06),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Icon(icon, color: Colors.white70, size: 18),
+        ),
+      ),
+    );
+  }
+
   /// 构建播放页的顶部导航与状态栏
   Widget _buildTopHeader() {
-    final currentLine = _selectedLineName;
-    final lines = _uniqueLineNames;
-    // 过滤出当前状态下可用的线路数量（排除了不可用/超时的线路）
-    final usableLinesCount = lines.where((name) => _isLineUsable(name)).length;
-    final activeSpeed = _sources.isNotEmpty ? _sources[_selectedSource].speedMs : null;
-
     return Container(
       height: 64,
       decoration: BoxDecoration(
@@ -524,11 +546,8 @@ class _PlayerPageState extends State<PlayerPage> {
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(
         children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back, color: Colors.white),
-            onPressed: () => Navigator.pop(context),
-          ),
-          const SizedBox(width: 8),
+          _glassIconButton(Icons.arrow_back_ios_new, onTap: () => Navigator.pop(context)),
+          const SizedBox(width: 16),
           Expanded(
             child: Text(
               widget.video.title,
@@ -540,56 +559,56 @@ class _PlayerPageState extends State<PlayerPage> {
               overflow: TextOverflow.ellipsis,
             ),
           ),
-          IconButton(
-            icon: Icon(
-              _isBookmarked ? Icons.bookmark : Icons.bookmark_border,
-              color: _isBookmarked ? _primaryRed : Colors.white,
-            ),
-            tooltip: '收藏影片',
-            onPressed: _toggleBookmark,
-          ),
-          const SizedBox(width: 8),
-          if (_sources.isNotEmpty)
-            GestureDetector(
-              onTap: () => setState(() => _expanded = !_expanded),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          // 收藏胶囊按钮
+          GestureDetector(
+            onTap: _toggleBookmark,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.05),
+                  color: _isBookmarked
+                      ? _primaryRed
+                      : Colors.white.withOpacity(0.06),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
-                    color: _expanded ? _primaryRed.withOpacity(0.4) : Colors.white.withOpacity(0.08),
+                    color: _isBookmarked
+                        ? _primaryRed
+                        : Colors.white.withOpacity(0.08),
                   ),
+                  boxShadow: _isBookmarked
+                      ? [
+                          BoxShadow(
+                            color: _primaryRed.withOpacity(0.35),
+                            blurRadius: 10,
+                            offset: const Offset(0, 2),
+                          ),
+                        ]
+                      : null,
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _speedDot(activeSpeed),
-                    const SizedBox(width: 8),
+                    Icon(
+                      Icons.bookmark,
+                      color: _isBookmarked ? Colors.white : Colors.white70,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
                     Text(
-                      currentLine,
+                      '收藏',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.9),
-                        fontSize: 12,
+                        color: _isBookmarked ? Colors.white : Colors.white70,
+                        fontSize: 13,
                         fontWeight: FontWeight.w600,
                       ),
-                    ),
-                    const SizedBox(width: 4),
-                    // 右上角线路仅显示过滤后的可用线路数目（如：3条可用）
-                    Text(
-                      '$usableLinesCount条',
-                      style: const TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
-                    const SizedBox(width: 4),
-                    Icon(
-                      _expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                      color: _primaryRed,
-                      size: 16,
                     ),
                   ],
                 ),
               ),
             ),
+          ),
         ],
       ),
     );
@@ -719,25 +738,64 @@ class _PlayerPageState extends State<PlayerPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Info Block
+          // Info Block — clickable line selector
           Row(
             children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(4),
-                  border: Border.all(color: Colors.white.withOpacity(0.12)),
-                ),
-                child: Text(
-                  _sources.isNotEmpty ? '1080P ${_sources[_selectedSource].name}' : '1080P',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
+              if (_sources.isNotEmpty)
+                CompositedTransformTarget(
+                  link: _lineLink,
+                  child: GestureDetector(
+                    onTap: () => setState(() => _expanded = !_expanded),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: _expanded ? _primaryRed.withOpacity(0.15) : Colors.white.withOpacity(0.06),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(
+                          color: _expanded ? _primaryRed.withOpacity(0.4) : Colors.white.withOpacity(0.12),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _speedDot(_sources.isNotEmpty ? _sources[_selectedSource].speedMs : null),
+                          const SizedBox(width: 6),
+                          Text(
+                            '1080P ${_sources[_selectedSource].name}',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: Colors.white38,
+                            size: 12,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.06),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.white.withOpacity(0.12)),
+                  ),
+                  child: const Text(
+                    '1080P',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-              ),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -771,25 +829,30 @@ class _PlayerPageState extends State<PlayerPage> {
           if (epIndices.isEmpty)
             const Text('暂无剧集数据', style: TextStyle(color: Colors.white24, fontSize: 12))
           else
-            GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: UIAdapt.px(context, 100),
-                childAspectRatio: 1.2,
-                crossAxisSpacing: UIAdapt.px(context, 8),
-                mainAxisSpacing: UIAdapt.px(context, 8),
-              ),
-              itemCount: epIndices.length,
-              itemBuilder: (context, index) {
-                final sourceIdx = epIndices[index];
-                final s = _sources[sourceIdx];
-                final active = sourceIdx == _selectedSource;
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
+                return GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossAxisCount,
+                    childAspectRatio: 1.6,
+                    crossAxisSpacing: 8,
+                    mainAxisSpacing: 8,
+                  ),
+                  itemCount: epIndices.length,
+                  itemBuilder: (context, index) {
+                    final sourceIdx = epIndices[index];
+                    final s = _sources[sourceIdx];
+                    final active = sourceIdx == _selectedSource;
 
-                return _EpisodeButton(
-                  label: s.sourceName,
-                  active: active,
-                  onTap: () => _switchSource(sourceIdx),
+                    return _EpisodeButton(
+                      label: s.sourceName,
+                      active: active,
+                      onTap: () => _switchSource(sourceIdx),
+                    );
+                  },
                 );
               },
             ),
@@ -800,93 +863,99 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Widget _buildLineDropdownCard() {
     final lines = _uniqueLineNames;
-    return Container(
-      width: 280,
-      decoration: BoxDecoration(
-        color: const Color(0xFF0D0D1A).withAlpha(250),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withAlpha(20)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(200),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
-          )
-        ],
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.shuffle, color: Colors.white38, size: 15),
-              const SizedBox(width: 8),
-              const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-              const Spacer(),
-              GestureDetector(
-                onTap: () => setState(() => _expanded = false),
-                child: const Icon(Icons.close, color: Colors.white38, size: 16),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+        child: Container(
+          width: 280,
+          decoration: BoxDecoration(
+            color: const Color(0xFF16161A).withOpacity(0.95),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.85),
+                blurRadius: 50,
+                offset: const Offset(0, 25),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 200),
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: lines.length,
-              itemBuilder: (context, idx) {
-                final name = lines[idx];
-                final active = name == _selectedLineName;
-                final speed = _lineSpeed(name);
-                final usable = _isLineUsable(name);
-                if (!usable && !active) return const SizedBox.shrink();
-
-                return GestureDetector(
-                  onTap: () {
-                    _switchLine(name);
-                    setState(() => _expanded = false);
-                  },
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: active ? _primaryRed : Colors.white.withAlpha(10),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      children: [
-                        _speedDot(speed),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            name,
-                            style: TextStyle(
-                              color: active ? Colors.white : Colors.white70,
-                              fontSize: 12,
-                              fontWeight: active ? FontWeight.bold : FontWeight.normal,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _speedLabel(speed),
-                          style: TextStyle(
-                            color: active ? Colors.white70 : _speedColor(speed),
-                            fontSize: 10,
-                          ),
-                        ),
-                      ],
-                    ),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.shuffle, color: Colors.white38, size: 15),
+                  const SizedBox(width: 8),
+                  const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => setState(() => _expanded = false),
+                    child: const Icon(Icons.close, color: Colors.white38, size: 16),
                   ),
-                );
-              },
-            ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: lines.length,
+                  itemBuilder: (context, idx) {
+                    final name = lines[idx];
+                    final active = name == _selectedLineName;
+                    final speed = _lineSpeed(name);
+                    final usable = _isLineUsable(name);
+                    if (!usable && !active) return const SizedBox.shrink();
+
+                    return GestureDetector(
+                      onTap: () {
+                        _switchLine(name);
+                        setState(() => _expanded = false);
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: active ? _primaryRed : Colors.white.withAlpha(10),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            _speedDot(speed),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                name,
+                                style: TextStyle(
+                                  color: active ? Colors.white : Colors.white70,
+                                  fontSize: 12,
+                                  fontWeight: active ? FontWeight.bold : FontWeight.normal,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              _speedLabel(speed),
+                              style: TextStyle(
+                                color: active ? Colors.white70 : _speedColor(speed),
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -967,6 +1036,14 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 600;
+    // 移动端 64px, 桌面 80px
+    final coreSize = isMobile ? 64.0 : 80.0;
+    final iconSize = isMobile ? 36.0 : 46.0;
+    final pulseRange = isMobile ? 32.0 : 40.0;
+    final pulseRange2 = isMobile ? 16.0 : 20.0;
+
     return GestureDetector(
       onTap: widget.onTap,
       child: AnimatedBuilder(
@@ -975,43 +1052,43 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
           return Stack(
             alignment: Alignment.center,
             children: [
-              // Outer pulse ring 2
+              // Outer pulse ring 2 (subtle)
               Container(
-                width: 90 + 50 * _controller.value,
-                height: 90 + 50 * _controller.value,
+                width: coreSize + pulseRange * _controller.value,
+                height: coreSize + pulseRange * _controller.value,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFFE50914).withOpacity(0.2 * (1.0 - _controller.value)),
+                  color: const Color(0xFFE50914).withOpacity(0.10 * (1.0 - _controller.value)),
                 ),
               ),
-              // Outer pulse ring 1
+              // Outer pulse ring 1 (subtle)
               Container(
-                width: 90 + 25 * _controller.value,
-                height: 90 + 25 * _controller.value,
+                width: coreSize + pulseRange2 * _controller.value,
+                height: coreSize + pulseRange2 * _controller.value,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFFE50914).withOpacity(0.4 * (1.0 - _controller.value)),
+                  color: const Color(0xFFE50914).withOpacity(0.18 * (1.0 - _controller.value)),
                 ),
               ),
               // Core Play Button
               Container(
-                width: 90,
-                height: 90,
-                decoration: const BoxDecoration(
+                width: coreSize,
+                height: coreSize,
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: Color(0xFFE50914),
+                  color: const Color(0xFFE50914),
                   boxShadow: [
                     BoxShadow(
-                      color: Color(0xFFE50914),
-                      blurRadius: 20,
-                      spreadRadius: 3,
-                    )
+                      color: const Color(0xFFE50914).withOpacity(0.35),
+                      blurRadius: 12,
+                      spreadRadius: 1,
+                    ),
                   ],
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.play_arrow_rounded,
                   color: Colors.white,
-                  size: 50,
+                  size: iconSize,
                 ),
               ),
             ],
@@ -1090,6 +1167,8 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
           alignment: Alignment.center,
           child: Text(
             widget.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: TextStyle(
               color: active
                   ? Colors.white

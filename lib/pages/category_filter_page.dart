@@ -120,7 +120,6 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       if (!mounted) return;
       setState(() {
         _filterGroups = filters;
-        _loadingFilters = false;
         _selectedFilters.clear();
         _selectedFilterLabels.clear();
         for (final group in filters) {
@@ -132,7 +131,13 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
           }
         }
       });
+      // Keep _loadingFilters true until _loadVideos completes so the build
+      // never sees an empty _videos + no-loading state.
       await _loadVideos(reset: true);
+      if (!mounted) return;
+      setState(() {
+        _loadingFilters = false;
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -216,11 +221,8 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
 
   void _changeCategory(int categoryId) {
     if (_activeCategoryId == categoryId) return;
-    setState(() {
-      _activeCategoryId = categoryId;
-      _selectedFilters.clear();
-      _selectedFilterLabels.clear();
-    });
+    // Don't setState here — _loadFiltersAndVideos handles loading state entirely
+    _activeCategoryId = categoryId;
     _loadFiltersAndVideos();
   }
 
@@ -285,25 +287,6 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     } catch (_) {}
   }
 
-  /// Open sheet listing all filter dimensions to choose from
-  void _openAllGroupsSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _AllGroupsSheet(
-        filterGroups: _filterGroups,
-        selectedFilters: _selectedFilters,
-        selectedFilterLabels: _selectedFilterLabels,
-        onTapGroup: (key) {
-          Navigator.pop(ctx);
-          _openSingleFilterSheet(key);
-        },
-        onClose: () => Navigator.pop(ctx),
-      ),
-    );
-  }
-
   void _applySingleFilter(String key, String id, String name) {
     setState(() {
       _selectedFilters[key] = id;
@@ -316,20 +299,6 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     _loadVideos(reset: true);
   }
 
-  void _removeFilter(String key) {
-    try {
-      final group = _filterGroups.firstWhere((g) => g.key == key);
-      if (group.items.isEmpty) return;
-      final defaultId = group.items.first.id;
-
-      setState(() {
-        _selectedFilters[key] = defaultId;
-        _selectedFilterLabels.remove(key);
-      });
-      _loadVideos(reset: true);
-    } catch (_) {}
-  }
-
   // ── Build ──────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
@@ -338,41 +307,74 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       children: [
         const SizedBox(height: 12),
         _buildCategorySelector(),
-        if (_loadingFilters)
-          const Expanded(
-            child: Center(
-              child: CircularProgressIndicator(color: _kPrimaryRed),
-            ),
-          )
-        else if (_error != null && _videos.isEmpty)
-          Expanded(child: _buildErrorWidget())
-        else
-          Expanded(
-            child: CustomScrollView(
-              controller: _scrollController,
-              slivers: [
-                // Sticky filter bar
-                SliverPersistentHeader(
-                  pinned: true,
-                  delegate: _FilterBarDelegate(
-                    filterGroups: _filterGroups,
-                    selectedFilters: _selectedFilters,
-                    selectedFilterLabels: _selectedFilterLabels,
-                    onOpenGroup: _openSingleFilterSheet,
-                    onRemoveFilter: _removeFilter,
-                    onOpenAllGroups: _openAllGroupsSheet,
-                  ),
-                ),
-                SliverPadding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  sliver: _buildVideosGrid(),
-                ),
-                SliverToBoxAdapter(child: _buildFooter()),
-                const SliverToBoxAdapter(child: SizedBox(height: 40)),
-              ],
-            ),
+        // Sticky filter bar (outside scroll view so it stays pinned)
+        _buildFilterBar(),
+        Expanded(
+          child: CustomScrollView(
+            controller: _scrollController,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                sliver: _buildVideosGrid(),
+              ),
+              SliverToBoxAdapter(child: _buildFooter()),
+              const SliverToBoxAdapter(child: SizedBox(height: 40)),
+            ],
           ),
+        ),
       ],
+    );
+  }
+
+  /// Build the filter bar
+  Widget _buildFilterBar() {
+    // Show skeleton when filters are loading
+    if (_loadingFilters) {
+      return _buildFilterBarSkeleton();
+    }
+
+    final hasActiveFilters = _selectedFilterLabels.isNotEmpty;
+
+    return Container(
+      color: _kBackground,
+      padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
+      child: Row(
+        children: [
+          _FilterLabel(),
+          if (hasActiveFilters) ...[
+            const SizedBox(width: 10),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: _selectedFilterLabels.entries.map((entry) {
+                    final k = entry.key.toLowerCase();
+                    String label;
+                    if (k == 'type' || k.contains('cate') || k.contains('type')) {
+                      label = '频道';
+                    } else if (k == 'area' || k.contains('area') || k.contains('region')) {
+                      label = '地区';
+                    } else if (k == 'year' || k.contains('year')) {
+                      label = '年份';
+                    } else if (k == 'sort' || k.contains('sort') || k.contains('order')) {
+                      label = '排序';
+                    } else {
+                      label = '筛选';
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: _ActiveFilterChip(
+                        label: '$label: ${entry.value}',
+                        onTap: () => _openSingleFilterSheet(entry.key),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -419,6 +421,21 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   }
 
   Widget _buildVideosGrid() {
+    if (_loadingFilters) {
+      return const SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 80),
+          child: Center(
+            child: CircularProgressIndicator(color: _kPrimaryRed),
+          ),
+        ),
+      );
+    }
+
+    if (_error != null && _videos.isEmpty) {
+      return SliverToBoxAdapter(child: _buildErrorWidget());
+    }
+
     if (_videos.isEmpty && !_loadingVideos) {
       return const SliverToBoxAdapter(
         child: Padding(
@@ -447,6 +464,9 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   }
 
   Widget _buildFooter() {
+    // Don't show footer loading when _loadingFilters is already showing a full-screen spinner
+    if (_loadingFilters) return const SizedBox.shrink();
+
     if (_loadingVideos) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 32),
@@ -505,72 +525,83 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       ),
     );
   }
-}
 
-// ─── Filter Trigger Button ─────────────────────────────────────
-class _FilterTriggerButton extends StatefulWidget {
-  final VoidCallback onTap;
-  const _FilterTriggerButton({required this.onTap});
-
-  @override
-  State<_FilterTriggerButton> createState() => _FilterTriggerButtonState();
-}
-
-class _FilterTriggerButtonState extends State<_FilterTriggerButton> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-          decoration: BoxDecoration(
-            color: _hovered ? _kPrimaryRed : _kGlassPanel,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: _hovered ? _kPrimaryRed : Colors.white.withOpacity(0.12),
+  // ─── Filter Bar Skeleton (loading state) ────────────────────────
+  Widget _buildFilterBarSkeleton() {
+    return Container(
+      color: _kBackground,
+      padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
+      child: Row(
+        children: [
+          // Icon skeleton
+          Container(
+            width: 16, height: 16,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(4),
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.tune_rounded,
-                size: 16,
-                color: _hovered ? Colors.white : Colors.white70,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                '筛选',
-                style: TextStyle(
-                  color: _hovered ? Colors.white : Colors.white70,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
+          const SizedBox(width: 6),
+          // Text skeleton
+          Container(
+            width: 28, height: 14,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.06),
+              borderRadius: BorderRadius.circular(4),
+            ),
           ),
-        ),
+          const SizedBox(width: 10),
+          // Chip skeletons
+          ...List.generate(3, (i) => Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Container(
+              width: i == 0 ? 72 : (i == 1 ? 60 : 48),
+              height: 28,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.04),
+                borderRadius: BorderRadius.circular(16),
+              ),
+            ),
+          )),
+        ],
       ),
     );
   }
 }
 
-// ─── Active Filter Chip (click to edit, X to remove) ────────────
+// ─── Static Filter Label ────────────────────────────────────────
+class _FilterLabel extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.tune_rounded,
+          size: 16,
+          color: Colors.white.withOpacity(0.45),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          '筛选',
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.45),
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Active Filter Chip (click to edit) ─────────────────────────
 class _ActiveFilterChip extends StatefulWidget {
   final String label;
   final VoidCallback onTap;
-  final VoidCallback onRemove;
   const _ActiveFilterChip({
     required this.label,
     required this.onTap,
-    required this.onRemove,
   });
 
   @override
@@ -598,109 +629,18 @@ class _ActiveFilterChipState extends State<_ActiveFilterChip> {
               color: _kPrimaryRed.withOpacity(_hovered ? 0.5 : 0.25),
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                widget.label,
-                style: TextStyle(
-                  color: _kPrimaryRed,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: 4),
-              GestureDetector(
-                onTap: widget.onRemove,
-                child: Icon(
-                  Icons.close_rounded,
-                  size: 14,
-                  color: _kPrimaryRed.withOpacity(_hovered ? 1.0 : 0.7),
-                ),
-              ),
-            ],
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              color: _kPrimaryRed,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ),
     );
   }
-}
-
-// ─── Sticky Filter Bar Delegate ─────────────────────────────────
-class _FilterBarDelegate extends SliverPersistentHeaderDelegate {
-  final List<FilterGroup> filterGroups;
-  final Map<String, String> selectedFilters;
-  final Map<String, String> selectedFilterLabels;
-  final void Function(String groupKey) onOpenGroup;
-  final void Function(String groupKey) onRemoveFilter;
-  final VoidCallback onOpenAllGroups;
-
-  _FilterBarDelegate({
-    required this.filterGroups,
-    required this.selectedFilters,
-    required this.selectedFilterLabels,
-    required this.onOpenGroup,
-    required this.onRemoveFilter,
-    required this.onOpenAllGroups,
-  });
-
-  @override
-  double get minExtent => 44;
-  @override
-  double get maxExtent => 44;
-
-  @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
-    final hasActiveFilters = selectedFilterLabels.isNotEmpty;
-
-    return Container(
-      color: _kBackground,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
-        child: Row(
-          children: [
-            _FilterTriggerButton(onTap: onOpenAllGroups),
-            if (hasActiveFilters) ...[
-              const SizedBox(width: 10),
-              Expanded(
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: selectedFilterLabels.entries.map((entry) {
-                      final k = entry.key.toLowerCase();
-                      String label;
-                      if (k == 'type' || k.contains('cate') || k.contains('type')) {
-                        label = '频道';
-                      } else if (k == 'area' || k.contains('area') || k.contains('region')) {
-                        label = '地区';
-                      } else if (k == 'year' || k.contains('year')) {
-                        label = '年份';
-                      } else if (k == 'sort' || k.contains('sort') || k.contains('order')) {
-                        label = '排序';
-                      } else {
-                        label = '筛选';
-                      }
-                      return Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: _ActiveFilterChip(
-                          label: '$label: ${entry.value}',
-                          onTap: () => onOpenGroup(entry.key),
-                          onRemove: () => onRemoveFilter(entry.key),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  @override
-  bool shouldRebuild(_FilterBarDelegate oldDelegate) => true;
 }
 
 // ─── Single Filter Dimension Sheet ──────────────────────────────
@@ -820,144 +760,6 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
   }
 }
 
-// ─── All Groups Overview Sheet ──────────────────────────────────
-class _AllGroupsSheet extends StatelessWidget {
-  final List<FilterGroup> filterGroups;
-  final Map<String, String> selectedFilters;
-  final Map<String, String> selectedFilterLabels;
-  final void Function(String groupKey) onTapGroup;
-  final VoidCallback onClose;
-
-  const _AllGroupsSheet({
-    required this.filterGroups,
-    required this.selectedFilters,
-    required this.selectedFilterLabels,
-    required this.onTapGroup,
-    required this.onClose,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.55,
-      ),
-      margin: const EdgeInsets.only(top: 80),
-      decoration: const BoxDecoration(
-        color: _kBackground,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Drag handle
-          Padding(
-            padding: const EdgeInsets.only(top: 12, bottom: 4),
-            child: Container(
-              width: 36, height: 4,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.15),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          // Header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-            child: Row(
-              children: [
-                const Text(
-                  '筛选条件',
-                  style: TextStyle(
-                    color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const Spacer(),
-                GestureDetector(
-                  onTap: onClose,
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.06), shape: BoxShape.circle,
-                    ),
-                    child: Icon(Icons.close_rounded, size: 20, color: Colors.white.withOpacity(0.6)),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(color: _kBorder, height: 1, thickness: 1),
-          // Group list
-          Flexible(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Column(
-                children: filterGroups.map((group) {
-                  final k = group.key.toLowerCase();
-                  String label;
-                  if (k == 'type' || k.contains('cate') || k.contains('type')) {
-                    label = '频道';
-                  } else if (k == 'area' || k.contains('area') || k.contains('region')) {
-                    label = '地区';
-                  } else if (k == 'year' || k.contains('year')) {
-                    label = '年份';
-                  } else if (k == 'sort' || k.contains('sort') || k.contains('order')) {
-                    label = '排序';
-                  } else {
-                    label = '筛选';
-                  }
-
-                  final currentValue = selectedFilterLabels[group.key] ?? '';
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: GestureDetector(
-                      onTap: () => onTapGroup(group.key),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        decoration: BoxDecoration(
-                          border: Border(
-                            bottom: BorderSide(color: Colors.white.withOpacity(0.05)),
-                          ),
-                        ),
-                        child: Row(
-                          children: [
-                            Text(
-                              label,
-                              style: const TextStyle(
-                                color: Colors.white70, fontSize: 15, fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const Spacer(),
-                            if (currentValue.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.only(right: 8),
-                                child: Text(
-                                  currentValue,
-                                  style: const TextStyle(
-                                    color: _kPrimaryRed, fontSize: 13, fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            Icon(
-                              Icons.chevron_right_rounded,
-                              size: 20,
-                              color: Colors.white.withOpacity(0.3),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ─── Filter Chip (used inside the bottom sheet) ────────────────
 class _FilterChip extends StatefulWidget {
   final String label;
@@ -1011,4 +813,3 @@ class _FilterChipState extends State<_FilterChip> {
     );
   }
 }
-
