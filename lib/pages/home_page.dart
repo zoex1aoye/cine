@@ -110,11 +110,8 @@ class _HomePageState extends State<HomePage> {
         _loadingCategories = false;
       });
       if (cats.isNotEmpty) {
-        final filterCat = cats.firstWhere(
-          (c) => c.name != '推荐' && c.id != 88 && c.name.toLowerCase() != 'netflix' && c.id != 99,
-          orElse: () => cats.first,
-        );
-        _filterCategoryId = filterCat.id;
+        final navCats = MubuConstants.filterNavigableCategories(cats);
+        _filterCategoryId = navCats.isNotEmpty ? navCats.first.id : cats.first.id;
         _selectedHomeCategoryId = cats.first.id;
         await _loadHomeContent(cats.first.id);
       }
@@ -313,6 +310,7 @@ class _HomePageState extends State<HomePage> {
                       CategoryFilterPage(
                         key: ValueKey(_filterCategoryId),
                         initialCategoryId: _filterCategoryId,
+                        preloadedCategories: MubuConstants.filterNavigableCategories(_categories),
                       ), // 1: Discover
                       _buildBookmarksView(), // 2: Bookmarks
                       _buildHistoryView(), // 3: History
@@ -454,12 +452,19 @@ class _HomePageState extends State<HomePage> {
     return CustomScrollView(
       controller: _bookmarkScrollController,
       slivers: [
-        const SliverToBoxAdapter(
+        SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(24, 20, 24, 10),
-            child: Text(
-              '我的收藏',
-              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+            padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+            child: Row(
+              children: [
+                const Text(
+                  '我的收藏',
+                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                // 占位，与历史页的「清空历史」按钮等高，保持 header 行高一致
+                const SizedBox(width: 80, height: 36),
+              ],
             ),
           ),
         ),
@@ -1178,7 +1183,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                 if (_detail != null && _detail!.description.isNotEmpty) ...[
                   SizedBox(height: UIAdapt.px(context, 12)),
                   SizedBox(
-                    width: MediaQuery.of(context).size.width * 0.5,
+                    width: isSmall ? double.infinity : MediaQuery.of(context).size.width * 0.5,
                     child: Text(
                       _detail!.description,
                       maxLines: 2,
@@ -1194,7 +1199,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                 ] else if (_loadingDetail) ...[
                   SizedBox(height: UIAdapt.px(context, 12)),
                   Container(
-                    width: MediaQuery.of(context).size.width * 0.35,
+                    width: isSmall ? double.infinity : MediaQuery.of(context).size.width * 0.35,
                     height: UIAdapt.px(context, 14),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
@@ -1203,7 +1208,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                   ),
                   SizedBox(height: UIAdapt.px(context, 4)),
                   Container(
-                    width: MediaQuery.of(context).size.width * 0.25,
+                    width: isSmall ? double.infinity : MediaQuery.of(context).size.width * 0.25,
                     height: UIAdapt.px(context, 14),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
@@ -1218,7 +1223,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Play Button with Red Glow Shadow
+                    // Play Button
                     MouseRegion(
                       onEnter: (_) => setState(() => _playHovered = true),
                       onExit: (_) => setState(() => _playHovered = false),
@@ -1229,10 +1234,10 @@ class _HeroBannerState extends State<_HeroBanner> {
                             ? (Matrix4.identity()..translate(0.0, -UIAdapt.px(context, 2.0)))
                             : Matrix4.identity(),
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(isSmall ? 8 : 12),
                           boxShadow: [
                             BoxShadow(
-                              color: kRed.withOpacity(_playHovered ? 0.5 : 0.35),
+                              color: const Color(0xFFE50914).withOpacity(_playHovered ? 0.5 : 0.35),
                               blurRadius: UIAdapt.px(context, _playHovered ? 20 : 12),
                               spreadRadius: 1,
                               offset: Offset(0, UIAdapt.px(context, _playHovered ? 6 : 4)),
@@ -1251,18 +1256,22 @@ class _HeroBannerState extends State<_HeroBanner> {
                             ),
                           ),
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: kRed,
+                            backgroundColor: const Color(0xFFE50914),
                             foregroundColor: Colors.white,
                             elevation: 0,
                             minimumSize: Size(playMinW, UIAdapt.px(context, 48)),
-                            padding: EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 20)),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            padding: isSmall
+                                ? EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 20))
+                                : EdgeInsets.zero,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(isSmall ? 8 : 12),
+                            ),
                           ).copyWith(
                             backgroundColor: WidgetStateProperty.resolveWith((states) {
                               if (states.contains(WidgetState.hovered)) {
                                 return const Color(0xFFF40F1D);
                               }
-                              return kRed;
+                              return const Color(0xFFE50914);
                             }),
                           ),
                         ),

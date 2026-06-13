@@ -17,6 +17,8 @@ abstract class JpPlayer {
   ValueNotifier<Duration> get positionNotifier;
   ValueNotifier<Duration> get durationNotifier;
   ValueNotifier<bool> get isBufferingNotifier;
+  ValueNotifier<int?> get videoWidthNotifier;
+  ValueNotifier<int?> get videoHeightNotifier;
 
   // Build the video rendering widget
   Widget buildVideoWidget(BuildContext context);

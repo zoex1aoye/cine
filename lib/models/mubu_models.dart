@@ -9,6 +9,10 @@ class VideoItem {
   final String year;
   final String score;
   final String category;
+  final int? lastPositionMs;
+  final int? lastDurationMs;
+  final String? lastEpisodeName;
+  final String? lastLineName;
 
   VideoItem({
     required this.id,
@@ -17,6 +21,10 @@ class VideoItem {
     this.year = '',
     this.score = '',
     this.category = '',
+    this.lastPositionMs,
+    this.lastDurationMs,
+    this.lastEpisodeName,
+    this.lastLineName,
   });
 
   factory VideoItem.fromJson(Map<String, dynamic> json) => VideoItem(
@@ -26,6 +34,10 @@ class VideoItem {
         year: json['year'] ?? '',
         score: json['score'] ?? '',
         category: json['category'] ?? '',
+        lastPositionMs: json['lastPositionMs'],
+        lastDurationMs: json['lastDurationMs'],
+        lastEpisodeName: json['lastEpisodeName'],
+        lastLineName: json['lastLineName'],
       );
 
   factory VideoItem.fromSearchResult(SearchResult result) => VideoItem(
@@ -41,6 +53,10 @@ class VideoItem {
         'year': year,
         'score': score,
         'category': category,
+        if (lastPositionMs != null) 'lastPositionMs': lastPositionMs,
+        if (lastDurationMs != null) 'lastDurationMs': lastDurationMs,
+        if (lastEpisodeName != null) 'lastEpisodeName': lastEpisodeName,
+        if (lastLineName != null) 'lastLineName': lastLineName,
       };
 
   /// Build full cover URL based on image domain

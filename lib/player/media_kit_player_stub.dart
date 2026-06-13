@@ -5,20 +5,34 @@ import '../player/jp_player.dart';
 class MediaKitPlayerImpl implements JpPlayer {
   MediaKitPlayerImpl({required String initialUrl});
 
-  @override
-  ValueNotifier<bool> get isInitializedNotifier => ValueNotifier<bool>(true);
+  final _isInitialized = ValueNotifier<bool>(true);
+  final _isPlaying = ValueNotifier<bool>(false);
+  final _position = ValueNotifier<Duration>(Duration.zero);
+  final _duration = ValueNotifier<Duration>(Duration.zero);
+  final _isBuffering = ValueNotifier<bool>(false);
+  final _videoWidth = ValueNotifier<int?>(null);
+  final _videoHeight = ValueNotifier<int?>(null);
 
   @override
-  ValueNotifier<bool> get isPlayingNotifier => ValueNotifier<bool>(false);
+  ValueNotifier<bool> get isInitializedNotifier => _isInitialized;
 
   @override
-  ValueNotifier<Duration> get positionNotifier => ValueNotifier<Duration>(Duration.zero);
+  ValueNotifier<bool> get isPlayingNotifier => _isPlaying;
 
   @override
-  ValueNotifier<Duration> get durationNotifier => ValueNotifier<Duration>(Duration.zero);
+  ValueNotifier<Duration> get positionNotifier => _position;
 
   @override
-  ValueNotifier<bool> get isBufferingNotifier => ValueNotifier<bool>(false);
+  ValueNotifier<Duration> get durationNotifier => _duration;
+
+  @override
+  ValueNotifier<bool> get isBufferingNotifier => _isBuffering;
+
+  @override
+  ValueNotifier<int?> get videoWidthNotifier => _videoWidth;
+
+  @override
+  ValueNotifier<int?> get videoHeightNotifier => _videoHeight;
 
   @override
   Future<void> initialize() async {}
@@ -36,7 +50,15 @@ class MediaKitPlayerImpl implements JpPlayer {
   Future<void> setSource(String url) async {}
 
   @override
-  Future<void> dispose() async {}
+  Future<void> dispose() async {
+    _isInitialized.dispose();
+    _isPlaying.dispose();
+    _position.dispose();
+    _duration.dispose();
+    _isBuffering.dispose();
+    _videoWidth.dispose();
+    _videoHeight.dispose();
+  }
 
   @override
   Widget buildVideoWidget(BuildContext context) => const SizedBox.shrink();

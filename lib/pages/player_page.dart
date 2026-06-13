@@ -11,14 +11,14 @@ import '../api/mubu_storage.dart';
 import '../models/mubu_models.dart';
 import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
-import '../api/mubu_ui_adapt.dart';
+import '../widgets/hover_close_button.dart';
 
 enum LoadingStage { fetchingDetail, testingSpeed, initPlayer, ready, error }
 
 class PlayerPage extends StatefulWidget {
   final VideoItem video;
 
-  const PlayerPage({Key? key, required this.video}) : super(key: key);
+  const PlayerPage({super.key, required this.video});
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -58,6 +58,21 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _expanded = false;
   final LayerLink _lineLink = LayerLink();
 
+  // 视频宽高比（默认 16:9，加载后动态调整）
+  double _videoAspectRatio = 16 / 9;
+  VoidCallback? _widthListener;
+  VoidCallback? _heightListener;
+
+  // Progress save timer
+  Timer? _progressTimer;
+  int _lastSavedPositionMs = -1; // skip save when position hasn't changed
+
+  // Saved progress from history
+  int? _savedPositionMs;
+  int? _savedDurationMs;
+  String? _savedEpisodeName;
+  String? _savedLineName;
+
   @override
   void initState() {
     super.initState();
@@ -74,6 +89,20 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  /// 从历史记录中加载上次播放进度
+  Future<void> _loadSavedProgress() async {
+    final history = await MubuStorage.getHistory();
+    final saved = history.where((item) => item.id == widget.video.id).firstOrNull;
+    if (saved != null && mounted && !_disposed) {
+      setState(() {
+        _savedPositionMs = saved.lastPositionMs;
+        _savedDurationMs = saved.lastDurationMs;
+        _savedEpisodeName = saved.lastEpisodeName;
+        _savedLineName = saved.lastLineName;
+      });
+    }
+  }
+
   Future<void> _toggleBookmark() async {
     await MubuStorage.toggleBookmark(widget.video);
     await _checkBookmarkStatus();
@@ -85,6 +114,8 @@ class _PlayerPageState extends State<PlayerPage> {
       _errorMessage = null;
     });
     if (_disposed) return;
+    // Load saved progress first to avoid race condition
+    await _loadSavedProgress();
     try {
       final detail = await MubuApiClient.instance.getVideoDetail(widget.video.id, isShort: widget.video.category == '短剧' || widget.video.coverPath.contains('short'));
       if (detail == null || detail.sources.isEmpty) {
@@ -101,17 +132,31 @@ class _PlayerPageState extends State<PlayerPage> {
         await _runSpeedTest();
       }
       if (_disposed) return;
-      if (mounted) {
-        setState(() {
-          _stage = LoadingStage.initPlayer;
-        });
-      }
-      await _initPlayer();
-      if (_disposed) return;
-      if (mounted) {
-        setState(() {
-          _stage = LoadingStage.ready;
-        });
+
+      if (_playerInitialized) {
+        // 播放器已在测速期间初始化（普通场景首条快线 或 re-enter 保存线路快）
+        // 下拉框速度标签会在 _runSpeedTest 后续迭代中自动更新
+      } else if (_savedEpisodeName != null && _savedEpisodeName!.isNotEmpty) {
+        // Re-enter: 保存线路慢，需要选源再 init
+        _applySavedEpisodeSelection();
+        if (mounted) {
+          setState(() { _stage = LoadingStage.initPlayer; });
+        }
+        await _initPlayer();
+        if (_disposed) return;
+        if (mounted) {
+          setState(() { _stage = LoadingStage.ready; });
+        }
+      } else {
+        // 普通场景但没有快线 — 用默认源 init
+        if (mounted) {
+          setState(() { _stage = LoadingStage.initPlayer; });
+        }
+        await _initPlayer();
+        if (_disposed) return;
+        if (mounted) {
+          setState(() { _stage = LoadingStage.ready; });
+        }
       }
     } catch (e) {
       if (_disposed) return;
@@ -127,6 +172,14 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Future<void> _initPlayer() async {
     try {
+      // 先清理旧播放器（重试场景）
+      if (_player != null) {
+        if (_widthListener != null) _player!.videoWidthNotifier.removeListener(_widthListener!);
+        if (_heightListener != null) _player!.videoHeightNotifier.removeListener(_heightListener!);
+        await _player!.dispose();
+        _player = null;
+        _playerInitialized = false;
+      }
       final player = MediaKitPlayerImpl(initialUrl: _currentUrl);
       await player.initialize();
       await player.pause();
@@ -134,6 +187,31 @@ class _PlayerPageState extends State<PlayerPage> {
         await player.dispose();
         return;
       }
+      // 等待 duration > 0，确保媒体已加载到可以 seek 的程度
+      if (player.durationNotifier.value <= Duration.zero) {
+        final completer = Completer<void>();
+        void listener() {
+          if (player.durationNotifier.value > Duration.zero && !completer.isCompleted) {
+            completer.complete();
+            player.durationNotifier.removeListener(listener);
+          }
+        }
+        player.durationNotifier.addListener(listener);
+        // 10秒超时保护，避免永远卡住
+        await completer.future.timeout(const Duration(seconds: 10), onTimeout: () {
+          if (!completer.isCompleted) {
+            player.durationNotifier.removeListener(listener);
+            completer.complete();
+          }
+        });
+      }
+      // 监听视频尺寸，动态调整宽高比
+      _widthListener = () => _updateAspectRatio(player);
+      _heightListener = () => _updateAspectRatio(player);
+      player.videoWidthNotifier.addListener(_widthListener!);
+      player.videoHeightNotifier.addListener(_heightListener!);
+      // 立即检查一次（可能已有值）
+      _updateAspectRatio(player);
       if (mounted) {
         setState(() {
           _player = player;
@@ -150,19 +228,109 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void dispose() {
     _disposed = true;
+    _progressTimer?.cancel();
+    if (_widthListener != null) _player?.videoWidthNotifier.removeListener(_widthListener!);
+    if (_heightListener != null) _player?.videoHeightNotifier.removeListener(_heightListener!);
+    // Save final playback position
+    _saveProgress();
     _client?.close();
     _client = null;
     _player?.dispose();
     super.dispose();
   }
 
+  /// 根据视频原始宽高更新播放器宽高比，限制在合理范围内
+  void _updateAspectRatio(MediaKitPlayerImpl player) {
+    final w = player.videoWidthNotifier.value;
+    final h = player.videoHeightNotifier.value;
+    if (w != null && h != null && w > 0 && h > 0) {
+      double ratio = w / h;
+      // 限制最大宽高比防止超宽银幕变形，竖屏视频（如短剧）不限制
+      if (ratio > 2.39) ratio = 2.39;
+      if (ratio != _videoAspectRatio && mounted) {
+        setState(() {
+          _videoAspectRatio = ratio;
+        });
+      }
+    }
+  }
+
+  /// Save current playback position to history (no-op if position hasn't changed or is zero)
+  void _saveProgress() {
+    final pos = _player?.positionNotifier.value;
+    final dur = _player?.durationNotifier.value;
+    if (pos != null && dur != null && dur > Duration.zero && pos > Duration.zero &&
+        _selectedSource >= 0 && _selectedSource < _sources.length) {
+      final posMs = pos.inMilliseconds;
+      // Skip save if position hasn't changed since last save (e.g. video is paused)
+      if (posMs == _lastSavedPositionMs) return;
+      _lastSavedPositionMs = posMs;
+      final episodeName = _sources[_selectedSource].sourceName;
+      final lineName = _sources[_selectedSource].name;
+      MubuStorage.updateProgress(
+        widget.video.id,
+        posMs,
+        dur.inMilliseconds,
+        episodeName,
+        lineName: lineName,
+      );
+    }
+  }
+
+  /// Re-enter 时根据保存的集数名 + 线路名选择播放源（三级优先级）
+  void _applySavedEpisodeSelection() {
+    if (_savedEpisodeName == null || _savedEpisodeName!.isEmpty) return;
+    var matched = false;
+    // 优先级1: 精确匹配 — 同集数名 + 同线路名 + 可用
+    if (_savedLineName != null && _savedLineName!.isNotEmpty) {
+      final exactIdx = _sources.indexWhere((s) =>
+          s.sourceName == _savedEpisodeName &&
+          s.name == _savedLineName &&
+          s.usable &&
+          s.speedMs != null &&
+          s.speedMs! < 999999);
+      if (exactIdx != -1) {
+        _selectedSource = exactIdx;
+        _currentUrl = _sources[exactIdx].url;
+        matched = true;
+        debugPrint('PLAYER: exact match — ${_sources[exactIdx].name} / $_savedEpisodeName');
+      }
+    }
+    // 优先级2: 集数名匹配（任意线路）
+    if (!matched) {
+      for (var i = 0; i < _sources.length; i++) {
+        if (_sources[i].sourceName == _savedEpisodeName && _sources[i].usable &&
+            _sources[i].speedMs != null && _sources[i].speedMs! < 999999) {
+          _selectedSource = i;
+          _currentUrl = _sources[i].url;
+          matched = true;
+          debugPrint('PLAYER: episode match (any line) — ${_sources[i].name} / $_savedEpisodeName');
+          break;
+        }
+      }
+    }
+    // 优先级3: 保存线路不可用，用最快线路匹配同名集数
+    if (!matched && _fastestIndex != null) {
+      final fastestLineName = _sources[_fastestIndex!].name;
+      final matchIdx = _sources.indexWhere((s) =>
+          s.name == fastestLineName && s.sourceName == _savedEpisodeName && s.usable);
+      if (matchIdx != -1) {
+        _selectedSource = matchIdx;
+        _currentUrl = _sources[matchIdx].url;
+      } else {
+        _selectedSource = _fastestIndex!;
+        _currentUrl = _sources[_fastestIndex!].url;
+      }
+      debugPrint('PLAYER: fallback to fastest — $fastestLineName');
+    }
+  }
+
   Future<void> _runSpeedTest() async {
     _client = http.Client();
     _testedCount = 0;
-    const maxConcurrency = 5;
-    const lowLatencyThreshold = 500;
-    const requiredUsableCount = 3;
+    const delayBetweenTests = Duration(milliseconds: 800);
 
+    // 收集唯一线路，re-enter 时把保存的线路排到第一个
     final uniqueLines = <String>{};
     final indices = <int>[];
     for (var i = 0; i < _sources.length; i++) {
@@ -172,7 +340,15 @@ class _PlayerPageState extends State<PlayerPage> {
         indices.add(i);
       }
     }
-    
+
+    if (_savedLineName != null && _savedLineName!.isNotEmpty) {
+      final savedIdx = indices.indexWhere((i) => _sources[i].name == _savedLineName);
+      if (savedIdx > 0) {
+        final idx = indices.removeAt(savedIdx);
+        indices.insert(0, idx);
+      }
+    }
+
     if (mounted && !_disposed) {
       setState(() {
         _indicesToTest = indices;
@@ -180,50 +356,52 @@ class _PlayerPageState extends State<PlayerPage> {
       });
     }
 
-    var nextToTest = 0;
-    var activeCount = 0;
-    var stopTesting = false;
-    final completer = Completer<void>();
+    // 逐条测速 + 延迟间隔
+    final hasSavedLine = _savedLineName != null && _savedLineName!.isNotEmpty;
+    for (var i = 0; i < indices.length && !_disposed; i++) {
+      await _testSource(indices[i], _client!);
+      if (_disposed) break;
+      if (mounted) setState(() => _testedCount++);
 
-    void runNext() {
-      if (_disposed || stopTesting || _client == null || nextToTest >= _indicesToTest.length) {
-        if (activeCount == 0 && !completer.isCompleted) {
-          completer.complete();
+      // 首条快线找到 → 分场景处理
+      if (!_playerInitialized) {
+        final passes = _sources[indices[i]].usable &&
+            _sources[indices[i]].speedMs != null &&
+            _sources[indices[i]].speedMs! < 500;
+        if (passes) {
+          if (hasSavedLine) {
+            // Re-enter: 保存线路排在队首，如果它快就立即 init（URL 正确）
+            // 如果不是保存线路（保存线路慢，这是下一条快线），等测速完再选源
+            if (_sources[indices[i]].name == _savedLineName) {
+              _selectedSource = indices[i];
+              _currentUrl = _sources[indices[i]].url;
+              debugPrint('PLAYER: saved line fast — init immediately');
+              if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+              await _initPlayer();
+              if (_disposed) return;
+              if (mounted) setState(() { _stage = LoadingStage.ready; });
+            }
+            // 非保存线路的快线：不 init，等测速完由 _applySavedEpisodeSelection 决定
+          } else {
+            // 普通场景：无保存记录，首条快线立即 init
+            _selectedSource = indices[i];
+            _currentUrl = _sources[indices[i]].url;
+            debugPrint('PLAYER: first fast line — init immediately');
+            if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+            await _initPlayer();
+            if (_disposed) return;
+            if (mounted) setState(() { _stage = LoadingStage.ready; });
+          }
         }
-        return;
       }
-      final usableLowLatencyLines = _sources.where((s) => s.usable && s.speedMs != null && s.speedMs! < lowLatencyThreshold).length;
-      if (usableLowLatencyLines >= requiredUsableCount) {
-        stopTesting = true;
-        if (activeCount == 0 && !completer.isCompleted) completer.complete();
-        return;
+
+      // 延迟间隔（最后一条不需要等）
+      if (i < indices.length - 1) {
+        await Future.delayed(delayBetweenTests);
       }
-      final idx = _indicesToTest[nextToTest++];
-      activeCount++;
-      _testSource(idx, _client!).then((_) {
-        activeCount--;
-        if (_disposed) {
-          if (activeCount == 0 && !completer.isCompleted) completer.complete();
-          return;
-        }
-        if (mounted) setState(() => _testedCount++);
-        runNext();
-      }).catchError((_) {
-        activeCount--;
-        if (_disposed) {
-          if (activeCount == 0 && !completer.isCompleted) completer.complete();
-          return;
-        }
-        if (mounted) setState(() => _testedCount++);
-        runNext();
-      });
     }
 
-    final initialWorkers = maxConcurrency < _indicesToTest.length ? maxConcurrency : _indicesToTest.length;
-    for (var i = 0; i < initialWorkers; i++) {
-      runNext();
-    }
-    await completer.future;
+    // 测速完成 — 继承同名线路的 speedMs/usable 给未测的源
     _client?.close();
     _client = null;
     if (_disposed) return;
@@ -240,9 +418,8 @@ class _PlayerPageState extends State<PlayerPage> {
         _sources[i].usable = lineUsable[_sources[i].name] ?? true;
       }
     }
-    final usable = _sources.where((s) => s.usable && s.speedMs != null).length;
-    debugPrint('SPEED: done | tested=$_testedCount usable=$usable');
 
+    // 更新最快线路索引（仅用于下拉框标记，不自动切换播放源）
     var fastest = _selectedSource;
     var fastestMs = _sources[_selectedSource].speedMs ?? 999999;
     for (var i = 0; i < _sources.length; i++) {
@@ -254,10 +431,9 @@ class _PlayerPageState extends State<PlayerPage> {
       }
     }
     _fastestIndex = fastest;
-    if (_fastestIndex != _selectedSource) {
-      _selectedSource = _fastestIndex!;
-      _currentUrl = _sources[_fastestIndex!].url;
-    }
+
+    final usable = _sources.where((s) => s.usable && s.speedMs != null).length;
+    debugPrint('SPEED: done | tested=$_testedCount usable=$usable');
   }
 
   Future<void> _testSource(int index, http.Client client) async {
@@ -293,6 +469,8 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   void _switchSource(int index) {
+    // Save progress before switching
+    _saveProgress();
     final src = _sources[index];
     _selectedSource = index;
     _currentUrl = src.url;
@@ -437,8 +615,9 @@ class _PlayerPageState extends State<PlayerPage> {
         bindings: {SingleActivator(LogicalKeyboardKey.escape): () => Navigator.pop(context)},
         child: Scaffold(
           backgroundColor: Colors.black,
-          body: Stack(
-            children: [
+          body: SafeArea(
+            child: Stack(
+              children: [
               // 1. Blurred Movie Poster Background
               _buildBackgroundPoster(),
 
@@ -457,7 +636,7 @@ class _PlayerPageState extends State<PlayerPage> {
                                 Expanded(
                                   flex: isWide ? 65 : 66,
                                   child: AspectRatio(
-                                    aspectRatio: 16 / 9,
+                                    aspectRatio: _videoAspectRatio,
                                     child: _buildVideoPlayerContainer(),
                                   ),
                                 ),
@@ -473,19 +652,22 @@ class _PlayerPageState extends State<PlayerPage> {
                               ],
                             ),
                           )
-                        : SingleChildScrollView(
-                            child: Column(
-                              children: [
-                                Padding(
-                                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                                  child: AspectRatio(
-                                    aspectRatio: 16 / 9,
-                                    child: _buildVideoPlayerContainer(),
-                                  ),
+                        : Column(
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                                child: AspectRatio(
+                                  aspectRatio: _videoAspectRatio,
+                                  child: _buildVideoPlayerContainer(),
                                 ),
-                                _buildMovieInfoAndEpisodes(false),
-                              ],
-                            ),
+                              ),
+                              Expanded(
+                                child: SingleChildScrollView(
+                                  physics: const BouncingScrollPhysics(),
+                                  child: _buildMovieInfoAndEpisodes(false),
+                                ),
+                              ),
+                            ],
                           ),
                   ),
                 ],
@@ -509,11 +691,16 @@ class _PlayerPageState extends State<PlayerPage> {
                   followerAnchor: Alignment.topLeft,
                   child: _buildLineDropdownCard(),
                 ),
+
+              // 5. Full-screen error overlay — last child = on top of everything
+              if (_stage == LoadingStage.error)
+                _buildFullScreenError(),
             ],
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 
   /// 搜索页同款玻璃态圆形图标按钮
@@ -672,12 +859,10 @@ class _PlayerPageState extends State<PlayerPage> {
             ),
           ),
 
-          // 4. Overlays: Error view
-          if (_stage == LoadingStage.error)
-            _buildErrorView(),
+          // 4. Overlays: Error view — removed, now at page level
 
-          // 5. Overlays: ConcentricHud (only visible while loading)
-          if (_stage != LoadingStage.ready)
+          // 5. Overlays: ConcentricHud (only visible while loading, hidden on error)
+          if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
             Center(
               child: ConcentricHud(
                 progress: _loadingProgress,
@@ -700,8 +885,28 @@ class _PlayerPageState extends State<PlayerPage> {
                       setState(() {
                         _startPlayRequested = true;
                       });
-                      _player?.play();
-                      MubuStorage.recordWatch(widget.video);
+                      _player?.play().then((_) {
+                        final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
+                        final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;
+                        MubuStorage.recordWatch(
+                          widget.video,
+                          positionMs: _savedPositionMs,
+                          durationMs: _savedDurationMs,
+                          episodeName: episodeName,
+                          lineName: lineName,
+                        );
+                        // Resume from last saved position (only seek after play starts, buffer needs to be active)
+                        if (_savedPositionMs != null && _savedPositionMs! > 5000) {
+                          _player?.seek(Duration(milliseconds: _savedPositionMs!));
+                        }
+                      }).catchError((e) {
+                        debugPrint('PLAYER: play() failed: $e');
+                      });
+                      // Start periodic progress save every 10 seconds
+                      _progressTimer?.cancel();
+                      _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+                        _saveProgress();
+                      });
                     },
                   ),
                 ),
@@ -826,7 +1031,9 @@ class _PlayerPageState extends State<PlayerPage> {
             style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 12),
-          if (epIndices.isEmpty)
+          if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
+            _buildEpisodeSkeleton()
+          else if (epIndices.isEmpty)
             const Text('暂无剧集数据', style: TextStyle(color: Colors.white24, fontSize: 12))
           else
             LayoutBuilder(
@@ -858,6 +1065,27 @@ class _PlayerPageState extends State<PlayerPage> {
             ),
         ],
       ),
+    );
+  }
+
+  /// 加载中显示的剧集骨架屏
+  Widget _buildEpisodeSkeleton() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            childAspectRatio: 1.6,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: crossAxisCount * 2,
+          itemBuilder: (context, index) => const _EpisodeSkeletonCell(),
+        );
+      },
     );
   }
 
@@ -972,31 +1200,118 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
-  Widget _buildErrorView() {
-    return Center(
-      child: Container(
-        padding: const EdgeInsets.all(24),
-        margin: const EdgeInsets.symmetric(horizontal: 40),
-        decoration: BoxDecoration(
-          color: const Color(0xFF101024),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.redAccent.withAlpha(50)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+  Widget _buildFullScreenError() {
+    final isMobile = MediaQuery.of(context).size.width < 650;
+
+    return Positioned.fill(
+      child: GestureDetector(
+        // Block all taps through the overlay
+        onTap: () {},
+        child: Stack(
           children: [
-            const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
-            const SizedBox(height: 16),
-            Text(_errorMessage ?? '播放出错', style: const TextStyle(color: Colors.white70, fontSize: 14), textAlign: TextAlign.center),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
-              onPressed: _loadAndPrepare,
-              icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _primaryRed,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            // Semi-transparent dark backdrop with blur
+            Positioned.fill(
+              child: ClipRect(
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
+                  child: Container(color: Colors.black.withOpacity(0.65)),
+                ),
+              ),
+            ),
+            // Centered error card
+            Center(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.symmetric(horizontal: isMobile ? 24 : 32),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                    child: Container(
+                      constraints: BoxConstraints(
+                        maxWidth: isMobile ? double.infinity : 420,
+                      ),
+                      padding: EdgeInsets.all(isMobile ? 24 : 36),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF16161A).withOpacity(0.95),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: Colors.white.withOpacity(0.08)),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.85),
+                            blurRadius: 50,
+                            offset: const Offset(0, 25),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Close button (with hover animation)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: HoverCloseButton(
+                              onTap: () => Navigator.pop(context),
+                              size: 18,
+                            ),
+                          ),
+                          SizedBox(height: isMobile ? 4 : 8),
+                          // Video title
+                          Text(
+                            widget.video.title,
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: isMobile ? 17 : 20,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          SizedBox(height: isMobile ? 10 : 14),
+                          // Error message
+                          Text(
+                            _errorMessage?.replaceFirst('Exception: ', '') ?? '播放出错',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.45),
+                              fontSize: isMobile ? 13 : 15,
+                              height: 1.5,
+                            ),
+                          ),
+                          SizedBox(height: isMobile ? 28 : 36),
+                          // Retry button
+                          SizedBox(
+                            width: double.infinity,
+                            height: isMobile ? 46 : 52,
+                            child: ElevatedButton.icon(
+                              onPressed: _loadAndPrepare,
+                              icon: const Icon(Icons.refresh_rounded, size: 20),
+                              label: const Text(
+                                '重试',
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _primaryRed,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                              ).copyWith(
+                                backgroundColor: WidgetStateProperty.resolveWith((states) {
+                                  if (states.contains(WidgetState.hovered)) {
+                                    return const Color(0xFFF40F1D);
+                                  }
+                                  return _primaryRed;
+                                }),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
             ),
           ],
@@ -1010,7 +1325,7 @@ class _PlayerPageState extends State<PlayerPage> {
 class BreathingPlayPulse extends StatefulWidget {
   final VoidCallback onTap;
 
-  const BreathingPlayPulse({Key? key, required this.onTap}) : super(key: key);
+  const BreathingPlayPulse({super.key, required this.onTap});
 
   @override
   State<BreathingPlayPulse> createState() => _BreathingPlayPulseState();
@@ -1179,6 +1494,52 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 剧集列表骨架屏单元格（脉冲动画）
+class _EpisodeSkeletonCell extends StatefulWidget {
+  const _EpisodeSkeletonCell();
+
+  @override
+  State<_EpisodeSkeletonCell> createState() => _EpisodeSkeletonCellState();
+}
+
+class _EpisodeSkeletonCellState extends State<_EpisodeSkeletonCell>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Opacity(
+          opacity: 0.04 + 0.08 * _controller.value,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+            ),
+          ),
+        );
+      },
     );
   }
 }

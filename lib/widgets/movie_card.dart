@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_ui_adapt.dart';
+import '../utils/platform_utils.dart';
 
 class MovieCard extends StatefulWidget {
   final VideoItem video;
@@ -31,6 +32,9 @@ class _MovieCardState extends State<MovieCard> {
   static const Color _kCardBg = Color(0xFF121215);
 
   bool _hovered = false;
+
+  /// Only show hover buttons on desktop platforms
+  bool get _isDesktop => isDesktopPlatform;
 
   @override
   Widget build(BuildContext context) {
@@ -119,10 +123,13 @@ class _MovieCardState extends State<MovieCard> {
                       // Rating score badge
                       if (hasScore)
                         Positioned(
+                          // On mobile with delete: place left to avoid overlap with the top-right delete button
                           top: 8,
-                          right: 8,
+                          left: (widget.onDelete != null && !_isDesktop) ? 8 : null,
+                          right: (widget.onDelete != null && !_isDesktop) ? null : 8,
                           child: AnimatedOpacity(
-                            opacity: (_hovered && widget.onDelete != null) ? 0.0 : 1.0,
+                            // Hide on desktop hover (delete button appears), always visible on mobile
+                            opacity: (widget.onDelete != null && _hovered && _isDesktop) ? 0.0 : 1.0,
                             duration: const Duration(milliseconds: 250),
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -141,53 +148,87 @@ class _MovieCardState extends State<MovieCard> {
                             ),
                           ),
                         ),
-                        
-                      // Hover overlay – play, info, and delete buttons sharing the same plane
-                      AnimatedOpacity(
-                        opacity: _hovered ? 1.0 : 0.0,
-                        duration: const Duration(milliseconds: 250),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.65),
-                          ),
-                          child: Stack(
-                            children: [
-                              // Play & Info buttons centered
-                              Center(
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    _CardOverlayButton(
-                                      icon: Icons.play_arrow_rounded,
-                                      primary: true,
-                                      onTap: widget.onPlay,
-                                      size: widget.buttonSize ??
-                                          UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
-                                    ),
-                                    SizedBox(
-                                        width: UIAdapt.px(
-                                            context, widget.onDelete != null ? 14 : 20)),
-                                    _CardOverlayButton(
-                                      icon: Icons.info_outline_rounded,
-                                      primary: false,
-                                      onTap: widget.onInfo,
-                                      size: widget.buttonSize ??
-                                          UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
-                                    ),
-                                  ],
+
+                      // Play progress bar
+                      if (widget.video.lastPositionMs != null &&
+                          widget.video.lastDurationMs != null &&
+                          widget.video.lastDurationMs! > 0 &&
+                          widget.video.lastPositionMs! > 0)
+                        Positioned(
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          child: AnimatedOpacity(
+                            opacity: _hovered ? 0.0 : 1.0,
+                            duration: const Duration(milliseconds: 250),
+                            child: Container(
+                              height: 3,
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(1.5),
+                                child: LinearProgressIndicator(
+                                  value: (widget.video.lastPositionMs! / widget.video.lastDurationMs!).clamp(0.0, 1.0),
+                                  backgroundColor: Colors.white.withOpacity(0.15),
+                                  valueColor: const AlwaysStoppedAnimation<Color>(_kRed),
                                 ),
                               ),
-                              // Delete button in the top-right corner
-                              if (widget.onDelete != null)
-                                Positioned(
-                                  top: 8,
-                                  right: 8,
-                                  child: _DeleteIconButton(onTap: widget.onDelete!),
-                                ),
-                            ],
+                            ),
                           ),
                         ),
-                      ),
+                      // Hover overlay – play, info, and delete buttons sharing the same plane
+                      // Only render on desktop/web to avoid invisible-but-tappable buttons on mobile
+                      if (_isDesktop)
+                        AnimatedOpacity(
+                          opacity: _hovered ? 1.0 : 0.0,
+                          duration: const Duration(milliseconds: 250),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.65),
+                            ),
+                            child: Stack(
+                              children: [
+                                // Play & Info buttons centered
+                                Center(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      _CardOverlayButton(
+                                        icon: Icons.play_arrow_rounded,
+                                        primary: true,
+                                        onTap: widget.onPlay,
+                                        size: widget.buttonSize ??
+                                            UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
+                                      ),
+                                      SizedBox(
+                                          width: UIAdapt.px(
+                                              context, widget.onDelete != null ? 14 : 20)),
+                                      _CardOverlayButton(
+                                        icon: Icons.info_outline_rounded,
+                                        primary: false,
+                                        onTap: widget.onInfo,
+                                        size: widget.buttonSize ??
+                                            UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                // Delete button in the top-right corner
+                                if (widget.onDelete != null)
+                                  Positioned(
+                                    top: 8,
+                                    right: 8,
+                                    child: _DeleteIconButton(onTap: widget.onDelete!),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      // Mobile: always-visible delete button (no hover needed)
+                      if (!_isDesktop && widget.onDelete != null)
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: _DeleteIconButton(onTap: widget.onDelete!),
+                        ),
                     ],
                   ),
                 ),

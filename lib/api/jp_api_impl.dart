@@ -132,4 +132,5 @@ class JpApiClientImpl implements MubuApiClient {
             ))
         .toList();
   }
+
 }

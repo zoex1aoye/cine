@@ -190,7 +190,7 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
               Expanded(
                 flex: 3,
                 child: Container(
-                  height: UIAdapt.px(context, 48),
+                  height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(12),
                     boxShadow: [
@@ -204,11 +204,11 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                   ),
                   child: ElevatedButton.icon(
                     onPressed: widget.onPlay,
-                    icon: Icon(Icons.play_circle_fill_rounded, size: UIAdapt.px(context, 20)),
+                    icon: Icon(Icons.play_circle_fill_rounded, size: isWide ? UIAdapt.px(context, 20) : UIAdapt.px(context, 16)),
                     label: Text(
                       '开始播放',
                       style: TextStyle(
-                        fontSize: UIAdapt.fontSize(context, 14),
+                        fontSize: isWide ? UIAdapt.fontSize(context, 14) : UIAdapt.fontSize(context, 12),
                         fontWeight: FontWeight.bold,
                         letterSpacing: 0.5,
                       ),
@@ -230,22 +230,22 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                   ),
                 ),
               ),
-              SizedBox(width: UIAdapt.px(context, 12)),
+              SizedBox(width: UIAdapt.px(context, isWide ? 12 : 8)),
               // Glassmorphic Favorite Button (Rectangular Text + Icon)
               Expanded(
                 flex: 2,
                 child: Container(
-                  height: UIAdapt.px(context, 48),
+                  height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
                   child: ElevatedButton.icon(
                     onPressed: _toggleBookmark,
                     icon: Icon(
                       _isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-                      size: UIAdapt.px(context, 18),
+                      size: isWide ? UIAdapt.px(context, 18) : UIAdapt.px(context, 15),
                     ),
                     label: Text(
-                      _isBookmarked ? '已收藏' : '加入收藏',
+                      '收藏',
                       style: TextStyle(
-                        fontSize: UIAdapt.fontSize(context, 14),
+                        fontSize: isWide ? UIAdapt.fontSize(context, 14) : UIAdapt.fontSize(context, 12),
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0.5,
                       ),

@@ -22,6 +22,8 @@ class MediaKitPlayerImpl implements JpPlayer {
   final ValueNotifier<Duration> _position = ValueNotifier(Duration.zero);
   final ValueNotifier<Duration> _duration = ValueNotifier(Duration.zero);
   final ValueNotifier<bool> _isBuffering = ValueNotifier(false);
+  final ValueNotifier<int?> _videoWidth = ValueNotifier(null);
+  final ValueNotifier<int?> _videoHeight = ValueNotifier(null);
 
   final List<StreamSubscription> _subscriptions = [];
 
@@ -41,6 +43,12 @@ class MediaKitPlayerImpl implements JpPlayer {
 
   @override
   ValueNotifier<bool> get isBufferingNotifier => _isBuffering;
+
+  @override
+  ValueNotifier<int?> get videoWidthNotifier => _videoWidth;
+
+  @override
+  ValueNotifier<int?> get videoHeightNotifier => _videoHeight;
 
   @override
   Future<void> initialize() async {
@@ -101,6 +109,12 @@ class MediaKitPlayerImpl implements JpPlayer {
     _subscriptions.add(_player.stream.buffering.listen((buf) {
       _isBuffering.value = buf;
     }));
+    _subscriptions.add(_player.stream.width.listen((w) {
+      _videoWidth.value = w;
+    }));
+    _subscriptions.add(_player.stream.height.listen((h) {
+      _videoHeight.value = h;
+    }));
 
     // 打开视频源
     await _player.open(Media(initialUrl));
@@ -135,6 +149,8 @@ class MediaKitPlayerImpl implements JpPlayer {
     _position.dispose();
     _duration.dispose();
     _isBuffering.dispose();
+    _videoWidth.dispose();
+    _videoHeight.dispose();
   }
 
   @override

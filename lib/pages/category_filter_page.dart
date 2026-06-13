@@ -1,6 +1,8 @@
 // lib/pages/category_filter_page.dart
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../api/mubu_api_client.dart';
+import '../widgets/hover_close_button.dart';
 import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
 import '../widgets/movie_info_dialog.dart';
@@ -18,10 +20,13 @@ const _kChipHover = Color(0x1AFFFFFF);
 
 class CategoryFilterPage extends StatefulWidget {
   final int? initialCategoryId;
+  /// 可选：由父级预加载的分类列表，传入后跳过 API 请求
+  final List<CategoryItem>? preloadedCategories;
 
   const CategoryFilterPage({
     super.key,
     this.initialCategoryId,
+    this.preloadedCategories,
   });
 
   @override
@@ -68,7 +73,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     if (!_scrollController.hasClients) return;
     final maxScroll = _scrollController.position.maxScrollExtent;
     final currentScroll = _scrollController.position.pixels;
-    if (maxScroll - currentScroll <= 200) {
+    if (maxScroll - currentScroll <= 200 && _hasMore) {
       _loadVideos(reset: false);
     }
   }
@@ -87,12 +92,14 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     });
 
     try {
-      final cats = await _api.getHomeCategorys();
-      if (!mounted) return;
-      _categories = cats.where((c) =>
-        c.name != '推荐' && c.id != 88 &&
-        c.name.toLowerCase() != 'netflix' && c.id != 99
-      ).toList();
+      // 优先使用父级预加载的分类，避免重复 API 请求
+      if (widget.preloadedCategories != null) {
+        _categories = widget.preloadedCategories!;
+      } else {
+        final cats = await _api.getHomeCategorys();
+        if (!mounted) return;
+        _categories = MubuConstants.filterNavigableCategories(cats);
+      }
       if (_categories.isNotEmpty) {
         final hasInitial = widget.initialCategoryId != null &&
             _categories.any((c) => c.id == widget.initialCategoryId);
@@ -169,15 +176,17 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       String sortVal = '';
 
       _selectedFilters.forEach((k, v) {
-        final lowerK = k.toLowerCase();
-        if (lowerK == 'type' || lowerK.contains('cate') || lowerK.contains('type')) {
-          typeVal = v;
-        } else if (lowerK == 'area' || lowerK.contains('area') || lowerK.contains('region')) {
-          areaVal = v;
-        } else if (lowerK == 'year' || lowerK.contains('year')) {
-          yearVal = v;
-        } else if (lowerK == 'sort' || lowerK.contains('sort') || lowerK.contains('order')) {
-          sortVal = v;
+        switch (MubuConstants.classifyFilterKey(k)) {
+          case FilterParam.type:
+            typeVal = v;
+          case FilterParam.area:
+            areaVal = v;
+          case FilterParam.year:
+            yearVal = v;
+          case FilterParam.sort:
+            sortVal = v;
+          case FilterParam.unknown:
+            break;
         }
       });
 
@@ -259,11 +268,26 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
             },
           ),
         );
+      } else {
+        // API returned null — show a brief toast so the user knows something happened
+        if (context.mounted) {
+          _showInfoError(context, video.title);
+        }
       }
     } catch (e) {
       if (!mounted) return;
       Navigator.pop(context);
+      if (context.mounted) {
+        _showInfoError(context, video.title);
+      }
     }
+  }
+
+  void _showInfoError(BuildContext ctx, String title) {
+    showDialog(
+      context: ctx,
+      builder: (ctx) => _InfoErrorDialog(title: title),
+    );
   }
 
   /// Open picker for a single filter dimension (e.g. just "频道")
@@ -348,19 +372,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: _selectedFilterLabels.entries.map((entry) {
-                    final k = entry.key.toLowerCase();
-                    String label;
-                    if (k == 'type' || k.contains('cate') || k.contains('type')) {
-                      label = '频道';
-                    } else if (k == 'area' || k.contains('area') || k.contains('region')) {
-                      label = '地区';
-                    } else if (k == 'year' || k.contains('year')) {
-                      label = '年份';
-                    } else if (k == 'sort' || k.contains('sort') || k.contains('order')) {
-                      label = '排序';
-                    } else {
-                      label = '筛选';
-                    }
+                    final label = MubuConstants.filterKeyLabel(entry.key);
                     return Padding(
                       padding: const EdgeInsets.only(right: 8),
                       child: _ActiveFilterChip(
@@ -750,13 +762,134 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
     );
   }
 
-  String _groupLabel(String key) {
-    final k = key.toLowerCase();
-    if (k == 'type' || k.contains('cate') || k.contains('type')) return '频道';
-    if (k == 'area' || k.contains('area') || k.contains('region')) return '地区';
-    if (k == 'year' || k.contains('year')) return '年份';
-    if (k == 'sort' || k.contains('sort') || k.contains('order')) return '排序';
-    return '筛选';
+  String _groupLabel(String key) => MubuConstants.filterKeyLabel(key);
+}
+
+// ─── Info Error Dialog (when detail API fails) ─────────────────
+class _InfoErrorDialog extends StatelessWidget {
+  final String title;
+  const _InfoErrorDialog({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isMobile = screenWidth < 650;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: Stack(
+        children: [
+          // Semi-transparent dark backdrop with blur
+          Positioned.fill(
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
+                child: Container(color: Colors.black.withOpacity(0.65)),
+              ),
+            ),
+          ),
+          // Centered error card
+          Center(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.symmetric(horizontal: isMobile ? 24 : 32),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(18),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                  child: Container(
+                    constraints: BoxConstraints(
+                      maxWidth: isMobile ? double.infinity : 420,
+                    ),
+                    padding: EdgeInsets.all(isMobile ? 24 : 32),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF16161A).withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: Colors.white.withOpacity(0.08)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.85),
+                          blurRadius: 50,
+                          offset: const Offset(0, 25),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Close button (with hover animation)
+                        Align(
+                          alignment: Alignment.centerRight,
+                            child: HoverCloseButton(
+                            onTap: () => Navigator.pop(context),
+                            size: 18,
+                          ),
+                        ),
+                        SizedBox(height: isMobile ? 4 : 8),
+                        // Title
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isMobile ? 17 : 20,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        SizedBox(height: isMobile ? 10 : 14),
+                        // Subtitle
+                        Text(
+                          '暂时无法获取影片详情\n可能是数据源暂未收录该影片',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.45),
+                            fontSize: isMobile ? 13 : 15,
+                            height: 1.5,
+                          ),
+                        ),
+                        SizedBox(height: isMobile ? 28 : 36),
+                        // OK button
+                        SizedBox(
+                          width: double.infinity,
+                          height: isMobile ? 46 : 52,
+                          child: ElevatedButton(
+                            onPressed: () => Navigator.pop(context),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _kPrimaryRed,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ).copyWith(
+                              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                                if (states.contains(WidgetState.hovered)) {
+                                  return const Color(0xFFF40F1D);
+                                }
+                                return _kPrimaryRed;
+                              }),
+                            ),
+                            child: const Text(
+                              '知道了',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
