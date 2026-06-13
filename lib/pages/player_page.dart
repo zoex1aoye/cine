@@ -275,8 +275,8 @@ class _PlayerPageState extends State<PlayerPage> {
     }
 
     // 竖屏视频：根据滚动位置动态调整
-    final fullHeight = screenHeight * 0.82;
-    final minHeight = screenHeight * 0.55;
+    final fullHeight = screenHeight * 0.65;
+    final minHeight = screenHeight * 0.40;
 
     // 向上滚动 80px 内完成过渡
     final scrollProgress = (_scrollOffset / 80.0).clamp(0.0, 1.0);
@@ -1019,6 +1019,97 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  /// 弹出底部选集浮层
+  void _showEpisodesBottomSheet() {
+    final epIndices = _currentLineSourceIndices;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.55,
+          minChildSize: 0.3,
+          maxChildSize: 0.85,
+          builder: (context, scrollController) {
+            return Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF16161A),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(20),
+                  topRight: Radius.circular(20),
+                ),
+                border: Border.all(color: Colors.white.withOpacity(0.08)),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 5,
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '剧集列表 (${epIndices.length})',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: GridView.builder(
+                      controller: scrollController,
+                      physics: const BouncingScrollPhysics(),
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 4,
+                        childAspectRatio: 1.6,
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                      ),
+                      itemCount: epIndices.length,
+                      itemBuilder: (context, index) {
+                        final sourceIdx = epIndices[index];
+                        final s = _sources[sourceIdx];
+                        final active = sourceIdx == _selectedSource;
+
+                        return _EpisodeButton(
+                          label: s.sourceName,
+                          active: active,
+                          onTap: () {
+                            _switchSource(sourceIdx);
+                            Navigator.pop(context);
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildMovieInfoAndEpisodes(bool isWide) {
     final epIndices = _currentLineSourceIndices;
     final metaString = [
@@ -1115,7 +1206,7 @@ class _PlayerPageState extends State<PlayerPage> {
             Text(
               _description,
               style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 13, height: 1.5),
-              maxLines: 4,
+              maxLines: _isPortraitVideo ? 2 : 4,
               overflow: TextOverflow.ellipsis,
             ),
           ],
@@ -1124,43 +1215,67 @@ class _PlayerPageState extends State<PlayerPage> {
           Divider(color: Colors.white.withOpacity(0.05), height: 1),
           const SizedBox(height: 16),
 
-          Text(
-            '剧集列表 (${epIndices.length})',
-            style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 12),
-          if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
-            _buildEpisodeSkeleton()
-          else if (epIndices.isEmpty)
-            const Text('暂无剧集数据', style: TextStyle(color: Colors.white24, fontSize: 12))
-          else
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
-                return GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: crossAxisCount,
-                    childAspectRatio: 1.6,
-                    crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
+          // 移动竖屏短剧下显示专用的弹窗触发器按钮，从而节省首屏空间
+          if (!isWide && _isPortraitVideo) ...[
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton.icon(
+                onPressed: _showEpisodesBottomSheet,
+                icon: const Icon(Icons.playlist_play_rounded, size: 22),
+                label: Text(
+                  '选集 (当前：${_sources.isNotEmpty ? _sources[_selectedSource].sourceName : '1'})',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.white.withOpacity(0.06),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    side: BorderSide(color: Colors.white.withOpacity(0.08)),
                   ),
-                  itemCount: epIndices.length,
-                  itemBuilder: (context, index) {
-                    final sourceIdx = epIndices[index];
-                    final s = _sources[sourceIdx];
-                    final active = sourceIdx == _selectedSource;
-
-                    return _EpisodeButton(
-                      label: s.sourceName,
-                      active: active,
-                      onTap: () => _switchSource(sourceIdx),
-                    );
-                  },
-                );
-              },
+                ),
+              ),
             ),
+          ] else ...[
+            Text(
+              '剧集列表 (${epIndices.length})',
+              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
+              _buildEpisodeSkeleton()
+            else if (epIndices.isEmpty)
+              const Text('暂无剧集数据', style: TextStyle(color: Colors.white24, fontSize: 12))
+            else
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
+                  return GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: crossAxisCount,
+                      childAspectRatio: 1.6,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                    ),
+                    itemCount: epIndices.length,
+                    itemBuilder: (context, index) {
+                      final sourceIdx = epIndices[index];
+                      final s = _sources[sourceIdx];
+                      final active = sourceIdx == _selectedSource;
+
+                      return _EpisodeButton(
+                        label: s.sourceName,
+                        active: active,
+                        onTap: () => _switchSource(sourceIdx),
+                      );
+                    },
+                  );
+                },
+              ),
+          ],
         ],
       ),
     );

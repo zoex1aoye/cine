@@ -74,7 +74,9 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     final maxScroll = _scrollController.position.maxScrollExtent;
     final currentScroll = _scrollController.position.pixels;
     if (maxScroll - currentScroll <= 200 && _hasMore) {
-      _loadVideos(reset: false);
+      if (_activeCategoryId != null) {
+        _loadVideos(_activeCategoryId!, reset: false);
+      }
     }
   }
 
@@ -105,7 +107,9 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
             _categories.any((c) => c.id == widget.initialCategoryId);
         _activeCategoryId = hasInitial ? widget.initialCategoryId : _categories.first.id;
       }
-      await _loadFiltersAndVideos();
+      if (_activeCategoryId != null) {
+        await _loadFiltersAndVideos(_activeCategoryId!);
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -115,16 +119,17 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     }
   }
 
-  Future<void> _loadFiltersAndVideos() async {
-    if (_activeCategoryId == null) return;
+  Future<void> _loadFiltersAndVideos(int catId) async {
     setState(() {
       _loadingFilters = true;
       _error = null;
     });
 
     try {
-      final filters = await _api.getFilterOptions(_activeCategoryId!);
+      final filters = await _api.getFilterOptions(catId);
       if (!mounted) return;
+      if (catId != _activeCategoryId) return;
+
       setState(() {
         _filterGroups = filters;
         _selectedFilters.clear();
@@ -140,13 +145,16 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       });
       // Keep _loadingFilters true until _loadVideos completes so the build
       // never sees an empty _videos + no-loading state.
-      await _loadVideos(reset: true);
+      await _loadVideos(catId, reset: true);
       if (!mounted) return;
+      if (catId != _activeCategoryId) return;
+
       setState(() {
         _loadingFilters = false;
       });
     } catch (e) {
       if (!mounted) return;
+      if (catId != _activeCategoryId) return;
       setState(() {
         _error = '加载筛选选项失败: $e';
         _loadingFilters = false;
@@ -154,8 +162,8 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     }
   }
 
-  Future<void> _loadVideos({bool reset = false}) async {
-    if (_activeCategoryId == null || _loadingVideos) return;
+  Future<void> _loadVideos(int catId, {bool reset = false}) async {
+    if (_loadingVideos) return;
 
     int targetPage = reset ? 1 : _page + 1;
 
@@ -191,7 +199,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       });
 
       final newVideos = await _api.getFilteredVideos(
-        fcatePid: _activeCategoryId!,
+        fcatePid: catId,
         type: typeVal,
         area: areaVal,
         year: yearVal,
@@ -199,6 +207,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         page: targetPage,
       );
       if (!mounted) return;
+      if (catId != _activeCategoryId) return;
 
       if (reset && _scrollController.hasClients) {
         _scrollController.animateTo(
@@ -221,6 +230,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     } catch (e) {
       debugPrint('FILTER: Failed to load videos: $e');
       if (!mounted) return;
+      if (catId != _activeCategoryId) return;
       setState(() {
         _loadingVideos = false;
         _error = '加载视频列表失败: $e';
@@ -232,7 +242,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     if (_activeCategoryId == categoryId) return;
     // Don't setState here — _loadFiltersAndVideos handles loading state entirely
     _activeCategoryId = categoryId;
-    _loadFiltersAndVideos();
+    _loadFiltersAndVideos(categoryId);
   }
 
   void _playVideo(VideoItem video) {
@@ -320,7 +330,9 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         _selectedFilterLabels.remove(key);
       }
     });
-    _loadVideos(reset: true);
+    if (_activeCategoryId != null) {
+      _loadVideos(_activeCategoryId!, reset: true);
+    }
   }
 
   // ── Build ──────────────────────────────────────────────────────────────
@@ -508,7 +520,11 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Center(
-          child: LoadMoreButton(onTap: () => _loadVideos(reset: false)),
+          child: LoadMoreButton(onTap: () {
+            if (_activeCategoryId != null) {
+              _loadVideos(_activeCategoryId!, reset: false);
+            }
+          }),
         ),
       );
     }

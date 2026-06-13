@@ -556,7 +556,7 @@ class _HomePageState extends State<HomePage> {
                       await _loadBookmarksAndHistory();
                     },
                     icon: const Icon(Icons.delete_sweep, color: kRed, size: 18),
-                    label: const Text('清空历史', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
+                    label: const Text('清空', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
                   ),
                 ),
               ],
