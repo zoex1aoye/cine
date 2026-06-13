@@ -40,6 +40,7 @@ class _PlayerPageState extends State<PlayerPage> {
   String _currentUrl = '';
   int _selectedSource = 0;
   int? _fastestIndex;
+  String _description = '';
 
   // Speed‑test progress
   int _testedCount = 0;
@@ -73,9 +74,14 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _savedEpisodeName;
   String? _savedLineName;
 
+  // Sticky player for portrait videos
+  final ScrollController _scrollController = ScrollController();
+  double _scrollOffset = 0.0;
+
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     _checkBookmarkStatus();
     _loadAndPrepare();
   }
@@ -123,6 +129,7 @@ class _PlayerPageState extends State<PlayerPage> {
       }
       _sources = detail.sources;
       _currentUrl = detail.bestUrl ?? '';
+      _description = detail.description;
       if (mounted) {
         setState(() {
           _stage = LoadingStage.testingSpeed;
@@ -229,6 +236,8 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     _disposed = true;
     _progressTimer?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     if (_widthListener != null) _player?.videoWidthNotifier.removeListener(_widthListener!);
     if (_heightListener != null) _player?.videoHeightNotifier.removeListener(_heightListener!);
     // Save final playback position
@@ -251,6 +260,40 @@ class _PlayerPageState extends State<PlayerPage> {
         setState(() {
           _videoAspectRatio = ratio;
         });
+      }
+    }
+  }
+
+  /// 是否为竖屏视频（高度 > 宽度）
+  bool get _isPortraitVideo => _videoAspectRatio < 1.0;
+
+  /// 计算视频区域的实际高度
+  double _calculateVideoHeight(double screenHeight) {
+    if (!_isPortraitVideo) {
+      // 横屏视频：使用 AspectRatio，不限制
+      return screenHeight * 0.5;
+    }
+
+    // 竖屏视频：根据滚动位置动态调整
+    final fullHeight = screenHeight * 0.82;
+    final minHeight = screenHeight * 0.55;
+
+    // 向上滚动 80px 内完成过渡
+    final scrollProgress = (_scrollOffset / 80.0).clamp(0.0, 1.0);
+
+    return fullHeight - (fullHeight - minHeight) * scrollProgress;
+  }
+
+  /// 滚动监听回调
+  void _onScroll() {
+    if (_scrollController.hasClients && mounted) {
+      final double offset = _scrollController.offset;
+      if (offset <= 80.0 || _scrollOffset <= 80.0) {
+        setState(() {
+          _scrollOffset = offset;
+        });
+      } else {
+        _scrollOffset = offset;
       }
     }
   }
@@ -652,23 +695,25 @@ class _PlayerPageState extends State<PlayerPage> {
                               ],
                             ),
                           )
-                        : Column(
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                                child: AspectRatio(
-                                  aspectRatio: _videoAspectRatio,
-                                  child: _buildVideoPlayerContainer(),
-                                ),
+                        : _isPortraitVideo
+                            ? _buildPortraitLayout()
+                            : Column(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                                    child: AspectRatio(
+                                      aspectRatio: _videoAspectRatio,
+                                      child: _buildVideoPlayerContainer(),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: SingleChildScrollView(
+                                      physics: const BouncingScrollPhysics(),
+                                      child: _buildMovieInfoAndEpisodes(false),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              Expanded(
-                                child: SingleChildScrollView(
-                                  physics: const BouncingScrollPhysics(),
-                                  child: _buildMovieInfoAndEpisodes(false),
-                                ),
-                              ),
-                            ],
-                          ),
                   ),
                 ],
               ),
@@ -687,8 +732,8 @@ class _PlayerPageState extends State<PlayerPage> {
                 CompositedTransformFollower(
                   link: _lineLink,
                   offset: const Offset(0, 8),
-                  targetAnchor: Alignment.bottomLeft,
-                  followerAnchor: Alignment.topLeft,
+                  targetAnchor: useRowLayout ? Alignment.bottomRight : Alignment.bottomLeft,
+                  followerAnchor: useRowLayout ? Alignment.topRight : Alignment.topLeft,
                   child: _buildLineDropdownCard(),
                 ),
 
@@ -812,13 +857,17 @@ class _PlayerPageState extends State<PlayerPage> {
         borderRadius: BorderRadius.circular(16),
         // Sharp border is layered on top of the Stack children to avoid being blurred by BackdropFilter
       ),
-      clipBehavior: Clip.antiAlias,
       child: Stack(
         alignment: Alignment.center,
         children: [
           // 1. Video Widget
           if (_stage == LoadingStage.ready && _playerInitialized && _player != null && _startPlayRequested)
-            Positioned.fill(child: _player!.buildVideoWidget(context)),
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: _player!.buildVideoWidget(context),
+              ),
+            ),
 
           // 2. 播放器封面海报图 (当播放开始后淡出，并使用 IgnorePointer 避免遮挡鼠标/触控事件)
           if (coverUrl.isNotEmpty)
@@ -829,10 +878,13 @@ class _PlayerPageState extends State<PlayerPage> {
                   duration: const Duration(milliseconds: 600),
                   opacity: showOverlay ? 1.0 : 0.0,
                   curve: Curves.easeOutCubic,
-                  child: CachedNetworkImage(
-                    imageUrl: coverUrl,
-                    fit: BoxFit.cover,
-                    errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: CachedNetworkImage(
+                      imageUrl: coverUrl,
+                      fit: BoxFit.cover,
+                      errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                    ),
                   ),
                 ),
               ),
@@ -930,6 +982,43 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  /// 竖屏视频布局（支持 sticky player）
+  Widget _buildPortraitLayout() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final videoHeight = _calculateVideoHeight(constraints.maxHeight);
+        return Stack(
+          children: [
+            // 视频区域（sticky，固定在顶部）
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: videoHeight,
+              child: Container(
+                color: Colors.black,
+                child: _buildVideoPlayerContainer(),
+              ),
+            ),
+
+            // 内容区域（从视频下方开始滚动）
+            Positioned(
+              top: videoHeight,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                physics: const BouncingScrollPhysics(),
+                child: _buildMovieInfoAndEpisodes(false),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildMovieInfoAndEpisodes(bool isWide) {
     final epIndices = _currentLineSourceIndices;
     final metaString = [
@@ -1021,8 +1110,17 @@ class _PlayerPageState extends State<PlayerPage> {
             widget.video.score.isNotEmpty ? '评分：${widget.video.score}' : '暂无评分',
             style: const TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold),
           ),
+          if (_description.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Text(
+              _description,
+              style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 13, height: 1.5),
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
           const SizedBox(height: 16),
-          
+
           Divider(color: Colors.white.withOpacity(0.05), height: 1),
           const SizedBox(height: 16),
 
@@ -1091,12 +1189,18 @@ class _PlayerPageState extends State<PlayerPage> {
 
   Widget _buildLineDropdownCard() {
     final lines = _uniqueLineNames;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final isSmallHeight = screenHeight < 500;
+    final dropdownMaxWidth = (screenWidth - 48).clamp(200.0, 320.0); // 左右各留24px安全边距
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
-          width: 280,
+          width: dropdownMaxWidth,
+          constraints: const BoxConstraints(minWidth: 200),
           decoration: BoxDecoration(
             color: const Color(0xFF16161A).withOpacity(0.95),
             borderRadius: BorderRadius.circular(16),
@@ -1109,7 +1213,7 @@ class _PlayerPageState extends State<PlayerPage> {
               ),
             ],
           ),
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.all(isSmallHeight ? 10 : 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1126,9 +1230,9 @@ class _PlayerPageState extends State<PlayerPage> {
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: isSmallHeight ? 8 : 12),
               ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 200),
+                constraints: BoxConstraints(maxHeight: isSmallHeight ? 100 : 200),
                 child: ListView.builder(
                   shrinkWrap: true,
                   itemCount: lines.length,
@@ -1145,8 +1249,8 @@ class _PlayerPageState extends State<PlayerPage> {
                         setState(() => _expanded = false);
                       },
                       child: Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
+                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: isSmallHeight ? 6 : 8),
                         decoration: BoxDecoration(
                           color: active ? _primaryRed : Colors.white.withAlpha(10),
                           borderRadius: BorderRadius.circular(8),

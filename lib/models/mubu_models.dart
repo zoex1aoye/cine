@@ -13,6 +13,7 @@ class VideoItem {
   final int? lastDurationMs;
   final String? lastEpisodeName;
   final String? lastLineName;
+  final String description;
 
   VideoItem({
     required this.id,
@@ -25,6 +26,7 @@ class VideoItem {
     this.lastDurationMs,
     this.lastEpisodeName,
     this.lastLineName,
+    this.description = '',
   });
 
   factory VideoItem.fromJson(Map<String, dynamic> json) => VideoItem(
@@ -38,6 +40,7 @@ class VideoItem {
         lastDurationMs: json['lastDurationMs'],
         lastEpisodeName: json['lastEpisodeName'],
         lastLineName: json['lastLineName'],
+        description: json['description'] ?? '',
       );
 
   factory VideoItem.fromSearchResult(SearchResult result) => VideoItem(
@@ -57,6 +60,7 @@ class VideoItem {
         if (lastDurationMs != null) 'lastDurationMs': lastDurationMs,
         if (lastEpisodeName != null) 'lastEpisodeName': lastEpisodeName,
         if (lastLineName != null) 'lastLineName': lastLineName,
+        if (description.isNotEmpty) 'description': description,
       };
 
   /// Build full cover URL based on image domain

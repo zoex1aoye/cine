@@ -154,5 +154,8 @@ class MediaKitPlayerImpl implements JpPlayer {
   }
 
   @override
-  Widget buildVideoWidget(BuildContext context) => Video(controller: _controller);
+  Widget buildVideoWidget(BuildContext context) => Video(
+    controller: _controller,
+    fit: BoxFit.cover,
+  );
 }

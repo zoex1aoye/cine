@@ -26,7 +26,7 @@ class MubuConstants {
   /// 将 filter key 映射为人类可读的中文标签
   static String filterKeyLabel(String key) {
     final k = key.toLowerCase();
-    if (k == 'type') return '频道';
+    if (k == 'type' || k == 'category_id') return '频道';
     if (k == 'area') return '地区';
     if (k == 'year') return '年份';
     if (k == 'sort') return '排序';
@@ -35,10 +35,11 @@ class MubuConstants {
 
   static FilterParam classifyFilterKey(String key) {
     final k = key.toLowerCase();
-    if (k == 'type') return FilterParam.type;
+    if (k == 'type' || k == 'category_id') return FilterParam.type;
     if (k == 'area') return FilterParam.area;
     if (k == 'year') return FilterParam.year;
     if (k == 'sort') return FilterParam.sort;
     return FilterParam.unknown;
   }
 }
+

@@ -462,8 +462,11 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const Spacer(),
-                // 占位，与历史页的「清空历史」按钮等高，保持 header 行高一致
-                const SizedBox(width: 80, height: 36),
+                // 与历史页清空按钮等高占位
+                const SizedBox(
+                  width: 100,
+                  height: 40,
+                ),
               ],
             ),
           ),
@@ -478,6 +481,7 @@ class _HomePageState extends State<HomePage> {
               await MubuStorage.toggleBookmark(video);
               await _loadBookmarksAndHistory();
             },
+            showSubtitle: false,
           ),
         ),
         if (_bookmarkLoadingMore)
@@ -543,13 +547,17 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const Spacer(),
-                TextButton.icon(
-                  onPressed: () async {
-                    await MubuStorage.clearHistory();
-                    await _loadBookmarksAndHistory();
-                  },
-                  icon: const Icon(Icons.delete_sweep, color: kRed, size: 18),
-                  label: const Text('清空历史', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
+                SizedBox(
+                  width: 100,
+                  height: 40,
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      await MubuStorage.clearHistory();
+                      await _loadBookmarksAndHistory();
+                    },
+                    icon: const Icon(Icons.delete_sweep, color: kRed, size: 18),
+                    label: const Text('清空历史', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
+                  ),
                 ),
               ],
             ),
@@ -565,6 +573,7 @@ class _HomePageState extends State<HomePage> {
               await MubuStorage.deleteHistoryItem(video.id);
               await _loadBookmarksAndHistory();
             },
+            showSubtitle: false,
           ),
         ),
         if (_historyLoadingMore)
@@ -1391,18 +1400,8 @@ class _TagSectionState extends State<_TagSection> {
     }
 
     final w = MediaQuery.of(context).size.width;
-    int cols = 4;
-    if (w >= 1400) {
-      cols = 6;
-    } else if (w >= 1100) {
-      cols = 5;
-    } else if (w >= 850) {
-      cols = 4;
-    } else if (w >= 600) {
-      cols = 3;
-    } else {
-      cols = 2;
-    }
+    final contentWidth = w - 48.0;
+    final cols = MovieSliverGrid.calculateColumns(contentWidth);
 
     final displayVideos = _videos.take(cols).toList();
 
@@ -1505,14 +1504,6 @@ class _SkeletonGridState extends State<_SkeletonGrid> with SingleTickerProviderS
 
   @override
   Widget build(BuildContext context) {
-    final w = MediaQuery.of(context).size.width;
-    int cols = 4;
-    if (w >= 1400) cols = 6;
-    else if (w >= 1100) cols = 5;
-    else if (w >= 850) cols = 4;
-    else if (w >= 600) cols = 3;
-    else cols = 2;
-
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, child) {
@@ -1520,6 +1511,7 @@ class _SkeletonGridState extends State<_SkeletonGrid> with SingleTickerProviderS
           opacity: 0.25 + 0.45 * _controller.value,
           child: LayoutBuilder(
             builder: (ctx, constraints) {
+              final cols = MovieSliverGrid.calculateColumns(constraints.maxWidth);
               final cardWidth = (constraints.maxWidth - (cols - 1) * 14) / cols;
               return Wrap(
                 spacing: 14,

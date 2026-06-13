@@ -21,6 +21,7 @@ class JpApi {
   String _imgDomain = '';
   String _secret = '';
   bool _initialized = false;
+  Future<void>? _initFuture;
 
   static final JpApi _instance = JpApi._();
   factory JpApi() => _instance;
@@ -38,36 +39,45 @@ class JpApi {
   /// 建立网络连通后，初始化配置参数（图片 CDN 域名及安全 Secret）。
   Future<void> init() async {
     if (_initialized) return;
+    _initFuture ??= _doInit();
+    return _initFuture;
+  }
 
-    final prefs = await SharedPreferences.getInstance();
-    final cached = prefs.getString('last_api_domain');
-    final cachedSecret = prefs.getString('secret');
+  Future<void> _doInit() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cached = prefs.getString('last_api_domain');
+      final cachedSecret = prefs.getString('secret');
 
-    // 优先测试并使用上次成功保存的缓存域名
-    if (cached != null && cachedSecret != null) {
-      if (await _testDomain(cached)) {
-        _baseUrl = cached;
-        _secret = cachedSecret;
-        _initialized = true;
-        await _loadConfig();
-        return;
+      // 优先测试并使用上次成功保存的缓存域名
+      if (cached != null && cachedSecret != null) {
+        if (await _testDomain(cached)) {
+          _baseUrl = cached;
+          _secret = cachedSecret;
+          await _loadConfig();
+          _initialized = true;
+          return;
+        }
       }
-    }
 
-    // 缓存不可用时，依次测试固定的内置域名
-    for (final domain in _fixedDomains) {
-      final url = 'https://$domain/api';
-      if (await _testDomain(url)) {
-        _baseUrl = url;
-        await prefs.setString('last_api_domain', url);
-        if (_secret.isNotEmpty) await prefs.setString('secret', _secret);
-        _initialized = true;
-        await _loadConfig();
-        return;
+      // 缓存不可用时，依次测试固定的内置域名
+      for (final domain in _fixedDomains) {
+        final url = 'https://$domain/api';
+        if (await _testDomain(url)) {
+          _baseUrl = url;
+          await prefs.setString('last_api_domain', url);
+          if (_secret.isNotEmpty) await prefs.setString('secret', _secret);
+          await _loadConfig();
+          _initialized = true;
+          return;
+        }
       }
-    }
 
-    throw Exception('无法连接到荐片服务器');
+      throw Exception('无法连接到荐片服务器');
+    } catch (e) {
+      _initFuture = null; // Allow retry on failure
+      rethrow;
+    }
   }
 
   /// 测试指定 API 域名的连通性

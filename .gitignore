@@ -37,10 +37,13 @@ android/build/
 # 个人开发笔记与规划文档
 /devnotes.md
 /mubu_refactor_plan.md
+/CLAUDE.md
 
 # 临时调试脚本与测试数据
 test/scratch_*
 test/*.json
+test_*.dart
+print_*.dart
 
 # 各平台临时编译文件
 /linux/flutter/ephemeral/

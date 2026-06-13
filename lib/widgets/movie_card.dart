@@ -10,8 +10,8 @@ class MovieCard extends StatefulWidget {
   final VoidCallback onPlay;
   final VoidCallback onInfo;
   final double? buttonSize;
-
   final VoidCallback? onDelete;
+  final bool? showSubtitle;
 
   const MovieCard({
     super.key,
@@ -21,6 +21,7 @@ class MovieCard extends StatefulWidget {
     required this.onInfo,
     this.buttonSize,
     this.onDelete,
+    this.showSubtitle,
   });
 
   @override
@@ -237,12 +238,16 @@ class _MovieCardState extends State<MovieCard> {
                 Builder(
                   builder: (context) {
                     // 动态合成副标题：若包含年份或类型则用中间点拼接；若均为空则返回空字符串
-                    final subtitle = [
-                      if (widget.video.year.isNotEmpty) widget.video.year,
-                      if (widget.video.category.isNotEmpty) widget.video.category
-                    ].join(' • ');
+                    final showSubtitle = widget.showSubtitle ?? (widget.onDelete == null);
+                    final subtitle = showSubtitle
+                        ? [
+                            if (widget.video.year.isNotEmpty) widget.video.year,
+                            if (widget.video.category.isNotEmpty) widget.video.category
+                          ].join(' • ')
+                        : '';
+                    final hasSubtitle = subtitle.isNotEmpty;
                     return SizedBox(
-                      height: 52, // 统一卡片底部高度约束为 52px
+                      height: hasSubtitle ? 52 : 40, // 无副标题时压缩底部高度
                       child: Padding(
                         padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
                         child: Column(
