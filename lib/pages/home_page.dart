@@ -427,7 +427,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             right: 0,
             child: ClipRect(
               child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                 child: Container(
                   height: 48,
                   width: double.infinity,
@@ -1130,7 +1130,7 @@ class _HeroBannerState extends State<_HeroBanner> {
     final playLabel = isSmall ? '播放' : '立即播放';
     final playMinW = isSmall ? 120.0 : UIAdapt.px(context, 150);
     return Container(
-      height: isSmall ? 320 : UIAdapt.px(context, 420),
+      height: isSmall ? 260 : UIAdapt.px(context, 420),
       margin: const EdgeInsets.only(bottom: 8),
       child: Stack(
         fit: StackFit.expand,
