@@ -154,4 +154,40 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mubu-android-build
-          path: build/app/outputs/flutter-apk/mubu_*.apk
+          path: build/app/outputs/**/mubu_*.apk
+
+  create-release:
+    needs: [build-linux, build-windows, build-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mubu-linux-build
+          path: ./dist
+
+      - name: Download Windows Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mubu-windows-build
+          path: ./dist
+
+      - name: Download Android Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mubu-android-build
+          path: ./dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ./dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
