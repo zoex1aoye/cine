@@ -339,24 +339,9 @@ class _HomePageState extends State<HomePage> {
                   return;
                 }
                 final adjustedIndex = i > 2 ? i - 1 : i;
-                if (adjustedIndex == 0) {
-                  if (_currentTabIndex == 0 &&
-                      _categories.isNotEmpty &&
-                      _selectedHomeCategoryId == _categories.first.id) {
-                    // 已经在默认首页推荐
-                  } else {
-                    setState(() {
-                      _currentTabIndex = 0;
-                    });
-                    if (_categories.isNotEmpty) {
-                      _loadHomeContent(_categories.first.id);
-                    }
-                  }
-                } else {
-                  setState(() {
-                    _currentTabIndex = adjustedIndex;
-                  });
-                }
+                setState(() {
+                  _currentTabIndex = adjustedIndex;
+                });
               },
               backgroundColor: kSurface,
               selectedItemColor: kRed,
