@@ -7,6 +7,7 @@ import '../models/mubu_models.dart';
 import '../widgets/movie_info_dialog.dart';
 import '../widgets/movie_card.dart';
 import '../widgets/movie_sliver_grid.dart';
+import '../widgets/mubu_error_widget.dart';
 import 'player_page.dart';
 import 'category_filter_page.dart';
 import 'search_page.dart';
@@ -32,6 +33,9 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final _api = MubuApiClient.instance;
+
+  // Initialization lock
+  bool _isInitializing = false;
 
   // Data
   List<CategoryItem> _categories = [];
@@ -97,13 +101,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Future<void> _initAndLoad() async {
+    if (_isInitializing) return;
+    _isInitializing = true;
     setState(() {
       _loadingCategories = true;
       _error = null;
     });
     try {
       await _api.init();
+      if (!mounted) return;
       final cats = await _api.getHomeCategorys();
+      if (!mounted) return;
       _categories = cats;
       
       if (cats.isNotEmpty) {
@@ -113,9 +121,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           if (!_tabController!.indexIsChanging) {
             final targetId = cats[_tabController!.index].id;
             if (_selectedHomeCategoryId != targetId) {
-              setState(() {
-                _selectedHomeCategoryId = targetId;
-              });
+              if (mounted) {
+                setState(() {
+                  _selectedHomeCategoryId = targetId;
+                });
+              }
             }
           }
         });
@@ -125,14 +135,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         _selectedHomeCategoryId = cats.first.id;
       }
       
-      setState(() {
-        _loadingCategories = false;
-      });
+      if (mounted) {
+        setState(() {
+          _loadingCategories = false;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _loadingCategories = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _loadingCategories = false;
+        });
+      }
+    } finally {
+      _isInitializing = false;
     }
   }
 
@@ -366,34 +382,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _buildMainContent() {
-    if (_loadingCategories) {
-      return const Center(child: CircularProgressIndicator(color: kRed));
+    if (_loadingCategories || _error != null) {
+      return _MubuSplashScreen(
+        error: _error,
+        onRetry: _initAndLoad,
+      );
     }
     if (_categories.isEmpty) {
-      if (_error != null) {
-        return Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.cloud_off, size: 56, color: Colors.white.withOpacity(0.15)),
-              const SizedBox(height: 16),
-              Text('加载失败', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
-              const SizedBox(height: 8),
-              Text(_error!, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 12)),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: _initAndLoad,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: kRed,
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                child: const Text('重试'),
-              ),
-            ],
-          ),
-        );
-      }
       return const Center(child: Text('没有分类数据', style: TextStyle(color: Colors.white54)));
     }
     if (_tabController == null || _tabController!.length != _categories.length) {
@@ -1734,27 +1729,10 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
     }
     
     if (_error != null && _tags.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off, size: 56, color: Colors.white.withOpacity(0.15)),
-            const SizedBox(height: 16),
-            Text('加载失败', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
-            const SizedBox(height: 8),
-            Text(_error!, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 12)),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _loadContent,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: kRed,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: const Text('重试'),
-            ),
-          ],
-        ),
+      return MubuErrorWidget(
+        title: '加载失败',
+        error: _error!,
+        onRetry: _loadContent,
       );
     }
 
@@ -1828,6 +1806,172 @@ class _InfoErrorDialog extends StatelessWidget {
           child: const Text('确定', style: TextStyle(color: kRed)),
         ),
       ],
+    );
+  }
+}
+
+// ─── CUSTOM BEAUTIFUL SPLASH SCREEN ───────────────────────────
+class _MubuSplashScreen extends StatefulWidget {
+  final String? error;
+  final VoidCallback? onRetry;
+
+  const _MubuSplashScreen({
+    this.error,
+    this.onRetry,
+  });
+
+  @override
+  State<_MubuSplashScreen> createState() => _MubuSplashScreenState();
+}
+
+class _MubuSplashScreenState extends State<_MubuSplashScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _fadeAnimation;
+  late Animation<double> _scaleAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    );
+
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: const Interval(0.0, 0.65, curve: Curves.easeOut),
+      ),
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.92, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: const Interval(0.0, 0.8, curve: Curves.easeOutBack),
+      ),
+    );
+
+    _controller.forward();
+  }
+
+  @override
+  void didUpdateWidget(_MubuSplashScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.error != oldWidget.error) {
+      _controller.reset();
+      _controller.forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasError = widget.error != null;
+
+    return Scaffold(
+      backgroundColor: kBg,
+      body: Stack(
+        children: [
+          // Ambient back glow
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment.center,
+                  radius: 1.2,
+                  colors: [
+                    Color(0x15E50914), // subtle red glow
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Center(
+            child: AnimatedBuilder(
+              animation: _controller,
+              builder: (context, child) {
+                return Opacity(
+                  opacity: _fadeAnimation.value,
+                  child: Transform.scale(
+                    scale: _scaleAnimation.value,
+                    child: child,
+                  ),
+                );
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Logo container
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.03),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white.withOpacity(0.08)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: kRed.withOpacity(0.08),
+                          blurRadius: 24,
+                          spreadRadius: -4,
+                        ),
+                      ],
+                    ),
+                    child: const Text(
+                      '幕布',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 32,
+                        letterSpacing: 8,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'CINE',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.35),
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 6,
+                    ),
+                  ),
+                  const SizedBox(height: 48),
+                  if (!hasError) ...[
+                    // Custom glowing loading bar
+                    SizedBox(
+                      width: 160,
+                      height: 3,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: const LinearProgressIndicator(
+                          backgroundColor: Colors.white10,
+                          valueColor: AlwaysStoppedAnimation<Color>(kRed),
+                        ),
+                      ),
+                    ),
+                  ] else ...[
+                    // Error Container
+                    MubuErrorWidget(
+                      title: '加载失败',
+                      error: widget.error!,
+                      onRetry: widget.onRetry!,
+                      isCard: true,
+                      iconSize: 40,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

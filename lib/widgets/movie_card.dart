@@ -95,31 +95,45 @@ class _MovieCardState extends State<MovieCard> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      CachedNetworkImage(
-                        imageUrl: widget.video.coverUrl(widget.imgDomain),
-                        fit: BoxFit.cover,
-                        placeholder: (_, __) => Container(
-                          color: const Color(0xFF1A1A1E),
-                          child: const Center(
-                            child: SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: _kRed,
+                      widget.imgDomain.isEmpty
+                          ? Container(
+                              color: const Color(0xFF1A1A1E),
+                              child: const Center(
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: _kRed,
+                                  ),
+                                ),
+                              ),
+                            )
+                          : CachedNetworkImage(
+                              imageUrl: widget.video.coverUrl(widget.imgDomain),
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) => Container(
+                                color: const Color(0xFF1A1A1E),
+                                child: const Center(
+                                  child: SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: _kRed,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              errorWidget: (_, url, error) => Container(
+                                color: const Color(0xFF1A1A1E),
+                                child: Icon(
+                                  Icons.movie,
+                                  color: Colors.white.withOpacity(0.1),
+                                  size: 32,
+                                ),
                               ),
                             ),
-                          ),
-                        ),
-                        errorWidget: (_, url, error) => Container(
-                          color: const Color(0xFF1A1A1E),
-                          child: Icon(
-                            Icons.movie,
-                            color: Colors.white.withOpacity(0.1),
-                            size: 32,
-                          ),
-                        ),
-                      ),
                       
                       // Rating score badge
                       if (hasScore)

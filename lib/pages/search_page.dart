@@ -8,6 +8,7 @@ import '../widgets/movie_info_dialog.dart';
 import 'player_page.dart';
 
 import '../widgets/load_more_button.dart';
+import '../widgets/mubu_error_widget.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
@@ -356,25 +357,11 @@ class _SearchPageState extends State<SearchPage> {
 
     // Error State
     if (_error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off_rounded, size: 52, color: Colors.white.withOpacity(0.15)),
-            const SizedBox(height: 16),
-            Text(_error!, style: const TextStyle(color: Colors.white38, fontSize: 14)),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _search,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _primaryRed,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: const Text('重新搜索'),
-            ),
-          ],
-        ),
+      return MubuErrorWidget(
+        error: _error!,
+        buttonText: '重新搜索',
+        onRetry: _search,
+        iconSize: 52,
       );
     }
 

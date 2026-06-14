@@ -23,7 +23,14 @@ Future<void> main() async {
 
   // Initialize Mubu API client
   MubuApiClient.instance = JpApiClientImpl();
-  await MubuApiClient.instance.init();
+  try {
+    // Attempt early initialization to minimize the window where imgDomain is empty.
+    // Use a timeout to ensure it doesn't block app startup if offline.
+    await MubuApiClient.instance.init().timeout(const Duration(seconds: 4));
+  } catch (_) {
+    // API initialization might fail or timeout on cold start without network.
+    // It will be safely retried inside home_page.dart when loading categories.
+  }
 
   runApp(const MubuApp());
 }

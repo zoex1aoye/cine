@@ -8,6 +8,7 @@ import '../widgets/movie_info_dialog.dart';
 import 'player_page.dart';
 
 import '../widgets/load_more_button.dart';
+import '../widgets/mubu_error_widget.dart';
 
 class TagVideosPage extends StatefulWidget {
   final TagItem tag;
@@ -230,25 +231,10 @@ class _TagVideosPageState extends State<TagVideosPage> {
 
     // Error state (no data yet)
     if (_videos.isEmpty && _error != null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off_rounded, size: 52, color: Colors.white.withOpacity(0.15)),
-            const SizedBox(height: 16),
-            Text(_error!, style: const TextStyle(color: Colors.white38, fontSize: 14)),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _refresh,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: _primaryRed,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: const Text('重试'),
-            ),
-          ],
-        ),
+      return MubuErrorWidget(
+        error: _error!,
+        onRetry: _refresh,
+        iconSize: 52,
       );
     }
 
