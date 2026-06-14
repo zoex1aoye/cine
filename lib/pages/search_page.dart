@@ -161,14 +161,21 @@ class _SearchPageState extends State<SearchPage> {
   // ── Build ──────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
     return Scaffold(
       backgroundColor: _bgColor,
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildTopSearchBar(),
-          Expanded(child: _buildBody()),
-        ],
+      body: SafeArea(
+        left: !isLandscape,
+        right: !isLandscape,
+        top: true,
+        bottom: !isLandscape,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildTopSearchBar(),
+            Expanded(child: _buildBody()),
+          ],
+        ),
       ),
     );
   }
@@ -179,8 +186,8 @@ class _SearchPageState extends State<SearchPage> {
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
-          padding: EdgeInsets.only(
-            top: MediaQuery.of(context).padding.top + 12,
+          padding: const EdgeInsets.only(
+            top: 12,
             left: 20,
             right: 20,
             bottom: 14,

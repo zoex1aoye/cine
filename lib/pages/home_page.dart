@@ -260,10 +260,15 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final w = MediaQuery.of(context).size.width;
     final isDesktop = w >= 800;
+    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
       backgroundColor: kBg,
       body: SafeArea(
+        left: !isLandscape,
+        right: !isLandscape,
+        top: true,
+        bottom: !isLandscape,
         child: Column(
           children: [
             if (isDesktop)
@@ -452,9 +457,15 @@ class _HomePageState extends State<HomePage> {
     return CustomScrollView(
       controller: _bookmarkScrollController,
       slivers: [
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+        SliverAppBar(
+          pinned: true,
+          automaticallyImplyLeading: false,
+          backgroundColor: kBg,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          titleSpacing: 0,
+          title: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
               children: [
                 const Text(
@@ -462,7 +473,6 @@ class _HomePageState extends State<HomePage> {
                   style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const Spacer(),
-                // 与历史页清空按钮等高占位
                 const SizedBox(
                   width: 100,
                   height: 40,
@@ -537,9 +547,15 @@ class _HomePageState extends State<HomePage> {
     return CustomScrollView(
       controller: _historyScrollController,
       slivers: [
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+        SliverAppBar(
+          pinned: true,
+          automaticallyImplyLeading: false,
+          backgroundColor: kBg,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          titleSpacing: 0,
+          title: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
               children: [
                 const Text(
