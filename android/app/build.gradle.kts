@@ -43,7 +43,7 @@ android {
     applicationVariants.all {
         val variant = this
         variant.outputs.all {
-            val output = this as com.android.build.gradle.outputs.ApkVariantOutput
+            val output = this as com.android.build.gradle.api.ApkVariantOutput
             val abi = output.filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
             output.outputFileName = "mubu_${variant.versionName}_${abi}.apk"
         }
