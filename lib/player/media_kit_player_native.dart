@@ -156,7 +156,7 @@ class MediaKitPlayerImpl implements JpPlayer {
   @override
   Widget buildVideoWidget(BuildContext context) => Video(
     controller: _controller,
-    fit: BoxFit.cover,
+    fit: BoxFit.contain,
     subtitleViewConfiguration: const SubtitleViewConfiguration(
       padding: EdgeInsets.fromLTRB(24, 16, 24, 48),
     ),
