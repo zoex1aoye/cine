@@ -589,6 +589,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       await MubuStorage.clearHistory();
                       await _loadBookmarksAndHistory();
                     },
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      alignment: Alignment.centerRight,
+                    ),
                     icon: const Icon(Icons.delete_sweep, color: kRed, size: 18),
                     label: const Text('清空', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
                   ),
@@ -1174,9 +1180,9 @@ class _HeroBannerState extends State<_HeroBanner> {
             ),
           ),
           Positioned(
-            left: UIAdapt.px(context, 40),
-            bottom: UIAdapt.px(context, 40),
-            right: UIAdapt.px(context, 40),
+            left: isSmall ? 16.0 : UIAdapt.px(context, 40),
+            bottom: isSmall ? 16.0 : UIAdapt.px(context, 40),
+            right: isSmall ? 16.0 : UIAdapt.px(context, 40),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
