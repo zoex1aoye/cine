@@ -81,7 +81,17 @@ class MediaKitPlayerImpl implements JpPlayer {
         // 此处显式地向 demuxer 和 stream 配置覆盖支持 httpproxy、tls、tcp 等各类传输层与解复用协议。
         await native.setProperty('demuxer-lavf-o', 'protocol_whitelist=[file,crypto,data,http,https,tcp,tls,udp,rtp,httpproxy]');
         await native.setProperty('stream-lavf-o', 'protocol_whitelist=[file,crypto,data,http,https,tcp,tls,udp,rtp,httpproxy]');
-        jpLog('PLAYER', 'MediaKitPlayerImpl: configured protocol_whitelist=all');
+        
+        // 关键优化点 4：缓冲与流畅度优化
+        await native.setProperty('cache', 'yes');
+        // 预加载未来 30 秒的数据包
+        await native.setProperty('demuxer-readahead-secs', '30');
+        // 最大前向缓冲区大小（设为 64MB）
+        await native.setProperty('demuxer-max-bytes', '67108864');
+        // 最大后向缓冲区大小（设为 128MB，方便大幅度回退秒播且防止内存溢出）
+        await native.setProperty('demuxer-max-back-bytes', '134217728');
+
+        jpLog('PLAYER', 'MediaKitPlayerImpl: configured protocol_whitelist=all and buffer optimization');
       } else {
         jpLog('PLAYER', 'MediaKitPlayerImpl: player.platform is not NativePlayer');
       }
