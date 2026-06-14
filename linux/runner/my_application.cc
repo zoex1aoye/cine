@@ -48,6 +48,14 @@ static void my_application_activate(GApplication* application) {
   }
 
   gtk_window_set_default_size(window, 1280, 720);
+
+  // Set window icon
+  g_autoptr(GError) error = nullptr;
+  if (!gtk_window_set_icon_from_file(window, "data/flutter_assets/assets/icons/icon_app_1024.png", &error)) {
+    g_warning("Failed to load window icon: %s", error->message);
+    g_clear_error(&error);
+  }
+
   gtk_widget_show(GTK_WIDGET(window));
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();

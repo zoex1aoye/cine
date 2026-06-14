@@ -39,6 +39,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.map { it as com.android.build.gradle.outputs.ApkVariantOutput }.forEach { output ->
+            val abi = output.filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
+            output.outputFileName = "mubu_${variant.versionName}_${abi}.apk"
+        }
+    }
 }
 
 flutter {

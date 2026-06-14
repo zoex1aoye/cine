@@ -1,0 +1,158 @@
+name: Build and Package App
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers on tag push like v1.0.0
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Linux Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libmpv-dev
+
+      - name: Install Ruby and FPM
+        run: |
+          sudo apt-get install -y ruby ruby-dev rubygems build-essential
+          sudo gem install --no-document fpm
+
+      - name: Install Flutter Dependencies
+        run: flutter pub get
+
+      - name: Build Linux App
+        run: flutter build linux --release
+
+      - name: Package .deb and .tar.gz
+        run: |
+          VERSION=$(grep '^version: ' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          echo "Packaging Mubu version $VERSION..."
+          
+          # Prepare deb packaging structure
+          mkdir -p pack/opt/mubu
+          mkdir -p pack/usr/bin
+          mkdir -p pack/usr/share/applications
+          
+          # Copy Flutter bundle contents
+          cp -r build/linux/x64/release/bundle/* pack/opt/mubu/
+          
+          # Create symlink
+          ln -s /opt/mubu/cine pack/usr/bin/mubu
+          
+          # Create desktop launch entry
+          cat <<EOT > pack/usr/share/applications/mubu.desktop
+          [Desktop Entry]
+          Version=1.0
+          Type=Application
+          Name=Mubu
+          Comment=Mubu cross-platform client
+          Exec=mubu
+          Icon=/opt/mubu/assets/icons/app_icon.png
+          Terminal=false
+          Categories=Utility;
+          EOT
+          
+          mkdir -p dist
+          
+          # Build .deb package using FPM
+          fpm -s dir -t deb -n mubu -v "$VERSION" -C pack \
+            --architecture "amd64" \
+            --description "Mubu - Cross-platform video client" \
+            --maintainer "Mubu Developer"
+          
+          # Move output deb file
+          mv mubu_${VERSION}_amd64.deb dist/
+          
+          # Create .tar.gz archive
+          tar -czf dist/mubu_${VERSION}_amd64.tar.gz -C build/linux/x64/release/bundle .
+
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mubu-linux-build
+          path: dist/*
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Flutter Dependencies
+        run: flutter pub get
+
+      - name: Build Windows App
+        run: flutter build windows --release
+
+      - name: Setup Inno Setup
+        uses: Minishlink/actions-innosetup@v2
+        with:
+          inno-version: 6.2.2
+
+      - name: Package .exe and .zip
+        shell: bash
+        run: |
+          VERSION=$(grep '^version: ' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          echo "Packaging Mubu version $VERSION..."
+          
+          mkdir -p dist
+          
+          # Compile MSI/EXE installer using Inno Setup
+          iscc //DAppVersion="$VERSION" windows/installer.iss
+          
+          # Create ZIP package using preinstalled 7-Zip
+          7z a dist/mubu_${VERSION}_x64.zip ./build/windows/x64/release/runner/*
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mubu-windows-build
+          path: dist/*
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Flutter Dependencies
+        run: flutter pub get
+
+      - name: Build Android APK
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mubu-android-build
+          path: build/app/outputs/flutter-apk/mubu_*.apk
