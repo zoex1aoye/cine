@@ -102,24 +102,23 @@ jobs:
       - name: Build Windows App
         run: flutter build windows --release
 
-      - name: Setup Inno Setup
-        uses: Minishlink/actions-innosetup@v2
-        with:
-          inno-version: 6.2.2
+      - name: Install Inno Setup
+        run: choco install innosetup -y
 
       - name: Package .exe and .zip
-        shell: bash
+        shell: pwsh
         run: |
-          VERSION=$(grep '^version: ' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          echo "Packaging Mubu version $VERSION..."
+          $pubspec = Get-Content pubspec.yaml -Raw
+          $version = [regex]::Match($pubspec, '(?m)^version:\s*(.+)').Groups[1].Value.Split('+')[0]
+          Write-Host "Packaging Mubu version $version..."
           
-          mkdir -p dist
+          New-Item -ItemType Directory -Force -Path dist
           
-          # Compile MSI/EXE installer using Inno Setup
-          iscc //DAppVersion="$VERSION" windows/installer.iss
+          # Compile MSI/EXE installer using Inno Setup via absolute path
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$version" windows/installer.iss
           
-          # Create ZIP package using preinstalled 7-Zip
-          7z a dist/mubu_${VERSION}_x64.zip ./build/windows/x64/release/runner/*
+          # Create ZIP package using Compress-Archive
+          Compress-Archive -Path build/windows/x64/release/runner/* -DestinationPath dist/mubu_${version}_x64.zip -Force
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
