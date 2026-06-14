@@ -266,7 +266,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       },
     );
     try {
-      final detail = await _api.getVideoDetail(video.id, isShort: _activeCategoryId == 67 || video.category == '短剧' || video.coverPath.contains('short'));
+      final detail = await _api.getVideoDetail(video.id, isShort: _activeCategoryId == 67 || video.isShortDrama);
       if (!mounted) return;
       if (dialogContext != null) {
         Navigator.of(dialogContext!).pop();

@@ -115,7 +115,7 @@ class _SearchPageState extends State<SearchPage> {
       },
     );
     try {
-      final detail = await _api.getVideoDetail(video.id, isShort: video.category == '短剧' || video.coverPath.contains('short'));
+      final detail = await _api.getVideoDetail(video.id, isShort: video.isShortDrama);
       if (!mounted) return;
       if (dialogContext != null) {
         Navigator.of(dialogContext!).pop();

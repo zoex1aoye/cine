@@ -1,7 +1,8 @@
 // media_kit_player_native.dart – native implementation using media_kit
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'jp_player.dart';
@@ -13,6 +14,7 @@ import '../api/jp_log.dart';
 /// 并使用原生 C-Runtime 数值区域修正 (setlocale) 以规避 C-locale 段错误崩溃。
 class MediaKitPlayerImpl implements JpPlayer {
   final String initialUrl;
+  final bool isShort;
   late final Player _player;
   late final VideoController _controller;
 
@@ -27,7 +29,7 @@ class MediaKitPlayerImpl implements JpPlayer {
 
   final List<StreamSubscription> _subscriptions = [];
 
-  MediaKitPlayerImpl({required this.initialUrl});
+  MediaKitPlayerImpl({required this.initialUrl, this.isShort = false});
 
   @override
   ValueNotifier<bool> get isInitializedNotifier => _isInitialized;
@@ -153,6 +155,23 @@ class MediaKitPlayerImpl implements JpPlayer {
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
+
+    // 容错处理：若销毁时处于全屏/沉浸状态，安全重置系统栏与屏幕方向以防丢失
+    try {
+      if (Platform.isAndroid || Platform.isIOS) {
+        SystemChrome.setEnabledSystemUIMode(
+          SystemUiMode.manual,
+          overlays: SystemUiOverlay.values,
+        );
+        SystemChrome.setPreferredOrientations([]);
+      } else if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+        const MethodChannel('com.alexmercerind/media_kit_video')
+            .invokeMethod('Utils.ExitNativeFullscreen');
+      }
+    } catch (e) {
+      debugPrint('Reset fullscreen during dispose error: $e');
+    }
+
     await _player.dispose();
     _isInitialized.dispose();
     _isPlaying.dispose();
@@ -164,11 +183,71 @@ class MediaKitPlayerImpl implements JpPlayer {
   }
 
   @override
-  Widget buildVideoWidget(BuildContext context) => Video(
-    controller: _controller,
-    fit: BoxFit.contain,
-    subtitleViewConfiguration: const SubtitleViewConfiguration(
-      padding: EdgeInsets.fromLTRB(24, 16, 24, 48),
-    ),
-  );
+  Widget buildVideoWidget(BuildContext context) {
+    final videoWidget = Video(
+      controller: _controller,
+      fit: BoxFit.contain,
+      subtitleViewConfiguration: const SubtitleViewConfiguration(
+        padding: EdgeInsets.fromLTRB(24, 16, 24, 48),
+      ),
+      onEnterFullscreen: isShort
+          ? () async {
+              try {
+                if (Platform.isAndroid || Platform.isIOS) {
+                  await Future.wait([
+                    SystemChrome.setEnabledSystemUIMode(
+                      SystemUiMode.immersiveSticky,
+                      overlays: [],
+                    ),
+                    SystemChrome.setPreferredOrientations([
+                      DeviceOrientation.portraitUp,
+                    ]),
+                  ]);
+                } else if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+                  await const MethodChannel('com.alexmercerind/media_kit_video')
+                      .invokeMethod('Utils.EnterNativeFullscreen');
+                }
+              } catch (e) {
+                debugPrint('Enter native fullscreen error: $e');
+              }
+            }
+          : defaultEnterNativeFullscreen,
+      onExitFullscreen: isShort
+          ? () async {
+              try {
+                if (Platform.isAndroid || Platform.isIOS) {
+                  await Future.wait([
+                    SystemChrome.setEnabledSystemUIMode(
+                      SystemUiMode.manual,
+                      overlays: SystemUiOverlay.values,
+                    ),
+                    SystemChrome.setPreferredOrientations([]),
+                  ]);
+                } else if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+                  await const MethodChannel('com.alexmercerind/media_kit_video')
+                      .invokeMethod('Utils.ExitNativeFullscreen');
+                }
+              } catch (e) {
+                debugPrint('Exit native fullscreen error: $e');
+              }
+            }
+          : defaultExitNativeFullscreen,
+    );
+
+    if (isShort) {
+      return MaterialVideoControlsTheme(
+        normal: const MaterialVideoControlsThemeData(),
+        fullscreen: const MaterialVideoControlsThemeData(
+          displaySeekBar: true,
+          volumeGesture: true,
+          brightnessGesture: true,
+          seekGesture: true,
+          backdropColor: Color(0xFF000000),
+        ),
+        child: videoWidget,
+      );
+    }
+
+    return videoWidget;
+  }
 }

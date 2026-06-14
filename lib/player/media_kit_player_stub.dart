@@ -3,7 +3,8 @@ import 'package:flutter/widgets.dart';
 import '../player/jp_player.dart';
 
 class MediaKitPlayerImpl implements JpPlayer {
-  MediaKitPlayerImpl({required String initialUrl});
+  final bool isShort;
+  MediaKitPlayerImpl({required String initialUrl, this.isShort = false});
 
   final _isInitialized = ValueNotifier<bool>(true);
   final _isPlaying = ValueNotifier<bool>(false);

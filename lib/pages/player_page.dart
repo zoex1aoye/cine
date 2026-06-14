@@ -123,7 +123,7 @@ class _PlayerPageState extends State<PlayerPage> {
     // Load saved progress first to avoid race condition
     await _loadSavedProgress();
     try {
-      final detail = await MubuApiClient.instance.getVideoDetail(widget.video.id, isShort: widget.video.category == '短剧' || widget.video.coverPath.contains('short'));
+      final detail = await MubuApiClient.instance.getVideoDetail(widget.video.id, isShort: widget.video.isShortDrama);
       if (detail == null || detail.sources.isEmpty) {
         throw Exception('暂无可用播放源');
       }
@@ -187,7 +187,10 @@ class _PlayerPageState extends State<PlayerPage> {
         _player = null;
         _playerInitialized = false;
       }
-      final player = MediaKitPlayerImpl(initialUrl: _currentUrl);
+      final player = MediaKitPlayerImpl(
+        initialUrl: _currentUrl,
+        isShort: widget.video.isShortDrama,
+      );
       await player.initialize();
       await player.pause();
       if (_disposed) {

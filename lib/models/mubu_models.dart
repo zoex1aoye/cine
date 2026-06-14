@@ -75,6 +75,8 @@ class VideoItem {
   }
 
   bool get hasCover => coverPath.isNotEmpty;
+
+  bool get isShortDrama => category == '短剧' || coverPath.toLowerCase().contains('short');
 }
 
 /// Search result model

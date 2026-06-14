@@ -234,7 +234,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       },
     );
     try {
-      final detail = await _api.getVideoDetail(video.id, isShort: video.category == '短剧' || video.coverPath.contains('short'));
+      final detail = await _api.getVideoDetail(video.id, isShort: video.isShortDrama);
       if (!mounted) return;
       if (dialogContext != null) {
         Navigator.of(dialogContext!).pop();
@@ -1106,7 +1106,7 @@ class _HeroBannerState extends State<_HeroBanner> {
     try {
       final detail = await MubuApiClient.instance.getVideoDetail(
         widget.video.id,
-        isShort: widget.video.category == '短剧' || widget.video.coverPath.contains('short'),
+        isShort: widget.video.isShortDrama,
       );
       if (mounted) {
         setState(() {
