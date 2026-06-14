@@ -118,7 +118,7 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$version" windows/installer.iss
           
           # Create ZIP package using Compress-Archive
-          Compress-Archive -Path build/windows/x64/release/runner/* -DestinationPath dist/mubu_${version}_x64.zip -Force
+          Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/mubu_${version}_x64.zip -Force
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
