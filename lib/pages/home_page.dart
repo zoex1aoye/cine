@@ -30,15 +30,14 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final _api = MubuApiClient.instance;
 
   // Data
   List<CategoryItem> _categories = [];
   bool _loadingCategories = true;
-  List<TagItem> _tags = [];
-  Map<int, List<VideoItem>> _tagVideos = {};
-  bool _loading = true;
+  TabController? _tabController;
+  bool _isLoadingVideoInfo = false;
   String? _error;
 
   // Bookmarks & History lists
@@ -93,82 +92,57 @@ class _HomePageState extends State<HomePage> {
     _historyScrollController.removeListener(_onHistoryScroll);
     _bookmarkScrollController.dispose();
     _historyScrollController.dispose();
+    _tabController?.dispose();
     super.dispose();
   }
 
   Future<void> _initAndLoad() async {
     setState(() {
       _loadingCategories = true;
-      _loading = true;
       _error = null;
     });
     try {
       await _api.init();
       final cats = await _api.getHomeCategorys();
       _categories = cats;
-      setState(() {
-        _loadingCategories = false;
-      });
+      
       if (cats.isNotEmpty) {
+        _tabController?.dispose();
+        _tabController = TabController(length: cats.length, vsync: this);
+        _tabController!.addListener(() {
+          if (!_tabController!.indexIsChanging) {
+            final targetId = cats[_tabController!.index].id;
+            if (_selectedHomeCategoryId != targetId) {
+              setState(() {
+                _selectedHomeCategoryId = targetId;
+              });
+            }
+          }
+        });
+        
         final navCats = MubuConstants.filterNavigableCategories(cats);
         _filterCategoryId = navCats.isNotEmpty ? navCats.first.id : cats.first.id;
         _selectedHomeCategoryId = cats.first.id;
-        await _loadHomeContent(cats.first.id);
       }
-    } catch (e) {
+      
       setState(() {
-        _error = e.toString();
-        _loading = false;
         _loadingCategories = false;
       });
-    }
-  }
-
-  /// 加载指定分类的推荐/首页内容（如电影、电视剧、短剧等）
-  /// [catId] 代表当前请求的分类 ID。
-  /// 此方法已做竞态条件（Race Condition）安全处理。
-  Future<void> _loadHomeContent(int catId) async {
-    setState(() {
-      _selectedHomeCategoryId = catId;
-      _loading = true;
-      _error = null;
-      _tagVideos = {};
-      _tags = [];
-    });
-    try {
-      // 1. 获取该大类下挂载的全部 Tags 标签（如: 小编首推、动作大片等）
-      final tags = await _api.getHomeTags(catId);
-      // 竞态防御：若在此网络请求期间用户点击切换了其他分类，则丢弃本次过期响应，不污染界面
-      if (catId != _selectedHomeCategoryId) return;
-
-      _tags = tags;
-      if (tags.isNotEmpty) {
-        // 2. 预先加载且仅加载第一个标签的前12个视频（用于渲染顶部 Hero Banner 轮播大图）
-        final firstTag = tags.first;
-        final firstVids = await _api.getTagVideos(firstTag.id, tpl: firstTag.template, count: 12);
-        // 竞态防御：再次在耗时操作后拦截检查
-        if (catId != _selectedHomeCategoryId) return;
-
-        _tagVideos[firstTag.id] = firstVids;
-      }
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-      });
     } catch (e) {
-      // 捕获网络请求失败
-      if (catId != _selectedHomeCategoryId) return;
-      if (!mounted) return;
       setState(() {
         _error = e.toString();
-        _loading = false;
+        _loadingCategories = false;
       });
     }
   }
 
   Future<void> _loadBookmarksAndHistory() async {
-    final b = await MubuStorage.getBookmarks();
-    final h = await MubuStorage.getHistory();
+    final results = await Future.wait([
+      MubuStorage.getBookmarks(),
+      MubuStorage.getHistory(),
+    ]);
+    final b = results[0];
+    final h = results[1];
     if (mounted) {
       setState(() {
         _bookmarksList = b;
@@ -193,8 +167,6 @@ class _HomePageState extends State<HomePage> {
   Future<void> _loadMoreBookmarks() async {
     if (_bookmarkLoadingMore || !_bookmarkHasMore) return;
     setState(() => _bookmarkLoadingMore = true);
-    // Simulate brief delay for visual feedback
-    await Future.delayed(const Duration(milliseconds: 200));
     if (!mounted) return;
     setState(() {
       _bookmarkPage++;
@@ -206,7 +178,6 @@ class _HomePageState extends State<HomePage> {
   Future<void> _loadMoreHistory() async {
     if (_historyLoadingMore || !_historyHasMore) return;
     setState(() => _historyLoadingMore = true);
-    await Future.delayed(const Duration(milliseconds: 200));
     if (!mounted) return;
     setState(() {
       _historyPage++;
@@ -224,16 +195,35 @@ class _HomePageState extends State<HomePage> {
     ).then((_) => _loadBookmarksAndHistory());
   }
 
+  void _showInfoError(BuildContext ctx, String title) {
+    showDialog(
+      context: ctx,
+      builder: (ctx) => _InfoErrorDialog(title: title),
+    );
+  }
+
   void _showVideoInfo(VideoItem video) async {
+    if (_isLoadingVideoInfo) return;
+    setState(() {
+      _isLoadingVideoInfo = true;
+    });
+
+    BuildContext? dialogContext;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator(color: kRed)),
+      builder: (ctx) {
+        dialogContext = ctx;
+        return const Center(child: CircularProgressIndicator(color: kRed));
+      },
     );
     try {
       final detail = await _api.getVideoDetail(video.id, isShort: video.category == '短剧' || video.coverPath.contains('short'));
       if (!mounted) return;
-      Navigator.pop(context);
+      if (dialogContext != null) {
+        Navigator.of(dialogContext!).pop();
+        dialogContext = null;
+      }
       if (detail != null) {
         showDialog(
           context: context,
@@ -247,10 +237,26 @@ class _HomePageState extends State<HomePage> {
             },
           ),
         ).then((_) => _loadBookmarksAndHistory());
+      } else {
+        if (context.mounted) {
+          _showInfoError(context, video.title);
+        }
       }
     } catch (e) {
       if (!mounted) return;
-      Navigator.pop(context);
+      if (dialogContext != null) {
+        Navigator.of(dialogContext!).pop();
+        dialogContext = null;
+      }
+      if (context.mounted) {
+        _showInfoError(context, video.title);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingVideoInfo = false;
+        });
+      }
     }
   }
 
@@ -292,13 +298,14 @@ class _HomePageState extends State<HomePage> {
                     selectedHomeCategoryId: _selectedHomeCategoryId,
                     isLoading: _loadingCategories,
                     onCategoryTap: (cat) {
-                      if (_currentTabIndex == 0 && _selectedHomeCategoryId == cat.id) {
-                        return;
+                      final idx = _categories.indexWhere((c) => c.id == cat.id);
+                      if (idx != -1 && _tabController != null) {
+                        _tabController!.animateTo(idx);
                       }
                       setState(() {
                         _currentTabIndex = 0;
+                        _selectedHomeCategoryId = cat.id;
                       });
-                      _loadHomeContent(cat.id);
                     },
                     onFilterTap: () {
                       if (_currentTabIndex == 1) return;
@@ -359,69 +366,95 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _buildMainContent() {
-    if (_loading && _tags.isEmpty) {
+    if (_loadingCategories) {
       return const Center(child: CircularProgressIndicator(color: kRed));
     }
-    if (_error != null && _tags.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off, size: 56, color: Colors.white.withOpacity(0.15)),
-            const SizedBox(height: 16),
-            Text('加载失败', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
-            const SizedBox(height: 8),
-            Text(_error!, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 12)),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _initAndLoad,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: kRed,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    if (_categories.isEmpty) {
+      if (_error != null) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.cloud_off, size: 56, color: Colors.white.withOpacity(0.15)),
+              const SizedBox(height: 16),
+              Text('加载失败', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
+              const SizedBox(height: 8),
+              Text(_error!, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 12)),
+              const SizedBox(height: 20),
+              ElevatedButton(
+                onPressed: _initAndLoad,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: kRed,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('重试'),
               ),
-              child: const Text('重试'),
-            ),
-          ],
-        ),
-      );
+            ],
+          ),
+        );
+      }
+      return const Center(child: Text('没有分类数据', style: TextStyle(color: Colors.white54)));
+    }
+    if (_tabController == null || _tabController!.length != _categories.length) {
+      return const Center(child: CircularProgressIndicator(color: kRed));
     }
 
-    return CustomScrollView(
-      slivers: [
-        // Hero banner
-        if (_tags.isNotEmpty && (_tagVideos[_tags.first.id]?.isNotEmpty ?? false))
-          SliverToBoxAdapter(
-            child: _HeroBanner(
-              tag: _tags.first,
-              video: _tagVideos[_tags.first.id]!.first,
-              imgDomain: _api.imgDomain,
-              onPlay: (v) => _playVideo(v),
-              onInfo: (v) => _showVideoInfo(v),
-            ),
-          ),
+    final isDesktop = MediaQuery.of(context).size.width >= 800;
 
-        // Tag sections (Progressive scroll-based Lazy Loading)
-        for (final tag in _tags)
-          SliverToBoxAdapter(
-            child: _TagSection(
-              tag: tag,
-              imgDomain: _api.imgDomain,
+    return Stack(
+      children: [
+        TabBarView(
+          controller: _tabController,
+          children: _categories.asMap().entries.map((entry) {
+            final idx = entry.key;
+            final cat = entry.value;
+            return CategoryContentView(
+              category: cat,
+              api: _api,
               onPlay: _playVideo,
               onInfo: _showVideoInfo,
-              initialVideos: _tagVideos[tag.id],
-              onSeeAll: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => TagVideosPage(tag: tag),
+              hasTopPadding: !isDesktop,
+              tabController: _tabController!,
+              index: idx,
+            );
+          }).toList(),
+        ),
+        if (!isDesktop)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(
+                  height: 48,
+                  width: double.infinity,
+                  color: kBg.withOpacity(0.7),
+                  child: TabBar(
+                    controller: _tabController,
+                    isScrollable: true,
+                    physics: const BouncingScrollPhysics(),
+                    indicatorColor: kRed,
+                    indicatorWeight: 3,
+                    indicatorSize: TabBarIndicatorSize.label,
+                    labelColor: Colors.white,
+                    unselectedLabelColor: Colors.white30,
+                    dividerColor: Colors.transparent,
+                    labelStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    unselectedLabelStyle: const TextStyle(fontSize: 14),
+                    tabAlignment: TabAlignment.start,
+                    tabs: _categories.map((cat) {
+                      final isHot = cat.name == '推荐' || cat.id == 88;
+                      final label = isHot ? '热门' : cat.name;
+                      return Tab(text: label);
+                    }).toList(),
                   ),
-                );
-              },
+                ),
+              ),
             ),
           ),
-
-        const SliverPadding(padding: EdgeInsets.only(bottom: 60)),
       ],
     );
   }
@@ -852,7 +885,22 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
-    )..repeat(reverse: true);
+    );
+    if (widget.isLoading) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _LeftNavRail oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isLoading != oldWidget.isLoading) {
+      if (widget.isLoading) {
+        _controller.repeat(reverse: true);
+      } else {
+        _controller.stop();
+      }
+    }
   }
 
   @override
@@ -1562,4 +1610,220 @@ class _SkeletonGridState extends State<_SkeletonGrid> with SingleTickerProviderS
     );
   }
 }
+
+// ─── CATEGORY CONTENT VIEW ────────────────────────────────────
+class CategoryContentView extends StatefulWidget {
+  final CategoryItem category;
+  final MubuApiClient api;
+  final ValueChanged<VideoItem> onPlay;
+  final ValueChanged<VideoItem> onInfo;
+  final bool hasTopPadding;
+  final TabController tabController;
+  final int index;
+
+  const CategoryContentView({
+    super.key,
+    required this.category,
+    required this.api,
+    required this.onPlay,
+    required this.onInfo,
+    required this.hasTopPadding,
+    required this.tabController,
+    required this.index,
+  });
+
+  @override
+  State<CategoryContentView> createState() => _CategoryContentViewState();
+}
+
+class _CategoryContentViewState extends State<CategoryContentView> with AutomaticKeepAliveClientMixin {
+  List<TagItem> _tags = [];
+  Map<int, List<VideoItem>> _tagVideos = {};
+  bool _loading = true;
+  String? _error;
+  int _currentLoadSession = 0;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.tabController.addListener(_onTabChanged);
+    // Only load immediately if this tab is the active one
+    if (widget.tabController.index == widget.index) {
+      _loadContent();
+    } else {
+      // Not active: show progress indicator or skeleton without hitting network yet
+      _loading = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.tabController.removeListener(_onTabChanged);
+    super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (widget.tabController.index == widget.index && _tags.isEmpty && !_loading && _error == null) {
+      _loadContent();
+    }
+  }
+
+  Future<void> _loadContent() async {
+    if (!mounted) return;
+    final session = ++_currentLoadSession;
+    setState(() {
+      _loading = true;
+      _error = null;
+      _tags = [];
+      _tagVideos = {};
+    });
+    try {
+      final tags = await widget.api.getHomeTags(widget.category.id);
+      if (!mounted || session != _currentLoadSession) return;
+      
+      setState(() {
+        _tags = tags;
+      });
+      
+      if (tags.isNotEmpty) {
+        final firstTag = tags.first;
+        final firstVids = await widget.api.getTagVideos(firstTag.id, tpl: firstTag.template, count: 12);
+        if (!mounted || session != _currentLoadSession) return;
+        setState(() {
+          _tagVideos[firstTag.id] = firstVids;
+          _loading = false;
+        });
+      } else {
+        setState(() {
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted || session != _currentLoadSession) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    
+    // If we haven't loaded anything yet because we were lazy-loaded (and are now the active tab),
+    // we trigger the load. Just a fallback safety check.
+    if (widget.tabController.index == widget.index && _tags.isEmpty && !_loading && _error == null) {
+      // Defer state mutation to next frame to avoid build phase setState crashes
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadContent();
+      });
+    }
+
+    if (_loading && _tags.isEmpty) {
+      return const Center(child: CircularProgressIndicator(color: kRed));
+    }
+    
+    if (_error != null && _tags.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.cloud_off, size: 56, color: Colors.white.withOpacity(0.15)),
+            const SizedBox(height: 16),
+            Text('加载失败', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 16)),
+            const SizedBox(height: 8),
+            Text(_error!, style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 12)),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _loadContent,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: kRed,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_tags.isEmpty && !_loading) {
+      // Lazy load hasn't triggered yet or empty category
+      return const Center(child: CircularProgressIndicator(color: kRed));
+    }
+
+    return CustomScrollView(
+      physics: const BouncingScrollPhysics(),
+      slivers: [
+        if (widget.hasTopPadding)
+          const SliverPadding(padding: EdgeInsets.only(top: 60)),
+        
+        // Hero banner
+        if (_tags.isNotEmpty && (_tagVideos[_tags.first.id]?.isNotEmpty ?? false))
+          SliverToBoxAdapter(
+            child: _HeroBanner(
+              tag: _tags.first,
+              video: _tagVideos[_tags.first.id]!.first,
+              imgDomain: widget.api.imgDomain,
+              onPlay: widget.onPlay,
+              onInfo: widget.onInfo,
+            ),
+          ),
+
+        // Tag sections
+        for (final tag in _tags)
+          SliverToBoxAdapter(
+            child: _TagSection(
+              tag: tag,
+              imgDomain: widget.api.imgDomain,
+              onPlay: widget.onPlay,
+              onInfo: widget.onInfo,
+              initialVideos: _tagVideos[tag.id],
+              onSeeAll: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => TagVideosPage(tag: tag),
+                  ),
+                );
+              },
+            ),
+          ),
+
+        const SliverPadding(padding: EdgeInsets.only(bottom: 60)),
+      ],
+    );
+  }
+}
+
+// ─── INFO ERROR DIALOG ────────────────────────────────────────
+class _InfoErrorDialog extends StatelessWidget {
+  final String title;
+  const _InfoErrorDialog({required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: kSurface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.white.withOpacity(0.08)),
+      ),
+      title: const Text('加载失败', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+      content: Text('无法获取影片 "$title" 的详细信息，请稍后重试。', style: const TextStyle(color: Colors.white70, fontSize: 14)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('确定', style: TextStyle(color: kRed)),
+        ),
+      ],
+    );
+  }
+}
+
 

@@ -104,15 +104,22 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   void _showVideoInfo(VideoItem video) async {
+    BuildContext? dialogContext;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator(color: _primaryRed)),
+      builder: (ctx) {
+        dialogContext = ctx;
+        return const Center(child: CircularProgressIndicator(color: _primaryRed));
+      },
     );
     try {
       final detail = await _api.getVideoDetail(video.id, isShort: video.category == '短剧' || video.coverPath.contains('short'));
       if (!mounted) return;
-      Navigator.pop(context);
+      if (dialogContext != null) {
+        Navigator.of(dialogContext!).pop();
+        dialogContext = null;
+      }
       if (detail != null) {
         showDialog(
           context: context,
@@ -129,7 +136,10 @@ class _SearchPageState extends State<SearchPage> {
       }
     } catch (e) {
       if (!mounted) return;
-      Navigator.pop(context);
+      if (dialogContext != null) {
+        Navigator.of(dialogContext!).pop();
+        dialogContext = null;
+      }
     }
   }
 

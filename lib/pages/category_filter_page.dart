@@ -256,15 +256,22 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   }
 
   void _showVideoInfo(VideoItem video) async {
+    BuildContext? dialogContext;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator(color: _kPrimaryRed)),
+      builder: (ctx) {
+        dialogContext = ctx;
+        return const Center(child: CircularProgressIndicator(color: _kPrimaryRed));
+      },
     );
     try {
       final detail = await _api.getVideoDetail(video.id, isShort: _activeCategoryId == 67 || video.category == '短剧' || video.coverPath.contains('short'));
       if (!mounted) return;
-      Navigator.pop(context);
+      if (dialogContext != null) {
+        Navigator.of(dialogContext!).pop();
+        dialogContext = null;
+      }
       if (detail != null) {
         showDialog(
           context: context,
@@ -286,7 +293,10 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       }
     } catch (e) {
       if (!mounted) return;
-      Navigator.pop(context);
+      if (dialogContext != null) {
+        Navigator.of(dialogContext!).pop();
+        dialogContext = null;
+      }
       if (context.mounted) {
         _showInfoError(context, video.title);
       }
