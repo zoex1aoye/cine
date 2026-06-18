@@ -3,8 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:hive/hive.dart';
 import '../models/jp_models.dart';
+import '../models/mubu_hive.dart';
 import 'jp_log.dart';
 
 /// 荐片 API 服务核心类 (单例)
@@ -48,10 +49,10 @@ class JpApi {
 
   Future<void> _doInit() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final cached = prefs.getString('last_api_domain');
-      final cachedSecret = prefs.getString('secret');
-      final cachedImgDomain = prefs.getString('last_img_domain');
+      final configBox = Hive.box<String>('config');
+      final cached = configBox.get('last_api_domain');
+      final cachedSecret = configBox.get('secret');
+      final cachedImgDomain = configBox.get('last_img_domain');
 
       final hasValidCache = cached != null && cachedSecret != null && cachedSecret.isNotEmpty;
 
@@ -80,21 +81,21 @@ class JpApi {
 
   Future<void> _backgroundRefresh({required bool isFirstInit}) async {
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final configBox = Hive.box<String>('config');
       String? bestApiUrl;
 
       if (isFirstInit) {
         bestApiUrl = await _raceApiDomains(_fixedDomains);
         if (bestApiUrl == null) throw Exception('无法连接到荐片服务器');
         _baseUrl = bestApiUrl;
-        await prefs.setString('last_api_domain', _baseUrl);
+        await configBox.put('last_api_domain', _baseUrl);
       } else {
         bool currentOk = await _testDomain(_baseUrl);
         if (!currentOk) {
           bestApiUrl = await _raceApiDomains(_fixedDomains);
           if (bestApiUrl != null) {
             _baseUrl = bestApiUrl;
-            await prefs.setString('last_api_domain', _baseUrl);
+            await configBox.put('last_api_domain', _baseUrl);
           }
         }
       }
@@ -107,15 +108,39 @@ class JpApi {
 
   Future<String?> _raceApiDomains(List<String> domains) async {
     if (domains.isEmpty) return null;
+    final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final ttlMs = 24 * 60 * 60 * 1000; // 24 hours
+
+    String? bestCachedDomain;
+    int bestCachedLatency = 999999;
+    for (final domain in domains) {
+      final record = nodeBox.get(domain);
+      if (record != null && (now - record.testedAtEpoch) < ttlMs) {
+        if (record.latencyMs < 500 && record.latencyMs < bestCachedLatency) {
+          bestCachedLatency = record.latencyMs;
+          bestCachedDomain = domain;
+        }
+      }
+    }
+    if (bestCachedDomain != null) {
+      jpLog('API', 'Using cached fast API domain: $bestCachedDomain (${bestCachedLatency}ms)');
+      return 'https://$bestCachedDomain/api';
+    }
+
     final completer = Completer<String?>();
     int failedCount = 0;
 
     for (final domain in domains) {
       final url = 'https://$domain/api';
+      final start = DateTime.now().millisecondsSinceEpoch;
       _testDomain(url).then((success) {
+        final latency = DateTime.now().millisecondsSinceEpoch - start;
         if (success) {
+          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
           if (!completer.isCompleted) completer.complete(url);
         } else {
+          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: 99999, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
           failedCount++;
           if (failedCount == domains.length && !completer.isCompleted) {
             completer.complete(null);
@@ -169,14 +194,38 @@ class JpApi {
 
   Future<String?> _raceImgDomains(List<String> domains, String path) async {
     if (domains.isEmpty) return null;
+    final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final ttlMs = 24 * 60 * 60 * 1000; // 24 hours
+
+    String? bestCachedDomain;
+    int bestCachedLatency = 999999;
+    for (final domain in domains) {
+      final record = nodeBox.get(domain);
+      if (record != null && (now - record.testedAtEpoch) < ttlMs) {
+        if (record.latencyMs < 500 && record.latencyMs < bestCachedLatency) {
+          bestCachedLatency = record.latencyMs;
+          bestCachedDomain = domain;
+        }
+      }
+    }
+    if (bestCachedDomain != null) {
+      jpLog('CDN', 'Using cached fast Img domain: $bestCachedDomain (${bestCachedLatency}ms)');
+      return bestCachedDomain;
+    }
+
     final completer = Completer<String?>();
     int failedCount = 0;
 
     for (final domain in domains) {
+      final start = DateTime.now().millisecondsSinceEpoch;
       _testImgDomain(domain, path).then((success) {
+        final latency = DateTime.now().millisecondsSinceEpoch - start;
         if (success) {
+          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
           if (!completer.isCompleted) completer.complete(domain);
         } else {
+          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: 99999, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
           failedCount++;
           if (failedCount == domains.length && !completer.isCompleted) {
             completer.complete(null);
@@ -243,14 +292,14 @@ class JpApi {
 
       jpLog('CDN', 'Final active imgDomain resolved to: $_imgDomain');
       
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('last_img_domain', _imgDomain);
+      final configBox = Hive.box<String>('config');
+      await configBox.put('last_img_domain', _imgDomain);
 
       // 初始化系统参数，拉取接口签名所需的安全 Secret 并本地缓存
       final initResp = await _get('/v2/sys/init');
       if (initResp != null && initResp['data'] != null && initResp['data']['secret'] != null) {
         _secret = initResp['data']['secret'];
-        await prefs.setString('secret', _secret);
+        await configBox.put('secret', _secret);
       }
     } catch (e, s) {
       jpLog('CDN', 'Error in _loadConfig: $e\n$s');

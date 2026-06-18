@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'pages/home_page.dart';
 import 'player/locale_fix.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'models/mubu_models.dart';
+import 'models/mubu_hive.dart';
 import 'api/mubu_api_client.dart';
 import 'api/jp_api_impl.dart';
 
@@ -20,6 +23,18 @@ Future<void> main() async {
   HttpOverrides.global = MyHttpOverrides();
   setNumericLocaleToC();
   MediaKit.ensureInitialized();
+
+  // Initialize Hive
+  await Hive.initFlutter();
+  Hive.registerAdapter(VideoItemAdapter());
+  Hive.registerAdapter(NodeSpeedRecordAdapter());
+
+  await Future.wait([
+    Hive.openBox<VideoItem>('bookmarks'),
+    Hive.openBox<VideoItem>('history'),
+    Hive.openBox<String>('config'),
+    Hive.openBox<NodeSpeedRecord>('node_speeds'),
+  ]);
 
   // Initialize Mubu API client
   MubuApiClient.instance = JpApiClientImpl();

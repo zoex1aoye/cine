@@ -9,6 +9,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
 import '../models/mubu_models.dart';
+import 'package:hive/hive.dart';
+import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
 import '../widgets/hover_close_button.dart';
@@ -404,34 +406,90 @@ class _PlayerPageState extends State<PlayerPage> {
 
     // 逐条测速 + 延迟间隔
     final hasSavedLine = _savedLineName != null && _savedLineName!.isNotEmpty;
+    final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final ttlMs = 12 * 60 * 60 * 1000; // 12 hours
+
+    // 1. 全局第一遍：全部过一遍缓存
+    for (var i = 0; i < indices.length; i++) {
+      final idx = indices[i];
+      final url = _sources[idx].url;
+      final uri = Uri.tryParse(url);
+      final domain = uri?.host ?? '';
+      if (domain.isNotEmpty) {
+        final record = nodeBox.get(domain);
+        if (record != null && (now - record.testedAtEpoch) < ttlMs && record.latencyMs < 500) {
+          _sources[idx].speedMs = record.latencyMs;
+          _sources[idx].usable = true;
+          debugPrint('SPEED: [$idx] CACHE HIT ${record.latencyMs}ms for $domain');
+        }
+      }
+    }
+
+    // 2. 如果缓存中存在可用快线，立即优先起播
+    if (!_playerInitialized) {
+      int? bestCachedIdx;
+      // 优先看记忆保存的线路是否命中缓存
+      if (hasSavedLine) {
+        final savedIdx = indices.indexWhere((i) => _sources[i].name == _savedLineName);
+        if (savedIdx != -1 && _sources[savedIdx].speedMs != null && _sources[savedIdx].speedMs! < 500) {
+          bestCachedIdx = savedIdx;
+        }
+      }
+      // 如果没有保存的线路，或者保存的没命中，拿第一条命中的缓存线路
+      if (bestCachedIdx == null) {
+        for (final idx in indices) {
+          if (_sources[idx].speedMs != null && _sources[idx].speedMs! < 500) {
+            bestCachedIdx = idx;
+            break;
+          }
+        }
+      }
+
+      // 如果成功找到缓存快线，直接初始化播放器！
+      if (bestCachedIdx != null) {
+        _selectedSource = bestCachedIdx;
+        _currentUrl = _sources[bestCachedIdx].url;
+        debugPrint('PLAYER: cached fast line found — init immediately');
+        if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+        await _initPlayer();
+        if (_disposed) return;
+        if (mounted) setState(() { _stage = LoadingStage.ready; });
+      }
+    }
+
+    // 3. 剩余未命中的线路，进入原本的慢速串行网络测速
     for (var i = 0; i < indices.length && !_disposed; i++) {
-      await _testSource(indices[i], _client!);
+      final idx = indices[i];
+      
+      // 已经命中缓存的，无需重复测
+      if (_sources[idx].speedMs != null) {
+        if (mounted) setState(() => _testedCount++);
+        continue;
+      }
+
+      await _testSource(idx, _client!);
       if (_disposed) break;
       if (mounted) setState(() => _testedCount++);
 
-      // 首条快线找到 → 分场景处理
       if (!_playerInitialized) {
-        final passes = _sources[indices[i]].usable &&
-            _sources[indices[i]].speedMs != null &&
-            _sources[indices[i]].speedMs! < 500;
+        final passes = _sources[idx].usable &&
+            _sources[idx].speedMs != null &&
+            _sources[idx].speedMs! < 500;
         if (passes) {
           if (hasSavedLine) {
-            // Re-enter: 保存线路排在队首，如果它快就立即 init（URL 正确）
-            // 如果不是保存线路（保存线路慢，这是下一条快线），等测速完再选源
-            if (_sources[indices[i]].name == _savedLineName) {
-              _selectedSource = indices[i];
-              _currentUrl = _sources[indices[i]].url;
+            if (_sources[idx].name == _savedLineName) {
+              _selectedSource = idx;
+              _currentUrl = _sources[idx].url;
               debugPrint('PLAYER: saved line fast — init immediately');
               if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
               await _initPlayer();
               if (_disposed) return;
               if (mounted) setState(() { _stage = LoadingStage.ready; });
             }
-            // 非保存线路的快线：不 init，等测速完由 _applySavedEpisodeSelection 决定
           } else {
-            // 普通场景：无保存记录，首条快线立即 init
-            _selectedSource = indices[i];
-            _currentUrl = _sources[indices[i]].url;
+            _selectedSource = idx;
+            _currentUrl = _sources[idx].url;
             debugPrint('PLAYER: first fast line — init immediately');
             if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
             await _initPlayer();
@@ -441,7 +499,7 @@ class _PlayerPageState extends State<PlayerPage> {
         }
       }
 
-      // 延迟间隔（最后一条不需要等）
+      // 只要不是最后一条，网络请求后必须延迟
       if (i < indices.length - 1) {
         await Future.delayed(delayBetweenTests);
       }
@@ -500,6 +558,20 @@ class _PlayerPageState extends State<PlayerPage> {
       final body = getResp.bodyBytes;
       final isVideo = body.length > 100 && (getResp.statusCode == 200 || getResp.statusCode == 206) && !_looksLikeHtml(body);
       _sources[index].usable = isVideo;
+      
+      if (isVideo) {
+        final uri = Uri.tryParse(url);
+        // Only record fast nodes (< 500ms) to the database as requested
+        if (uri != null && uri.host.isNotEmpty && sw.elapsedMilliseconds < 500) {
+          Hive.box<NodeSpeedRecord>('node_speeds').put(
+            uri.host,
+            NodeSpeedRecord(domainOrUrl: uri.host, latencyMs: sw.elapsedMilliseconds, testedAtEpoch: DateTime.now().millisecondsSinceEpoch),
+          );
+        }
+      } else {
+        _sources[index].speedMs = 999999;
+      }
+      
       debugPrint('SPEED: [$index] $name ${sw.elapsedMilliseconds}ms ${getResp.statusCode} ${body.length}B ${isVideo ? "✅" : "❌HTML"}');
     } catch (e) {
       sw.stop();
