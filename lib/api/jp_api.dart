@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
@@ -23,6 +24,8 @@ class JpApi {
   bool _initialized = false;
   Future<void>? _initFuture;
 
+  static final HttpClient _sharedHttpClient = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+
   static final JpApi _instance = JpApi._();
   factory JpApi() => _instance;
   JpApi._();
@@ -35,8 +38,8 @@ class JpApi {
 
   /// 客户端 API 初始化入口
   /// 
-  /// 优先加载本地持久化缓存的域名和 secret。若不可用，则并发/依次测试内置域名，
-  /// 建立网络连通后，初始化配置参数（图片 CDN 域名及安全 Secret）。
+  /// 优先加载本地持久化缓存。若存在缓存立即返回成功，并在后台静默刷新验证。
+  /// 若无缓存，则并发测试可用域名并初始化配置。
   Future<void> init() async {
     if (_initialized) return;
     _initFuture ??= _doInit();
@@ -48,36 +51,79 @@ class JpApi {
       final prefs = await SharedPreferences.getInstance();
       final cached = prefs.getString('last_api_domain');
       final cachedSecret = prefs.getString('secret');
+      final cachedImgDomain = prefs.getString('last_img_domain');
 
-      // 优先测试并使用上次成功保存的缓存域名
-      if (cached != null && cachedSecret != null) {
-        if (await _testDomain(cached)) {
-          _baseUrl = cached;
-          _secret = cachedSecret;
-          await _loadConfig();
-          _initialized = true;
-          return;
+      final hasValidCache = cached != null && cachedSecret != null && cachedSecret.isNotEmpty;
+
+      if (hasValidCache) {
+        _baseUrl = cached;
+        _secret = cachedSecret;
+        if (cachedImgDomain != null && cachedImgDomain.isNotEmpty) {
+          _imgDomain = cachedImgDomain;
+        } else {
+          _imgDomain = 'static2.gutaike.com';
         }
+        _initialized = true;
+        // 懒加载：立即返回成功并让 UI 渲染，同时在后台静默测速刷新
+        unawaited(_backgroundRefresh(isFirstInit: false));
+        return;
       }
 
-      // 缓存不可用时，依次测试固定的内置域名
-      for (final domain in _fixedDomains) {
-        final url = 'https://$domain/api';
-        if (await _testDomain(url)) {
-          _baseUrl = url;
-          await prefs.setString('last_api_domain', url);
-          if (_secret.isNotEmpty) await prefs.setString('secret', _secret);
-          await _loadConfig();
-          _initialized = true;
-          return;
-        }
-      }
-
-      throw Exception('无法连接到荐片服务器');
+      // 无缓存，必须全量阻塞测速
+      await _backgroundRefresh(isFirstInit: true);
+      _initialized = true;
     } catch (e) {
-      _initFuture = null; // Allow retry on failure
+      _initFuture = null; // 允许失败重试
       rethrow;
     }
+  }
+
+  Future<void> _backgroundRefresh({required bool isFirstInit}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      String? bestApiUrl;
+
+      if (isFirstInit) {
+        bestApiUrl = await _raceApiDomains(_fixedDomains);
+        if (bestApiUrl == null) throw Exception('无法连接到荐片服务器');
+        _baseUrl = bestApiUrl;
+        await prefs.setString('last_api_domain', _baseUrl);
+      } else {
+        bool currentOk = await _testDomain(_baseUrl);
+        if (!currentOk) {
+          bestApiUrl = await _raceApiDomains(_fixedDomains);
+          if (bestApiUrl != null) {
+            _baseUrl = bestApiUrl;
+            await prefs.setString('last_api_domain', _baseUrl);
+          }
+        }
+      }
+
+      await _loadConfig();
+    } catch (e, s) {
+      jpLog('API', 'Background refresh failed: $e\n$s');
+    }
+  }
+
+  Future<String?> _raceApiDomains(List<String> domains) async {
+    if (domains.isEmpty) return null;
+    final completer = Completer<String?>();
+    int failedCount = 0;
+
+    for (final domain in domains) {
+      final url = 'https://$domain/api';
+      _testDomain(url).then((success) {
+        if (success) {
+          if (!completer.isCompleted) completer.complete(url);
+        } else {
+          failedCount++;
+          if (failedCount == domains.length && !completer.isCompleted) {
+            completer.complete(null);
+          }
+        }
+      });
+    }
+    return completer.future;
   }
 
   /// 测试指定 API 域名的连通性
@@ -100,18 +146,17 @@ class JpApi {
 
   /// 测试指定图片/封面 CDN 域名的连通性
   /// 
-  /// 使用原生 HttpClient 并发起 HTTPS GET 请求测试指定测试图片是否存在（HttpStatus.ok）
+  /// 使用共享的 HttpClient (Keep-Alive) 进行测速，提升后续请求的连接复用率
   Future<bool> _testImgDomain(String domain, String path) async {
     if (domain.isEmpty) return false;
-    final client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 2);
     try {
-      final request = await client.getUrl(Uri.parse('https://$domain$path')).timeout(const Duration(seconds: 2));
-      request.headers.set('Connection', 'close');
+      final request = await _sharedHttpClient.getUrl(Uri.parse('https://$domain$path'))
+          .timeout(const Duration(seconds: 2));
+      // 移除 'Connection: close'，允许复用
       final response = await request.close().timeout(const Duration(seconds: 2));
       final success = response.statusCode == HttpStatus.ok;
       
-      // 读空响应体以确保 underlying socket 可以被系统正确回收
+      // 读空响应体让连接能够放回池中复用
       await response.drain().timeout(const Duration(seconds: 1));
       
       jpLog('CDN', 'Tested domain: $domain | success: $success | statusCode: ${response.statusCode}');
@@ -119,9 +164,27 @@ class JpApi {
     } catch (e) {
       jpLog('CDN', 'Tested domain: $domain | failed with exception: $e');
       return false;
-    } finally {
-      client.close(force: true);
     }
+  }
+
+  Future<String?> _raceImgDomains(List<String> domains, String path) async {
+    if (domains.isEmpty) return null;
+    final completer = Completer<String?>();
+    int failedCount = 0;
+
+    for (final domain in domains) {
+      _testImgDomain(domain, path).then((success) {
+        if (success) {
+          if (!completer.isCompleted) completer.complete(domain);
+        } else {
+          failedCount++;
+          if (failedCount == domains.length && !completer.isCompleted) {
+            completer.complete(null);
+          }
+        }
+      });
+    }
+    return completer.future;
   }
 
   /// 加载系统配置（重点获取图片 CDN 域名与解密/防爬 Secret）
@@ -166,36 +229,27 @@ class JpApi {
         }
         jpLog('CDN', 'Final testing list (including hardcoded fallback): $backupDomains');
 
-        // 并发进行备选域名测速
-        final results = await Future.wait(
-          backupDomains.map((domain) => _testImgDomain(domain, testPath)),
-        );
-
-        bool found = false;
-        for (int i = 0; i < backupDomains.length; i++) {
-          if (results[i]) {
-            _imgDomain = backupDomains[i];
-            found = true;
-            break;
-          }
-        }
-
-        // 若全部测速失败，退化选用第一个备选域名作为兜底
-        if (!found && backupDomains.isNotEmpty) {
+        // 并发进行备选域名测速 (竞速模式)
+        final bestDomain = await _raceImgDomains(backupDomains, testPath);
+        
+        if (bestDomain != null) {
+          _imgDomain = bestDomain;
+          jpLog('CDN', 'Selected backup domain: $_imgDomain');
+        } else if (backupDomains.isNotEmpty) {
           _imgDomain = backupDomains.first;
           jpLog('CDN', 'None of the tested backup domains succeeded. Using first backup domain: $_imgDomain');
-        } else {
-          jpLog('CDN', 'Selected backup domain: $_imgDomain');
         }
       }
 
       jpLog('CDN', 'Final active imgDomain resolved to: $_imgDomain');
+      
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('last_img_domain', _imgDomain);
 
       // 初始化系统参数，拉取接口签名所需的安全 Secret 并本地缓存
       final initResp = await _get('/v2/sys/init');
       if (initResp != null && initResp['data'] != null && initResp['data']['secret'] != null) {
         _secret = initResp['data']['secret'];
-        final prefs = await SharedPreferences.getInstance();
         await prefs.setString('secret', _secret);
       }
     } catch (e, s) {
