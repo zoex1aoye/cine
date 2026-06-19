@@ -59,6 +59,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   bool _hasMore = true;
   int _page = 1;
   String? _error;
+  int _videoReqId = 0;
 
   static const int _pageSize = 15;
 
@@ -163,8 +164,9 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   }
 
   Future<void> _loadVideos(int catId, {bool reset = false}) async {
-    if (_loadingVideos) return;
+    if (_loadingVideos && !reset) return;
 
+    final int reqId = ++_videoReqId;
     int targetPage = reset ? 1 : _page + 1;
 
     setState(() {
@@ -207,6 +209,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         page: targetPage,
       );
       if (!mounted) return;
+      if (reqId != _videoReqId) return;
       if (catId != _activeCategoryId) return;
 
       if (reset && _scrollController.hasClients) {
@@ -230,6 +233,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     } catch (e) {
       debugPrint('FILTER: Failed to load videos: $e');
       if (!mounted) return;
+      if (reqId != _videoReqId) return;
       if (catId != _activeCategoryId) return;
       setState(() {
         _loadingVideos = false;
