@@ -3,6 +3,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
+import 'mubu_button.dart';
 
 class MovieCard extends StatefulWidget {
   final VideoItem video;
@@ -206,22 +207,18 @@ class _MovieCardState extends State<MovieCard> {
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      _CardOverlayButton(
+                                      MubuButton(
                                         icon: Icons.play_arrow_rounded,
-                                        primary: true,
-                                        onTap: widget.onPlay,
-                                        size: widget.buttonSize ??
-                                            UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
+                                        type: MubuButtonType.primary,
+                                        onPressed: widget.onPlay,
+                                        customHeight: widget.buttonSize ?? UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
                                       ),
-                                      SizedBox(
-                                          width: UIAdapt.px(
-                                              context, widget.onDelete != null ? 14 : 20)),
-                                      _CardOverlayButton(
+                                      SizedBox(width: UIAdapt.px(context, widget.onDelete != null ? 14 : 20)),
+                                      MubuButton(
                                         icon: Icons.info_outline_rounded,
-                                        primary: false,
-                                        onTap: widget.onInfo,
-                                        size: widget.buttonSize ??
-                                            UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
+                                        type: MubuButtonType.icon,
+                                        onPressed: widget.onInfo,
+                                        customHeight: widget.buttonSize ?? UIAdapt.px(context, widget.onDelete != null ? 36 : 44),
                                       ),
                                     ],
                                   ),
@@ -231,7 +228,14 @@ class _MovieCardState extends State<MovieCard> {
                                   Positioned(
                                     top: 8,
                                     right: 8,
-                                    child: _DeleteIconButton(onTap: widget.onDelete!),
+                                    child: MubuButton(
+                                      icon: Icons.delete_outline_rounded,
+                                      type: MubuButtonType.icon, // Using icon variant for subtle glassmorphism delete
+                                      onPressed: () {
+                                        widget.onDelete!();
+                                      },
+                                      customHeight: 28,
+                                    ),
                                   ),
                               ],
                             ),
@@ -242,7 +246,14 @@ class _MovieCardState extends State<MovieCard> {
                         Positioned(
                           top: 8,
                           right: 8,
-                          child: _DeleteIconButton(onTap: widget.onDelete!),
+                          child: MubuButton(
+                            icon: Icons.delete_outline_rounded,
+                            type: MubuButtonType.icon,
+                            onPressed: () {
+                              widget.onDelete!();
+                            },
+                            customHeight: 28,
+                          ),
                         ),
                     ],
                   ),
@@ -301,124 +312,6 @@ class _MovieCardState extends State<MovieCard> {
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CardOverlayButton extends StatefulWidget {
-  final IconData icon;
-  final bool primary;
-  final VoidCallback onTap;
-  final double size;
-
-  const _CardOverlayButton({
-    required this.icon,
-    required this.primary,
-    required this.onTap,
-    required this.size,
-  });
-
-  @override
-  State<_CardOverlayButton> createState() => _CardOverlayButtonState();
-}
-
-class _CardOverlayButtonState extends State<_CardOverlayButton> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final btnSize = widget.size;
-    final iconSize = btnSize * 0.5;
-    const redColor = Color(0xFFE50914);
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          width: btnSize,
-          height: btnSize,
-          transform: _hovered ? (Matrix4.identity()..scale(1.1)) : Matrix4.identity(),
-          transformAlignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: widget.primary
-                ? (_hovered ? const Color(0xFFF40F1D) : redColor)
-                : (Colors.white.withOpacity(_hovered ? 0.2 : 0.1)),
-            border: widget.primary
-                ? null
-                : Border.all(color: Colors.white.withOpacity(_hovered ? 0.25 : 0.1)),
-            boxShadow: widget.primary
-                ? [
-                    BoxShadow(
-                      color: redColor.withOpacity(_hovered ? 0.6 : 0.4),
-                      blurRadius: _hovered ? 12 : 8,
-                    )
-                  ]
-                : null,
-          ),
-          child: Icon(
-            widget.icon,
-            size: iconSize,
-            color: Colors.white,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DeleteIconButton extends StatefulWidget {
-  final VoidCallback onTap;
-  const _DeleteIconButton({required this.onTap});
-
-  @override
-  State<_DeleteIconButton> createState() => _DeleteIconButtonState();
-}
-
-class _DeleteIconButtonState extends State<_DeleteIconButton> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    const redColor = Color(0xFFE50914);
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: () {
-          // Prevent tap propagation to the card
-          widget.onTap();
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          width: 28,
-          height: 28,
-          transform: _hovered ? (Matrix4.identity()..scale(1.15)) : Matrix4.identity(),
-          transformAlignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: _hovered ? redColor : Colors.black.withOpacity(0.55),
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: _hovered ? redColor.withOpacity(0.6) : Colors.white.withOpacity(0.08),
-              width: 0.5,
-            ),
-            boxShadow: _hovered
-                ? [BoxShadow(color: redColor.withOpacity(0.4), blurRadius: 8)]
-                : null,
-          ),
-          child: const Icon(
-            Icons.delete_outline_rounded,
-            color: Colors.white,
-            size: 14,
           ),
         ),
       ),

@@ -144,9 +144,9 @@ class MediaKitPlayerImpl implements JpPlayer {
   Future<void> seek(Duration position) async => await _player.seek(position);
 
   @override
-  Future<void> setSource(String url) async {
+  Future<void> setSource(String url, {bool autoPlay = true}) async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 热切换播放源至 $url');
-    await _player.open(Media(url));
+    await _player.open(Media(url), play: autoPlay);
   }
 
   @override

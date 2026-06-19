@@ -7,6 +7,7 @@ import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
 import '../widgets/movie_info_dialog.dart';
 import '../widgets/movie_sliver_grid.dart';
+import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
 import '../widgets/load_more_button.dart';
@@ -261,7 +262,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
 
   void _showVideoInfo(VideoItem video) async {
     BuildContext? dialogContext;
-    showDialog(
+    MubuDialog.showCustom(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -277,7 +278,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         dialogContext = null;
       }
       if (detail != null) {
-        showDialog(
+        MubuDialog.showCustom(
           context: context,
           builder: (ctx) => MovieInfoDialog(
             detail: detail,
@@ -308,7 +309,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   }
 
   void _showInfoError(BuildContext ctx, String title) {
-    showDialog(
+    MubuDialog.showCustom(
       context: ctx,
       builder: (ctx) => _InfoErrorDialog(title: title),
     );

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'mubu_button.dart';
 
 class MubuErrorWidget extends StatelessWidget {
   final String? title;
@@ -51,21 +52,11 @@ class MubuErrorWidget extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
-        ElevatedButton(
+        MubuButton(
+          label: buttonText,
+          icon: Icons.refresh_rounded,
+          type: MubuButtonType.primary,
           onPressed: onRetry,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: primaryColor,
-            foregroundColor: Colors.white,
-            elevation: 0,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-          child: Text(
-            buttonText,
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
         ),
       ],
     );

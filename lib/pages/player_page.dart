@@ -6,9 +6,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:cached_network_image/cached_network_image.dart';
+import '../models/mubu_models.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
-import '../models/mubu_models.dart';
+import '../api/mubu_ui_adapt.dart';
+import '../utils/platform_utils.dart';
+import '../widgets/mubu_dialog.dart';
 import 'package:hive/hive.dart';
 import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
@@ -592,7 +595,9 @@ class _PlayerPageState extends State<PlayerPage> {
     final src = _sources[index];
     _selectedSource = index;
     _currentUrl = src.url;
-    _player?.setSource(_currentUrl);
+    
+    final shouldAutoPlay = _startPlayRequested && (_player?.isPlayingNotifier.value == true);
+    _player?.setSource(_currentUrl, autoPlay: shouldAutoPlay);
     setState(() {});
   }
 
@@ -1205,7 +1210,7 @@ class _PlayerPageState extends State<PlayerPage> {
                 CompositedTransformTarget(
                   link: _lineLink,
                   child: GestureDetector(
-                    onTap: () => setState(() => _expanded = !_expanded),
+                    onTap: _showAdaptiveLineSelector,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
@@ -1229,7 +1234,7 @@ class _PlayerPageState extends State<PlayerPage> {
                             ),
                           ),
                           const SizedBox(width: 3),
-                          Icon(
+                          const Icon(
                             Icons.keyboard_arrow_down_rounded,
                             color: Colors.white38,
                             size: 12,
@@ -1377,107 +1382,158 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  void _showAdaptiveLineSelector() {
+    if (isDesktopPlatform) {
+      setState(() => _expanded = !_expanded);
+    } else {
+      final isWide = MediaQuery.of(context).size.width >= 600;
+      if (isWide) {
+        // TV / Pad landscape: Center Dialog
+        MubuDialog.showCustom(
+          context: context,
+          builder: (ctx) => Center(
+            child: Material(
+              color: Colors.transparent,
+              child: MubuDialogContainer(
+                maxWidth: 360,
+                child: _buildLineSelectorContent(isDialog: true),
+              ),
+            ),
+          ),
+        );
+      } else {
+        // Mobile: BottomSheet
+        showModalBottomSheet(
+          context: context,
+          backgroundColor: Colors.transparent,
+          isScrollControlled: true,
+          builder: (ctx) => Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF16161A).withOpacity(0.95),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+              border: Border(top: BorderSide(color: Colors.white.withOpacity(0.08))),
+            ),
+            child: SafeArea(
+              top: false,
+              child: _buildLineSelectorContent(isBottomSheet: true),
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildLineDropdownCard() {
-    final lines = _uniqueLineNames;
     final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final isSmallHeight = screenHeight < 500;
     final dropdownMaxWidth = (screenWidth - 48).clamp(200.0, 320.0); // 左右各留24px安全边距
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          width: dropdownMaxWidth,
-          constraints: const BoxConstraints(minWidth: 200),
-          decoration: BoxDecoration(
-            color: const Color(0xFF16161A).withOpacity(0.95),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white.withOpacity(0.08)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.85),
-                blurRadius: 50,
-                offset: const Offset(0, 25),
-              ),
-            ],
-          ),
-          padding: EdgeInsets.all(isSmallHeight ? 10 : 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.shuffle, color: Colors.white38, size: 15),
-                  const SizedBox(width: 8),
-                  const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () => setState(() => _expanded = false),
-                    child: const Icon(Icons.close, color: Colors.white38, size: 16),
-                  ),
-                ],
-              ),
-              SizedBox(height: isSmallHeight ? 8 : 12),
-              ConstrainedBox(
-                constraints: BoxConstraints(maxHeight: isSmallHeight ? 100 : 200),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: lines.length,
-                  itemBuilder: (context, idx) {
-                    final name = lines[idx];
-                    final active = name == _selectedLineName;
-                    final speed = _lineSpeed(name);
-                    final usable = _isLineUsable(name);
-                    if (!usable && !active) return const SizedBox.shrink();
+    return Material(
+      color: Colors.transparent,
+      child: MubuDialogContainer(
+        maxWidth: dropdownMaxWidth,
+        margin: EdgeInsets.zero,
+        borderRadius: 16,
+        child: _buildLineSelectorContent(),
+      ),
+    );
+  }
 
-                    return GestureDetector(
-                      onTap: () {
-                        _switchLine(name);
-                        setState(() => _expanded = false);
-                      },
-                      child: Container(
-                        margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
-                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: isSmallHeight ? 6 : 8),
-                        decoration: BoxDecoration(
-                          color: active ? _primaryRed : Colors.white.withAlpha(10),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          children: [
-                            _speedDot(speed),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                name,
-                                style: TextStyle(
-                                  color: active ? Colors.white : Colors.white70,
-                                  fontSize: 12,
-                                  fontWeight: active ? FontWeight.bold : FontWeight.normal,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              _speedLabel(speed),
-                              style: TextStyle(
-                                color: active ? Colors.white70 : _speedColor(speed),
-                                fontSize: 10,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
+  Widget _buildLineSelectorContent({bool isBottomSheet = false, bool isDialog = false}) {
+    final lines = _uniqueLineNames;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final isSmallHeight = screenHeight < 500 && !isBottomSheet;
+    
+    return Padding(
+      padding: EdgeInsets.all(isBottomSheet ? 24 : (isSmallHeight ? 10 : 16)),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shuffle, color: Colors.white38, size: 15),
+              const SizedBox(width: 8),
+              const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              if (!isDialog && !isBottomSheet)
+                GestureDetector(
+                  onTap: () => setState(() => _expanded = false),
+                  child: const Icon(Icons.close, color: Colors.white38, size: 18),
+                )
+              else if (isBottomSheet)
+                GestureDetector(
+                  onTap: () => Navigator.pop(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 16),
+                  ),
                 ),
-              ),
             ],
           ),
-        ),
+          SizedBox(height: isSmallHeight ? 8 : 16),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: isBottomSheet ? screenHeight * 0.5 : (isSmallHeight ? 100 : 300)),
+            child: ListView.builder(
+              shrinkWrap: true,
+              physics: const BouncingScrollPhysics(),
+              itemCount: lines.length,
+              itemBuilder: (context, idx) {
+                final name = lines[idx];
+                final active = name == _selectedLineName;
+                final speed = _lineSpeed(name);
+                final usable = _isLineUsable(name);
+                if (!usable && !active) return const SizedBox.shrink();
+
+                return GestureDetector(
+                  onTap: () {
+                    _switchLine(name);
+                    if (isDesktopPlatform && _expanded) {
+                      setState(() => _expanded = false);
+                    } else if (isBottomSheet || isDialog) {
+                      Navigator.pop(context);
+                    }
+                  },
+                  child: Container(
+                    margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: isSmallHeight ? 8 : 12),
+                    decoration: BoxDecoration(
+                      color: active ? _primaryRed : Colors.white.withOpacity(0.04),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: active ? _primaryRed : Colors.white.withOpacity(0.05)),
+                    ),
+                    child: Row(
+                      children: [
+                        _speedDot(speed),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            name,
+                            style: TextStyle(
+                              color: active ? Colors.white : Colors.white.withOpacity(0.85),
+                              fontSize: 14,
+                              fontWeight: active ? FontWeight.bold : FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _speedLabel(speed),
+                          style: TextStyle(
+                            color: active ? Colors.white70 : _speedColor(speed),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

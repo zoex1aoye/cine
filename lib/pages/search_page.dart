@@ -5,6 +5,7 @@ import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
 import '../widgets/movie_sliver_grid.dart';
 import '../widgets/movie_info_dialog.dart';
+import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
 import '../widgets/load_more_button.dart';
@@ -106,7 +107,7 @@ class _SearchPageState extends State<SearchPage> {
 
   void _showVideoInfo(VideoItem video) async {
     BuildContext? dialogContext;
-    showDialog(
+    MubuDialog.showCustom(
       context: context,
       barrierDismissible: false,
       builder: (ctx) {
@@ -122,7 +123,7 @@ class _SearchPageState extends State<SearchPage> {
         dialogContext = null;
       }
       if (detail != null) {
-        showDialog(
+        MubuDialog.showCustom(
           context: context,
           builder: (ctx) => MovieInfoDialog(
             detail: detail,

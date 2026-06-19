@@ -1,4 +1,3 @@
-// lib/widgets/movie_info_dialog.dart
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -6,6 +5,8 @@ import '../models/mubu_models.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_ui_adapt.dart';
+import 'mubu_button.dart';
+import 'mubu_dialog.dart';
 
 class MovieInfoDialog extends StatefulWidget {
   final VideoDetail detail;
@@ -186,100 +187,27 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
           // Actions row
           Row(
             children: [
-              // Play Button with Red Glow Shadow
               Expanded(
                 flex: 3,
-                child: Container(
-                  height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFE50914).withOpacity(0.35),
-                        blurRadius: UIAdapt.px(context, 12),
-                        spreadRadius: 1,
-                        offset: Offset(0, UIAdapt.px(context, 4)),
-                      ),
-                    ],
-                  ),
-                  child: ElevatedButton.icon(
-                    onPressed: widget.onPlay,
-                    icon: Icon(Icons.play_circle_fill_rounded, size: isWide ? UIAdapt.px(context, 20) : UIAdapt.px(context, 16)),
-                    label: Text(
-                      '开始播放',
-                      style: TextStyle(
-                        fontSize: isWide ? UIAdapt.fontSize(context, 14) : UIAdapt.fontSize(context, 12),
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFE50914),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: EdgeInsets.zero,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ).copyWith(
-                      backgroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return const Color(0xFFF40F1D); // Lighter red for hover
-                        }
-                        return const Color(0xFFE50914);
-                      }),
-                    ),
-                  ),
+                child: MubuButton(
+                  label: '开始播放',
+                  icon: Icons.play_circle_fill_rounded,
+                  type: MubuButtonType.primary,
+                  onPressed: widget.onPlay,
+                  fullWidth: true,
+                  customHeight: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
                 ),
               ),
               SizedBox(width: UIAdapt.px(context, isWide ? 12 : 8)),
-              // Glassmorphic Favorite Button (Rectangular Text + Icon)
               Expanded(
                 flex: 2,
-                child: Container(
-                  height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
-                  child: ElevatedButton.icon(
-                    onPressed: _toggleBookmark,
-                    icon: Icon(
-                      _isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-                      size: isWide ? UIAdapt.px(context, 18) : UIAdapt.px(context, 15),
-                    ),
-                    label: Text(
-                      '收藏',
-                      style: TextStyle(
-                        fontSize: isWide ? UIAdapt.fontSize(context, 14) : UIAdapt.fontSize(context, 12),
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.05),
-                      foregroundColor: _isBookmarked ? const Color(0xFFE50914) : Colors.white.withOpacity(0.8),
-                      shadowColor: Colors.transparent,
-                      surfaceTintColor: Colors.transparent,
-                      elevation: 0,
-                      side: BorderSide(color: Colors.white.withOpacity(0.1)),
-                      padding: EdgeInsets.zero,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ).copyWith(
-                      backgroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return Colors.white.withOpacity(0.12);
-                        }
-                        return Colors.white.withOpacity(0.05);
-                      }),
-                      foregroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return _isBookmarked ? const Color(0xFFE50914) : Colors.white;
-                        }
-                        return _isBookmarked ? const Color(0xFFE50914) : Colors.white.withOpacity(0.8);
-                      }),
-                      side: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return BorderSide(color: Colors.white.withOpacity(0.2));
-                        }
-                        return BorderSide(color: Colors.white.withOpacity(0.1));
-                      }),
-                    ),
-                  ),
+                child: MubuButton(
+                  label: _isBookmarked ? '已收藏' : '收藏',
+                  icon: _isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+                  type: _isBookmarked ? MubuButtonType.primary : MubuButtonType.secondary,
+                  onPressed: _toggleBookmark,
+                  fullWidth: true,
+                  customHeight: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
                 ),
               ),
             ],
@@ -288,31 +216,18 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
       );
     }
 
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: UIAdapt.px(context, 20),
-        vertical: UIAdapt.px(context, 40),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Container(
-            width: UIAdapt.px(context, 620),
+    // Material wrapper to provide theme context for standard Dialog-like usage if needed
+    return Material(
+      color: Colors.transparent,
+      child: Center(
+        child: MubuDialogContainer(
+          maxWidth: UIAdapt.px(context, 620),
+          margin: EdgeInsets.symmetric(
+            horizontal: UIAdapt.px(context, 20),
+            vertical: UIAdapt.px(context, 40),
+          ),
+          child: SizedBox(
             height: UIAdapt.px(context, isWide ? 380 : 540),
-            decoration: BoxDecoration(
-              color: const Color(0xFF16161A).withOpacity(0.95),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: Colors.white.withOpacity(0.08)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.85),
-                  blurRadius: 50,
-                  offset: const Offset(0, 25),
-                ),
-              ],
-            ),
             child: Stack(
               children: [
                 isWide
@@ -349,28 +264,15 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                           ),
                         ],
                       ),
-                // Top-right close floating button with backdrop blur
+                // Top-right close floating button
                 Positioned(
                   top: UIAdapt.px(context, 14),
                   right: UIAdapt.px(context, 14),
-                  child: ClipOval(
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                      child: Container(
-                        color: Colors.black.withOpacity(0.3),
-                        child: IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: Icon(
-                            Icons.close_rounded,
-                            color: Colors.white.withOpacity(0.8),
-                            size: UIAdapt.px(context, 20),
-                          ),
-                          hoverColor: Colors.white.withOpacity(0.1),
-                          constraints: const BoxConstraints(),
-                          padding: EdgeInsets.all(UIAdapt.px(context, 8)),
-                        ),
-                      ),
-                    ),
+                  child: MubuButton(
+                    icon: Icons.close_rounded,
+                    type: MubuButtonType.icon,
+                    onPressed: () => Navigator.pop(context),
+                    customHeight: UIAdapt.px(context, 32),
                   ),
                 ),
               ],

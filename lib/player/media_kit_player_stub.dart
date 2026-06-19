@@ -48,7 +48,7 @@ class MediaKitPlayerImpl implements JpPlayer {
   Future<void> seek(Duration position) async {}
 
   @override
-  Future<void> setSource(String url) async {}
+  Future<void> setSource(String url, {bool autoPlay = true}) async {}
 
   @override
   Future<void> dispose() async {

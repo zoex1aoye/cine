@@ -8,7 +8,7 @@ abstract class JpPlayer {
   Future<void> play();
   Future<void> pause();
   Future<void> seek(Duration position);
-  Future<void> setSource(String url);
+  Future<void> setSource(String url, {bool autoPlay = true});
   Future<void> dispose();
 
   // ValueNotifiers for state observation
