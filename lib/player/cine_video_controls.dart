@@ -302,11 +302,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     }
 
     // Mark ready when first video frame is decoded.
-    // 预热阶段（未拖动）保持暂停占用最低；正在拖动时立即定位并向前播放。
+    // 预热阶段（未拖动）保持暂停占用最低；拖动 / 确认中则立即对齐到目标位置。
     _previewPlayer!.stream.width.listen((w) {
       if (mounted && !_isPreviewReady && w != null) {
         setState(() => _isPreviewReady = true);
-        if (_isDragging) _seekPreview(_dragValue);
+        _alignPreviewToDrag();
       }
     });
 
@@ -315,9 +315,20 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     durSub = _previewPlayer!.stream.duration.listen((dur) {
       if (dur > Duration.zero && mounted && _isPreviewReady) {
         durSub.cancel();
-        if (_isDragging) _seekPreview(_dragValue);
+        _alignPreviewToDrag();
       }
     });
+  }
+
+  /// 预览解码就绪 / 切源后，把预览对齐到当前拖动目标：
+  /// 拖动中 → seek + 向前播放（理解 A）；确认中 → 仅 seek 定格目标帧；预热闲置 → 不动。
+  void _alignPreviewToDrag() {
+    if (_isDragging) {
+      _seekPreview(_dragValue);
+    } else if (_isConfirmingSeek) {
+      _previewSeekTarget = _dragValue;
+      _previewPlayer?.seek(Duration(milliseconds: _dragValue.toInt()));
+    }
   }
 
   /// 定位预览到指定位置并向前连续播放（理解 A：可播放预览）。
