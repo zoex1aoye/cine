@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
@@ -48,6 +49,7 @@ class _MovieCardState extends State<MovieCard> {
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: widget.onPlay,
+        onLongPress: _isDesktop ? null : widget.onInfo,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOutCubic,
@@ -92,7 +94,7 @@ class _MovieCardState extends State<MovieCard> {
               children: [
                 // AspectRatio forces a strictly uniform aspect ratio for all images
                 AspectRatio(
-                  aspectRatio: 16 / 11,
+                  aspectRatio: 2 / 3,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
@@ -113,6 +115,7 @@ class _MovieCardState extends State<MovieCard> {
                           : CachedNetworkImage(
                               imageUrl: widget.video.coverUrl(widget.imgDomain),
                               fit: BoxFit.cover,
+                              filterQuality: FilterQuality.high,
                               placeholder: (_, __) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: const Center(
@@ -196,11 +199,14 @@ class _MovieCardState extends State<MovieCard> {
                         AnimatedOpacity(
                           opacity: _hovered ? 1.0 : 0.0,
                           duration: const Duration(milliseconds: 250),
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.65),
-                            ),
-                            child: Stack(
+                          child: ClipRRect(
+                            child: BackdropFilter(
+                              filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.4),
+                                ),
+                                child: Stack(
                               children: [
                                 // Play & Info buttons centered
                                 Center(
@@ -241,7 +247,9 @@ class _MovieCardState extends State<MovieCard> {
                             ),
                           ),
                         ),
-                      // Mobile: always-visible delete button (no hover needed)
+                      ),
+                    ),
+                    // Mobile: always-visible delete button (no hover needed)
                       if (!_isDesktop && widget.onDelete != null)
                         Positioned(
                           top: 8,

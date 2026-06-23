@@ -90,20 +90,20 @@ class MovieSliverGrid extends StatelessWidget {
   /// 根据屏幕宽度返回推荐的卡片宽度
   static double getCardWidth(double screenWidth) {
     if (screenWidth < 500) {
-      // 手机竖屏：120-140px
-      return 130.0;
+      // 手机竖屏
+      return 110.0;
     } else if (screenWidth < 900) {
-      // 手机横屏 / 小平板：140-160px
-      return 150.0;
+      // 手机横屏 / 小平板
+      return 140.0;
     } else if (screenWidth < 1200) {
-      // iPad / 平板：160-180px
+      // iPad / 平板
       return 170.0;
     } else if (screenWidth < 1600) {
-      // 笔记本：180-200px
-      return 190.0;
+      // 笔记本
+      return 220.0;
     } else {
-      // 电视 / 大屏：200-220px
-      return 210.0;
+      // 电视 / 大屏
+      return 260.0;
     }
   }
 
@@ -113,17 +113,17 @@ class MovieSliverGrid extends StatelessWidget {
       // 手机竖屏：最多3列
       return 3;
     } else if (screenWidth < 900) {
-      // 手机横屏 / 小平板：最多5列
-      return 5;
+      // 手机横屏 / 小平板：最多4列
+      return 4;
     } else if (screenWidth < 1200) {
-      // iPad / 平板：最多6列
-      return 6;
+      // iPad / 平板：最多5列
+      return 5;
     } else if (screenWidth < 1600) {
-      // 笔记本：最多8列
-      return 8;
+      // 笔记本：最多6列
+      return 6;
     } else {
-      // 电视 / 大屏：最多10列
-      return 10;
+      // 电视 / 大屏：最多8列
+      return 8;
     }
   }
 }

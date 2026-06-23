@@ -220,62 +220,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  void _showVideoInfo(VideoItem video) async {
-    if (_isLoadingVideoInfo) return;
-    setState(() {
-      _isLoadingVideoInfo = true;
-    });
-
-    BuildContext? dialogContext;
-    MubuDialog.showCustom(
+  void _showVideoInfo(VideoItem video) {
+    MovieInfoDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return const Center(child: CircularProgressIndicator(color: kRed));
-      },
-    );
-    try {
-      final detail = await _api.getVideoDetail(video.id, isShort: video.isShortDrama);
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (detail != null) {
-        MubuDialog.showCustom(
-          context: context,
-          builder: (ctx) => MovieInfoDialog(
-            detail: detail,
-            video: video,
-            imgDomain: _api.imgDomain,
-            onPlay: () {
-              Navigator.pop(ctx);
-              _playVideo(video);
-            },
-          ),
-        ).then((_) => _loadBookmarksAndHistory());
-      } else {
-        if (context.mounted) {
-          _showInfoError(context, video.title);
-        }
-      }
-    } catch (e) {
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (context.mounted) {
-        _showInfoError(context, video.title);
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingVideoInfo = false;
-        });
-      }
-    }
+      video: video,
+      isShort: video.isShortDrama,
+      imgDomain: _api.imgDomain,
+      onPlay: () => _playVideo(video),
+    ).then((_) => _loadBookmarksAndHistory());
   }
 
 

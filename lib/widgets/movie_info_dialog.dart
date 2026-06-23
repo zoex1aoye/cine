@@ -7,20 +7,48 @@ import '../api/mubu_api_client.dart';
 import '../api/mubu_ui_adapt.dart';
 import 'mubu_button.dart';
 import 'mubu_dialog.dart';
+import 'mubu_skeleton.dart';
 
 class MovieInfoDialog extends StatefulWidget {
-  final VideoDetail detail;
   final VideoItem video;
   final String imgDomain;
   final VoidCallback onPlay;
+  final bool isShort;
+  final VideoDetail? preloadedDetail;
 
   const MovieInfoDialog({
     Key? key,
-    required this.detail,
     required this.video,
     required this.imgDomain,
     required this.onPlay,
+    required this.isShort,
+    this.preloadedDetail,
   }) : super(key: key);
+
+  static Future<void> show({
+    required BuildContext context,
+    required VideoItem video,
+    required String imgDomain,
+    required bool isShort,
+    required VoidCallback onPlay,
+  }) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withOpacity(0.7),
+      elevation: 0,
+      builder: (ctx) => MovieInfoDialog(
+        video: video,
+        imgDomain: imgDomain,
+        isShort: isShort,
+        onPlay: () {
+          Navigator.pop(ctx);
+          onPlay();
+        },
+      ),
+    );
+  }
 
   @override
   State<MovieInfoDialog> createState() => _MovieInfoDialogState();
@@ -28,11 +56,45 @@ class MovieInfoDialog extends StatefulWidget {
 
 class _MovieInfoDialogState extends State<MovieInfoDialog> {
   bool _isBookmarked = false;
+  VideoDetail? _detail;
+  bool _isLoading = false;
+  bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
+    _detail = widget.preloadedDetail;
     _checkBookmarkStatus();
+    if (_detail == null) {
+      _fetchDetail();
+    }
+  }
+
+  Future<void> _fetchDetail() async {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+    try {
+      final detail = await MubuApiClient.instance.getVideoDetail(
+        widget.video.id, 
+        isShort: widget.isShort
+      );
+      if (mounted) {
+        setState(() {
+          _detail = detail;
+          _isLoading = false;
+          _hasError = detail == null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+        });
+      }
+    }
   }
 
   Future<void> _checkBookmarkStatus() async {
@@ -55,13 +117,6 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
     final isWide = width >= 650;
     final coverUrl = widget.video.coverUrl(widget.imgDomain);
     
-    // Construct meta string matching prototype style: 2026 • 动作/科幻 • 评分 8.9
-    final metaParts = [
-      if (widget.detail.year.isNotEmpty) widget.detail.year,
-      if (widget.video.category.isNotEmpty) widget.video.category,
-      if (widget.detail.score.isNotEmpty) '评分 ${widget.detail.score}',
-    ].join(' • ');
-
     Widget posterWidget() {
       if (coverUrl.isEmpty) {
         return Container(
@@ -82,7 +137,79 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
       );
     }
 
-    Widget contentColumn() {
+    Widget contentWidget() {
+      if (_hasError) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline_rounded, color: Colors.white24, size: UIAdapt.px(context, 48)),
+              SizedBox(height: UIAdapt.px(context, 16)),
+              Text(
+                '加载影片详情失败',
+                style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: UIAdapt.fontSize(context, 14)),
+              ),
+              SizedBox(height: UIAdapt.px(context, 24)),
+              MubuButton(
+                label: '点击重试',
+                icon: Icons.refresh_rounded,
+                type: MubuButtonType.primary,
+                onPressed: _fetchDetail,
+              ),
+            ],
+          ),
+        );
+      }
+
+      if (_isLoading || _detail == null) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      MubuSkeleton(width: UIAdapt.px(context, 48), height: UIAdapt.px(context, 18)),
+                      SizedBox(width: UIAdapt.px(context, 8)),
+                      MubuSkeleton(width: UIAdapt.px(context, 120), height: UIAdapt.px(context, 14)),
+                    ],
+                  ),
+                  SizedBox(height: UIAdapt.px(context, 12)),
+                  MubuSkeleton(width: UIAdapt.px(context, 200), height: UIAdapt.px(context, 28)),
+                  SizedBox(height: UIAdapt.px(context, 16)),
+                  MubuSkeleton(width: double.infinity, height: UIAdapt.px(context, 1)),
+                  SizedBox(height: UIAdapt.px(context, 12)),
+                  MubuSkeleton(width: UIAdapt.px(context, 48), height: UIAdapt.px(context, 12)),
+                  SizedBox(height: UIAdapt.px(context, 8)),
+                  MubuSkeleton(width: double.infinity, height: UIAdapt.px(context, 14)),
+                  SizedBox(height: UIAdapt.px(context, 6)),
+                  MubuSkeleton(width: double.infinity, height: UIAdapt.px(context, 14)),
+                  SizedBox(height: UIAdapt.px(context, 6)),
+                  MubuSkeleton(width: UIAdapt.px(context, 150), height: UIAdapt.px(context, 14)),
+                ],
+              ),
+            ),
+            SizedBox(height: UIAdapt.px(context, 20)),
+            Row(
+              children: [
+                Expanded(flex: 3, child: MubuSkeleton(height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40))),
+                SizedBox(width: UIAdapt.px(context, isWide ? 12 : 8)),
+                Expanded(flex: 2, child: MubuSkeleton(height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40))),
+              ],
+            ),
+          ],
+        );
+      }
+
+      final metaParts = [
+        if (_detail!.year.isNotEmpty) _detail!.year,
+        if (widget.video.category.isNotEmpty) widget.video.category,
+        if (_detail!.score.isNotEmpty) '评分 ${_detail!.score}',
+      ].join(' • ');
+
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -132,7 +259,7 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                 
                 // Title
                 Text(
-                  widget.detail.title,
+                  _detail!.title,
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: UIAdapt.fontSize(context, 24),
@@ -169,7 +296,7 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                   child: SingleChildScrollView(
                     physics: const BouncingScrollPhysics(),
                     child: Text(
-                      widget.detail.description.isNotEmpty ? widget.detail.description : '暂无剧情简介。',
+                      _detail!.description.isNotEmpty ? _detail!.description : '暂无剧情简介。',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.6),
                         fontSize: UIAdapt.fontSize(context, 13),
@@ -216,66 +343,67 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
       );
     }
 
-    // Material wrapper to provide theme context for standard Dialog-like usage if needed
-    return Material(
-      color: Colors.transparent,
-      child: Center(
-        child: MubuDialogContainer(
-          maxWidth: UIAdapt.px(context, 620),
-          margin: EdgeInsets.symmetric(
-            horizontal: UIAdapt.px(context, 20),
-            vertical: UIAdapt.px(context, 40),
-          ),
-          child: SizedBox(
-            height: UIAdapt.px(context, isWide ? 380 : 540),
-            child: Stack(
-              children: [
-                isWide
-                    ? Row(
-                        children: [
-                          // Left Poster
-                          SizedBox(
-                            width: UIAdapt.px(context, 240),
-                            height: double.infinity,
-                            child: posterWidget(),
-                          ),
-                          // Right Content
-                          Expanded(
-                            child: Padding(
-                              padding: EdgeInsets.all(UIAdapt.px(context, 28)),
-                              child: contentColumn(),
+    return SafeArea(
+      child: Material(
+        color: Colors.transparent,
+        child: Center(
+          child: MubuDialogContainer(
+            maxWidth: UIAdapt.px(context, 620),
+            margin: EdgeInsets.symmetric(
+              horizontal: UIAdapt.px(context, 20),
+              vertical: UIAdapt.px(context, 40),
+            ),
+            child: SizedBox(
+              height: UIAdapt.px(context, isWide ? 380 : 540),
+              child: Stack(
+                children: [
+                  isWide
+                      ? Row(
+                          children: [
+                            // Left Poster
+                            SizedBox(
+                              width: UIAdapt.px(context, 240),
+                              height: double.infinity,
+                              child: posterWidget(),
                             ),
-                          ),
-                        ],
-                      )
-                    : Column(
-                        children: [
-                          // Top Poster
-                          AspectRatio(
-                            aspectRatio: 16 / 9,
-                            child: posterWidget(),
-                          ),
-                          // Bottom Content
-                          Expanded(
-                            child: Padding(
-                              padding: EdgeInsets.all(UIAdapt.px(context, 20)),
-                              child: contentColumn(),
+                            // Right Content
+                            Expanded(
+                              child: Padding(
+                                padding: EdgeInsets.all(UIAdapt.px(context, 28)),
+                                child: contentWidget(),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                // Top-right close floating button
-                Positioned(
-                  top: UIAdapt.px(context, 14),
-                  right: UIAdapt.px(context, 14),
-                  child: MubuButton(
-                    icon: Icons.close_rounded,
-                    type: MubuButtonType.icon,
-                    onPressed: () => Navigator.pop(context),
-                    customHeight: UIAdapt.px(context, 32),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            // Top Poster
+                            AspectRatio(
+                              aspectRatio: 16 / 9,
+                              child: posterWidget(),
+                            ),
+                            // Bottom Content
+                            Expanded(
+                              child: Padding(
+                                padding: EdgeInsets.all(UIAdapt.px(context, 20)),
+                                child: contentWidget(),
+                              ),
+                            ),
+                          ],
+                        ),
+                  // Top-right close floating button (Keep for desktop/tap access)
+                  Positioned(
+                    top: UIAdapt.px(context, 14),
+                    right: UIAdapt.px(context, 14),
+                    child: MubuButton(
+                      icon: Icons.close_rounded,
+                      type: MubuButtonType.icon,
+                      onPressed: () => Navigator.pop(context),
+                      customHeight: UIAdapt.px(context, 32),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

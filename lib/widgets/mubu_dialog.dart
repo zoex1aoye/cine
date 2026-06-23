@@ -89,6 +89,7 @@ class MubuDialog {
     required BuildContext context,
     required WidgetBuilder builder,
     bool barrierDismissible = true,
+    bool showBlur = true,
   }) {
     return showGeneralDialog<T>(
       context: context,
@@ -110,17 +111,18 @@ class MubuDialog {
             fit: StackFit.expand,
             children: [
               // Z-axis spatial backdrop blur (sigma 5)
-              FadeTransition(
-                opacity: opacity,
-                child: GestureDetector(
-                  onTap: barrierDismissible ? () => Navigator.of(context).pop() : null,
-                  behavior: HitTestBehavior.opaque,
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                    child: Container(color: Colors.black.withOpacity(0.5)),
+              if (showBlur)
+                FadeTransition(
+                  opacity: opacity,
+                  child: GestureDetector(
+                    onTap: barrierDismissible ? () => Navigator.of(context).pop() : null,
+                    behavior: HitTestBehavior.opaque,
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+                      child: Container(color: Colors.black.withOpacity(0.5)),
+                    ),
                   ),
                 ),
-              ),
               // Dialog Content
               Center(
                 child: FadeTransition(

@@ -105,44 +105,14 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  void _showVideoInfo(VideoItem video) async {
-    BuildContext? dialogContext;
-    MubuDialog.showCustom(
+  void _showVideoInfo(VideoItem video) {
+    MovieInfoDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return const Center(child: CircularProgressIndicator(color: _primaryRed));
-      },
+      video: video,
+      isShort: video.isShortDrama,
+      imgDomain: _api.imgDomain,
+      onPlay: () => _playVideo(video),
     );
-    try {
-      final detail = await _api.getVideoDetail(video.id, isShort: video.isShortDrama);
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (detail != null) {
-        MubuDialog.showCustom(
-          context: context,
-          builder: (ctx) => MovieInfoDialog(
-            detail: detail,
-            video: video,
-            imgDomain: _api.imgDomain,
-            onPlay: () {
-              Navigator.pop(ctx);
-              _playVideo(video);
-            },
-          ),
-        );
-      }
-    } catch (e) {
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-    }
   }
 
   Future<void> _loadMore() async {

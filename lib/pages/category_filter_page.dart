@@ -260,58 +260,13 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     );
   }
 
-  void _showVideoInfo(VideoItem video) async {
-    BuildContext? dialogContext;
-    MubuDialog.showCustom(
+  void _showVideoInfo(VideoItem video) {
+    MovieInfoDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return const Center(child: CircularProgressIndicator(color: _kPrimaryRed));
-      },
-    );
-    try {
-      final detail = await _api.getVideoDetail(video.id, isShort: _activeCategoryId == 67 || video.isShortDrama);
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (detail != null) {
-        MubuDialog.showCustom(
-          context: context,
-          builder: (ctx) => MovieInfoDialog(
-            detail: detail,
-            video: video,
-            imgDomain: _api.imgDomain,
-            onPlay: () {
-              Navigator.pop(ctx);
-              _playVideo(video);
-            },
-          ),
-        );
-      } else {
-        // API returned null — show a brief toast so the user knows something happened
-        if (context.mounted) {
-          _showInfoError(context, video.title);
-        }
-      }
-    } catch (e) {
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (context.mounted) {
-        _showInfoError(context, video.title);
-      }
-    }
-  }
-
-  void _showInfoError(BuildContext ctx, String title) {
-    MubuDialog.showCustom(
-      context: ctx,
-      builder: (ctx) => _InfoErrorDialog(title: title),
+      video: video,
+      isShort: _activeCategoryId == 67 || video.isShortDrama,
+      imgDomain: _api.imgDomain,
+      onPlay: () => _playVideo(video),
     );
   }
 
