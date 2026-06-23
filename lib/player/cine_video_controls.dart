@@ -40,7 +40,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   bool _wasPlayingBeforeDrag = false;
   Timer? _previewDisposeTimer;
   Timer? _seekDebounceTimer;
-  int _lastPreviewSeekTime = 0;
+  // 预览上次 seek 的目标位置（毫秒）。-1 表示尚未定位。
+  // 用于"少 seek 多播放"策略：仅当手指移动超过阈值才重新定位。
+  double _previewSeekTarget = -1;
+  // 手指移动超过该阈值（毫秒）才重新 seek，否则让预览继续向前播放。
+  static const double _kPreviewReseekThresholdMs = 5000;
 
   // Gestures
   double _brightness = 0.5; // App-level brightness
@@ -136,8 +140,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         widget.previewUrl != null &&
         widget.previewUrl!.isNotEmpty &&
         _previewPlayer != null) {
-      _isPreviewReady = false;
+      // 不重置 _isPreviewReady：保留上一帧画面，避免切源时预览窗黑屏闪烁。
+      // 新源解码出首帧后 Video 会自动刷新；拖动中则立即对齐到手指位置。
+      _previewSeekTarget = -1;
       _previewPlayer!.open(Media(widget.previewUrl!), play: false);
+      if (_isDragging && _isPreviewReady) {
+        _seekPreview(_dragValue);
+      }
     }
   }
 
@@ -272,6 +281,15 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       native.setProperty('demuxer-lavf-o', 'icy=0');
       native.setProperty('stream-buffer-size', isMobile ? '262144' : '524288');
       native.setProperty('demuxer-thread', 'yes');
+
+      // 预览强制走最低码率变体：分片体积小，下载/解码都快，
+      // 小窗 160×90 画质再低也无所谓（仅预览，非主播放器）。
+      // 单码率源时 min == max，无副作用。
+      native.setProperty('hls-bitrate', 'min');
+
+      // 可定位缓存：已下载的分片留在内存，来回拖动 / 播过的段落几乎瞬时命中，
+      // 减少"少 seek 多播放"策略下的重复下载。
+      native.setProperty('demuxer-seekable-cache', 'yes');
     }
 
     // Open the backup source (or fall back to main player's current media)
@@ -283,12 +301,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _previewPlayer!.open(mediaList[idx], play: false);
     }
 
-    // Mark ready when first video frame is decoded
+    // Mark ready when first video frame is decoded.
+    // 预热阶段（未拖动）保持暂停占用最低；正在拖动时立即定位并向前播放。
     _previewPlayer!.stream.width.listen((w) {
       if (mounted && !_isPreviewReady && w != null) {
         setState(() => _isPreviewReady = true);
-        _lastPreviewSeekTime = DateTime.now().millisecondsSinceEpoch;
-        _previewPlayer?.seek(Duration(milliseconds: _dragValue.toInt()));
+        if (_isDragging) _seekPreview(_dragValue);
       }
     });
 
@@ -297,10 +315,18 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     durSub = _previewPlayer!.stream.duration.listen((dur) {
       if (dur > Duration.zero && mounted && _isPreviewReady) {
         durSub.cancel();
-        _lastPreviewSeekTime = DateTime.now().millisecondsSinceEpoch;
-        _previewPlayer?.seek(Duration(milliseconds: _dragValue.toInt()));
+        if (_isDragging) _seekPreview(_dragValue);
       }
     });
+  }
+
+  /// 定位预览到指定位置并向前连续播放（理解 A：可播放预览）。
+  /// 依赖 hr-seek=no：seek 会落到目标前最近的关键帧（略微靠前），
+  /// 首帧立刻可出，随后向前播放"追上"手指位置，观感更丝滑。
+  void _seekPreview(double ms) {
+    _previewSeekTarget = ms;
+    _previewPlayer?.seek(Duration(milliseconds: ms.toInt()));
+    _previewPlayer?.play();
   }
 
   /// Ensure preview player exists (create if needed) and cancel any pending dispose.
@@ -333,9 +359,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       // _isPreviewReady is reset when the player is disposed in _schedulePreviewDispose.
     });
     _initPreviewPlayerIfNeeded();
-    // If preview player is already warmed up and ready, immediately seek to the touched position
+    // If preview player is already warmed up and ready, immediately seek to the
+    // touched position and start playing forward (理解 A：可播放预览)。
     if (_previewPlayer != null && _isPreviewReady) {
-      _previewPlayer?.seek(Duration(milliseconds: _dragValue.toInt()));
+      _seekPreview(_dragValue);
     }
   }
 
@@ -356,22 +383,23 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _dragValue = milliseconds.clamp(0.0, _duration.inMilliseconds.toDouble());
     });
     
-    // 真正的节流机制 (Throttle)：保证长距离拖动时也能持续加载画面
+    // 少 seek 多播放：预览正在向前连续播放，仅当手指移动超过阈值（默认 5s）
+    // 才重新定位；手指小幅移动 / 停住时让预览自然往前播，避免反复从关键帧重启造成卡顿。
     if (_previewController != null && _isPreviewReady) {
-      final now = DateTime.now().millisecondsSinceEpoch;
-      
-      // 如果距离上次拉取已经超过 400ms，立即拉取一帧（Leading Edge）
-      if (now - _lastPreviewSeekTime > 400) {
-        _lastPreviewSeekTime = now;
-        _previewPlayer?.seek(Duration(milliseconds: _dragValue.toInt()));
-      } 
-      
-      // 不管怎样，设置一个 400ms 后的拖尾触发器（Trailing Edge），保证手指停下后必定能拉出最后一帧
+      if (_previewSeekTarget < 0 ||
+          (_dragValue - _previewSeekTarget).abs() > _kPreviewReseekThresholdMs) {
+        _seekPreview(_dragValue);
+      }
+
+      // 拖尾（Trailing Edge）：手指停下后若与当前定位仍有较大偏差，对齐一次，
+      // 确保预览最终落在用户真正想看的段落。
       _seekDebounceTimer?.cancel();
-      _seekDebounceTimer = Timer(const Duration(milliseconds: 400), () {
-        if (mounted && _isDragging && _isPreviewReady) {
-          _lastPreviewSeekTime = DateTime.now().millisecondsSinceEpoch;
-          _previewPlayer?.seek(Duration(milliseconds: _dragValue.toInt()));
+      _seekDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+        if (mounted &&
+            _isDragging &&
+            _isPreviewReady &&
+            (_dragValue - _previewSeekTarget).abs() > 1500) {
+          _seekPreview(_dragValue);
         }
       });
     }
@@ -382,8 +410,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _isDragging = false;
       _isConfirmingSeek = true;
     });
-    // Do NOT seek yet, and do NOT change the play/pause state.
-    // Wait for the user to confirm or cancel.
+    // 停止预览的向前播放，定格在确认帧，同时释放带宽 / 解码资源。
+    // 不改变主播放器的播放状态，等待用户确认或取消。
+    _seekDebounceTimer?.cancel();
+    _previewPlayer?.pause();
   }
 
   void _confirmSeek() {
@@ -419,6 +449,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         _previewPlayer = null;
         _previewController = null;
         _isPreviewReady = false;
+        _previewSeekTarget = -1;
         setState(() {});
       }
     });
