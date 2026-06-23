@@ -6,9 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:cached_network_image/cached_network_image.dart';
+import '../models/mubu_models.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
-import '../models/mubu_models.dart';
+import '../api/mubu_ui_adapt.dart';
+import '../utils/platform_utils.dart';
+import '../widgets/mubu_dialog.dart';
+import 'package:hive/hive.dart';
+import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
 import '../widgets/hover_close_button.dart';
@@ -73,6 +78,14 @@ class _PlayerPageState extends State<PlayerPage> {
   int? _savedDurationMs;
   String? _savedEpisodeName;
   String? _savedLineName;
+
+  // 弱网自动切换：持续缓冲超时后的看门狗
+  Timer? _bufferingWatchdog;
+  VoidCallback? _bufferingListener;
+  // 上次自动切换时间，防止短时间内多次切换
+  int _lastAutoSwitchMs = 0;
+  // 连续触发弱网看门狗的次数（用于逐步放大 cache-pause-wait）
+  int _weakNetworkCount = 0;
 
   // Sticky player for portrait videos
   final ScrollController _scrollController = ScrollController();
@@ -239,6 +252,10 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     _disposed = true;
     _progressTimer?.cancel();
+    _bufferingWatchdog?.cancel();
+    if (_bufferingListener != null) {
+      _player?.isBufferingNotifier.removeListener(_bufferingListener!);
+    }
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     if (_widthListener != null) _player?.videoWidthNotifier.removeListener(_widthListener!);
@@ -289,14 +306,12 @@ class _PlayerPageState extends State<PlayerPage> {
 
   /// 滚动监听回调
   void _onScroll() {
-    if (_scrollController.hasClients && mounted) {
+    if (_scrollController.hasClients) {
       final double offset = _scrollController.offset;
-      if (offset <= 80.0 || _scrollOffset <= 80.0) {
-        setState(() {
-          _scrollOffset = offset;
-        });
-      } else {
-        _scrollOffset = offset;
+      _scrollOffset = offset;
+      // 只在过渡区间 (0-80px) 内触发重绘以更新视频高度，其余位置直接跳过
+      if (offset <= 80.0 && mounted) {
+        setState(() {});
       }
     }
   }
@@ -320,6 +335,62 @@ class _PlayerPageState extends State<PlayerPage> {
         episodeName,
         lineName: lineName,
       );
+    }
+  }
+
+  /// 弱网看门狗：开始监听缓冲状态，播放启动后调用一次
+  void _startBufferingWatchdog() {
+    if (_player == null || _bufferingListener != null) return;
+    _bufferingListener = () {
+      final isBuffering = _player?.isBufferingNotifier.value ?? false;
+      if (isBuffering) {
+        // 已在计时中，不重复启动
+        if (_bufferingWatchdog?.isActive == true) return;
+        // 12 秒仍在缓冲 → 触发弱网逻辑
+        _bufferingWatchdog = Timer(const Duration(seconds: 12), _onBufferingTimeout);
+      } else {
+        _bufferingWatchdog?.cancel();
+        _bufferingWatchdog = null;
+      }
+    };
+    _player!.isBufferingNotifier.addListener(_bufferingListener!);
+  }
+
+  /// 持续缓冲 12s 后的处理：自适应调高缓冲等待 + 尝试切换备用线路
+  void _onBufferingTimeout() {
+    if (_disposed || !mounted) return;
+    _weakNetworkCount++;
+
+    // 逐步放大重新恢复播放所需的缓冲时间（最高 8s），减少反复暂停
+    final newWait = (_weakNetworkCount + 3).clamp(4, 8);
+    _player?.setMpvProperty('cache-pause-wait', '$newWait');
+    debugPrint('PLAYER: weak-network #$_weakNetworkCount → cache-pause-wait=${newWait}s');
+
+    // 防止 30s 内重复自动切换
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastAutoSwitchMs < 30000) return;
+
+    // 寻找当前集数中速度最快的非当前线路
+    if (_sources.isEmpty) return;
+    final currentEpisode = _sources[_selectedSource].sourceName;
+    final currentUrl = _sources[_selectedSource].url;
+
+    final candidates = _sources
+        .where((s) =>
+            s.sourceName == currentEpisode &&
+            s.usable &&
+            s.url != currentUrl &&
+            s.speedMs != null &&
+            s.speedMs! < 999999)
+        .toList()
+      ..sort((a, b) => (a.speedMs ?? 999999).compareTo(b.speedMs ?? 999999));
+
+    if (candidates.isNotEmpty) {
+      final fallback = candidates.first;
+      final idx = _sources.indexOf(fallback);
+      debugPrint('PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.speedMs}ms)');
+      _lastAutoSwitchMs = now;
+      _switchSource(idx);
     }
   }
 
@@ -374,7 +445,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<void> _runSpeedTest() async {
     _client = http.Client();
     _testedCount = 0;
-    const delayBetweenTests = Duration(milliseconds: 800);
+    // delayBetweenTests 已废弃——测速改为并行后不再需要串行延迟
 
     // 收集唯一线路，re-enter 时把保存的线路排到第一个
     final uniqueLines = <String>{};
@@ -404,50 +475,121 @@ class _PlayerPageState extends State<PlayerPage> {
 
     // 逐条测速 + 延迟间隔
     final hasSavedLine = _savedLineName != null && _savedLineName!.isNotEmpty;
-    for (var i = 0; i < indices.length && !_disposed; i++) {
-      await _testSource(indices[i], _client!);
-      if (_disposed) break;
-      if (mounted) setState(() => _testedCount++);
+    final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final ttlMs = 12 * 60 * 60 * 1000; // 12 hours
 
-      // 首条快线找到 → 分场景处理
-      if (!_playerInitialized) {
-        final passes = _sources[indices[i]].usable &&
-            _sources[indices[i]].speedMs != null &&
-            _sources[indices[i]].speedMs! < 500;
-        if (passes) {
-          if (hasSavedLine) {
-            // Re-enter: 保存线路排在队首，如果它快就立即 init（URL 正确）
-            // 如果不是保存线路（保存线路慢，这是下一条快线），等测速完再选源
-            if (_sources[indices[i]].name == _savedLineName) {
-              _selectedSource = indices[i];
-              _currentUrl = _sources[indices[i]].url;
-              debugPrint('PLAYER: saved line fast — init immediately');
-              if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
-              await _initPlayer();
-              if (_disposed) return;
-              if (mounted) setState(() { _stage = LoadingStage.ready; });
-            }
-            // 非保存线路的快线：不 init，等测速完由 _applySavedEpisodeSelection 决定
-          } else {
-            // 普通场景：无保存记录，首条快线立即 init
-            _selectedSource = indices[i];
-            _currentUrl = _sources[indices[i]].url;
-            debugPrint('PLAYER: first fast line — init immediately');
-            if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
-            await _initPlayer();
-            if (_disposed) return;
-            if (mounted) setState(() { _stage = LoadingStage.ready; });
+    // 1. 全局第一遍：全部过一遍缓存
+    for (var i = 0; i < indices.length; i++) {
+      final idx = indices[i];
+      final url = _sources[idx].url;
+      final uri = Uri.tryParse(url);
+      final domain = uri?.host ?? '';
+      if (domain.isNotEmpty) {
+        final record = nodeBox.get(domain);
+        if (record != null && (now - record.testedAtEpoch) < ttlMs) {
+          if (record.latencyMs < 500) {
+            _sources[idx].speedMs = record.latencyMs;
+            _sources[idx].usable = true;
+            debugPrint('SPEED: [$idx] CACHE HIT ${record.latencyMs}ms for $domain');
+          } else if (record.latencyMs >= 999999) {
+            _sources[idx].speedMs = 999999;
+            _sources[idx].usable = false;
+            debugPrint('SPEED: [$idx] CACHE BLACKLISTED (timeout) for $domain');
+          }
+        }
+      }
+    }
+
+    // 2. 找到最快缓存记录 (Champion) 并复测
+    if (!_playerInitialized) {
+      int? bestCachedIdx;
+      int minLatency = 999999;
+      
+      // 优先看记忆保存的线路是否命中缓存
+      if (hasSavedLine) {
+        final savedIdx = indices.indexWhere((i) => _sources[i].name == _savedLineName);
+        if (savedIdx != -1 && _sources[savedIdx].speedMs != null && _sources[savedIdx].speedMs! < 500) {
+          bestCachedIdx = savedIdx;
+          minLatency = _sources[savedIdx].speedMs!;
+        }
+      }
+      
+      // 寻找全局最快缓存线路
+      if (bestCachedIdx == null) {
+        for (final idx in indices) {
+          final speed = _sources[idx].speedMs;
+          if (speed != null && speed < 500 && speed < minLatency) {
+            minLatency = speed;
+            bestCachedIdx = idx;
           }
         }
       }
 
-      // 延迟间隔（最后一条不需要等）
-      if (i < indices.length - 1) {
-        await Future.delayed(delayBetweenTests);
+      // 复测 Champion
+      if (bestCachedIdx != null) {
+        debugPrint('PLAYER: Champion line found (idx $bestCachedIdx, cached ${minLatency}ms) — re-testing...');
+        _sources[bestCachedIdx].speedMs = null; // Clear to force _testSource
+        if (_client != null) await _testSource(bestCachedIdx, _client!);
+        
+        if (!_disposed && _sources[bestCachedIdx].usable && _sources[bestCachedIdx].speedMs != null && _sources[bestCachedIdx].speedMs! < 500) {
+          _selectedSource = bestCachedIdx;
+          _currentUrl = _sources[bestCachedIdx].url;
+          debugPrint('PLAYER: Champion re-test passed (${_sources[bestCachedIdx].speedMs}ms) — init immediately');
+          if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+          await _initPlayer();
+          if (_disposed) return;
+          if (mounted) setState(() { _stage = LoadingStage.ready; });
+        } else {
+          debugPrint('PLAYER: Champion re-test failed, falling back to slow testing.');
+        }
       }
     }
 
-    // 测速完成 — 继承同名线路的 speedMs/usable 给未测的源
+    // 3. 剩余未命中的线路，并行测速（每条线路独立 http.Client 以支持并发）
+    final pending = indices.where((idx) => _sources[idx].speedMs == null).toList();
+    if (pending.isNotEmpty && !_disposed) {
+      // 为每条线路创建独立 Client，避免单个 Client 的并发限制
+      await Future.wait(pending.map((idx) async {
+        if (_disposed) return;
+        final localClient = http.Client();
+        try {
+          await _testSource(idx, localClient);
+        } finally {
+          localClient.close();
+        }
+        if (_disposed) return;
+        if (mounted) setState(() => _testedCount++);
+
+        if (!_playerInitialized) {
+          final passes = _sources[idx].usable &&
+              _sources[idx].speedMs != null &&
+              _sources[idx].speedMs! < 500;
+          if (passes) {
+            if (hasSavedLine) {
+              if (_sources[idx].name == _savedLineName) {
+                _selectedSource = idx;
+                _currentUrl = _sources[idx].url;
+                debugPrint('PLAYER: saved line fast — init immediately');
+                if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+                await _initPlayer();
+              }
+            } else {
+              _selectedSource = idx;
+              _currentUrl = _sources[idx].url;
+              debugPrint('PLAYER: first fast line — init immediately');
+              if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+              await _initPlayer();
+            }
+          }
+        }
+      }));
+    } else {
+      // 全部命中缓存时更新 testedCount
+      if (mounted) setState(() => _testedCount = indices.length);
+    }
+
+    // 测速完成：将 _disposed / 初始化提前退出检查前置，关闭主 client
     _client?.close();
     _client = null;
     if (_disposed) return;
@@ -486,6 +628,17 @@ class _PlayerPageState extends State<PlayerPage> {
     final url = _sources[index].url;
     final name = _sources[index].name;
     final sw = Stopwatch()..start();
+    
+    void recordToCache(int latency) {
+      final uri = Uri.tryParse(url);
+      if (uri != null && uri.host.isNotEmpty) {
+        Hive.box<NodeSpeedRecord>('node_speeds').put(
+          uri.host,
+          NodeSpeedRecord(domainOrUrl: uri.host, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch),
+        );
+      }
+    }
+
     try {
       final resp = await client.head(Uri.parse(url)).timeout(const Duration(seconds: 4));
       sw.stop();
@@ -493,19 +646,32 @@ class _PlayerPageState extends State<PlayerPage> {
       _sources[index].speedMs = ok ? sw.elapsedMilliseconds : 999999;
       if (!ok) {
         _sources[index].usable = false;
-        debugPrint('SPEED: [$index] $name HEAD=${resp.statusCode} ❌');
+        recordToCache(999999);
+        debugPrint('SPEED: [$index] $name HEAD=${resp.statusCode} ❌ (Blacklisted)');
         return;
       }
-      final getResp = await client.get(Uri.parse(url), headers: {'Range': 'bytes=0-65535'}).timeout(const Duration(seconds: 5));
+      // 8KB 足以判断是否为视频流，减少移动端流量消耗（原 64KB）
+      final getResp = await client.get(Uri.parse(url), headers: {'Range': 'bytes=0-8191'}).timeout(const Duration(seconds: 5));
       final body = getResp.bodyBytes;
       final isVideo = body.length > 100 && (getResp.statusCode == 200 || getResp.statusCode == 206) && !_looksLikeHtml(body);
       _sources[index].usable = isVideo;
+      
+      if (isVideo) {
+        if (sw.elapsedMilliseconds < 500) {
+          recordToCache(sw.elapsedMilliseconds);
+        }
+      } else {
+        _sources[index].speedMs = 999999;
+        recordToCache(999999);
+      }
+      
       debugPrint('SPEED: [$index] $name ${sw.elapsedMilliseconds}ms ${getResp.statusCode} ${body.length}B ${isVideo ? "✅" : "❌HTML"}');
     } catch (e) {
       sw.stop();
       _sources[index].speedMs = 999999;
       _sources[index].usable = false;
-      debugPrint('SPEED: [$index] $name ERROR: $e');
+      recordToCache(999999);
+      debugPrint('SPEED: [$index] $name ERROR: $e (Blacklisted)');
     }
   }
 
@@ -520,7 +686,9 @@ class _PlayerPageState extends State<PlayerPage> {
     final src = _sources[index];
     _selectedSource = index;
     _currentUrl = src.url;
-    _player?.setSource(_currentUrl);
+    
+    final shouldAutoPlay = _startPlayRequested && (_player?.isPlayingNotifier.value == true);
+    _player?.setSource(_currentUrl, autoPlay: shouldAutoPlay);
     setState(() {});
   }
 
@@ -849,6 +1017,27 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  String? _getFastPreviewUrl() {
+    if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
+    final currentEpisode = _sources[_selectedSource].sourceName;
+    final currentUrl = _sources[_selectedSource].url;
+    
+    // Find all usable sources for the same episode
+    final candidates = _sources.where((s) => s.sourceName == currentEpisode && s.usable).toList();
+    if (candidates.isEmpty) return null;
+    
+    // Avoid main stream: If there are multiple lines, strictly exclude the one currently playing
+    if (candidates.length > 1) {
+      candidates.removeWhere((s) => s.url == currentUrl);
+    }
+    
+    // Sort by speedMs (null/timeout goes to bottom)
+    candidates.sort((a, b) => (a.speedMs ?? 999999).compareTo(b.speedMs ?? 999999));
+    
+    // Return the fastest backup line's URL (or the main line if it's the only one available)
+    return candidates.first.url;
+  }
+
   Widget _buildVideoPlayerContainer() {
     final imgDomain = MubuApiClient.instance.imgDomain;
     final coverUrl = widget.video.coverUrl(imgDomain);
@@ -868,7 +1057,12 @@ class _PlayerPageState extends State<PlayerPage> {
             Positioned.fill(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
-                child: _player!.buildVideoWidget(context),
+                child: _player!.buildVideoWidget(
+                  context,
+                  title: widget.video.title,
+                  onBack: () => Navigator.of(context).pop(),
+                  previewUrl: _getFastPreviewUrl(),
+                ),
               ),
             ),
 
@@ -936,25 +1130,27 @@ class _PlayerPageState extends State<PlayerPage> {
                 curve: Curves.easeOutCubic,
                 child: Center(
                   child: BreathingPlayPulse(
-                    onTap: () {
-                      setState(() {
-                        _startPlayRequested = true;
-                      });
-                      _player?.play().then((_) {
-                        final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
-                        final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;
-                        MubuStorage.recordWatch(
-                          widget.video,
-                          positionMs: _savedPositionMs,
-                          durationMs: _savedDurationMs,
-                          episodeName: episodeName,
-                          lineName: lineName,
-                        );
-                        // Resume from last saved position (only seek after play starts, buffer needs to be active)
-                        if (_savedPositionMs != null && _savedPositionMs! > 5000) {
-                          _player?.seek(Duration(milliseconds: _savedPositionMs!));
-                        }
-                      }).catchError((e) {
+                      onTap: () {
+                        setState(() {
+                          _startPlayRequested = true;
+                        });
+                        _player?.play().then((_) {
+                          final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
+                          final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;
+                          MubuStorage.recordWatch(
+                            widget.video,
+                            positionMs: _savedPositionMs,
+                            durationMs: _savedDurationMs,
+                            episodeName: episodeName,
+                            lineName: lineName,
+                          );
+                          // Resume from last saved position (only seek after play starts, buffer needs to be active)
+                          if (_savedPositionMs != null && _savedPositionMs! > 5000) {
+                            _player?.seek(Duration(milliseconds: _savedPositionMs!));
+                          }
+                          // 启动弱网看门狗（播放开始后才激活，避免加载阶段误触发）
+                          _startBufferingWatchdog();
+                        }).catchError((e) {
                         debugPrint('PLAYER: play() failed: $e');
                       });
                       // Start periodic progress save every 10 seconds
@@ -1133,7 +1329,7 @@ class _PlayerPageState extends State<PlayerPage> {
                 CompositedTransformTarget(
                   link: _lineLink,
                   child: GestureDetector(
-                    onTap: () => setState(() => _expanded = !_expanded),
+                    onTap: _showAdaptiveLineSelector,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
@@ -1157,7 +1353,7 @@ class _PlayerPageState extends State<PlayerPage> {
                             ),
                           ),
                           const SizedBox(width: 3),
-                          Icon(
+                          const Icon(
                             Icons.keyboard_arrow_down_rounded,
                             color: Colors.white38,
                             size: 12,
@@ -1305,107 +1501,158 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  void _showAdaptiveLineSelector() {
+    if (isDesktopPlatform) {
+      setState(() => _expanded = !_expanded);
+    } else {
+      final isWide = MediaQuery.of(context).size.width >= 600;
+      if (isWide) {
+        // TV / Pad landscape: Center Dialog
+        MubuDialog.showCustom(
+          context: context,
+          builder: (ctx) => Center(
+            child: Material(
+              color: Colors.transparent,
+              child: MubuDialogContainer(
+                maxWidth: 360,
+                child: _buildLineSelectorContent(isDialog: true),
+              ),
+            ),
+          ),
+        );
+      } else {
+        // Mobile: BottomSheet
+        showModalBottomSheet(
+          context: context,
+          backgroundColor: Colors.transparent,
+          isScrollControlled: true,
+          builder: (ctx) => Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF16161A).withOpacity(0.95),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+              border: Border(top: BorderSide(color: Colors.white.withOpacity(0.08))),
+            ),
+            child: SafeArea(
+              top: false,
+              child: _buildLineSelectorContent(isBottomSheet: true),
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   Widget _buildLineDropdownCard() {
-    final lines = _uniqueLineNames;
     final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final isSmallHeight = screenHeight < 500;
     final dropdownMaxWidth = (screenWidth - 48).clamp(200.0, 320.0); // 左右各留24px安全边距
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-        child: Container(
-          width: dropdownMaxWidth,
-          constraints: const BoxConstraints(minWidth: 200),
-          decoration: BoxDecoration(
-            color: const Color(0xFF16161A).withOpacity(0.95),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white.withOpacity(0.08)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.85),
-                blurRadius: 50,
-                offset: const Offset(0, 25),
-              ),
-            ],
-          ),
-          padding: EdgeInsets.all(isSmallHeight ? 10 : 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.shuffle, color: Colors.white38, size: 15),
-                  const SizedBox(width: 8),
-                  const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () => setState(() => _expanded = false),
-                    child: const Icon(Icons.close, color: Colors.white38, size: 16),
-                  ),
-                ],
-              ),
-              SizedBox(height: isSmallHeight ? 8 : 12),
-              ConstrainedBox(
-                constraints: BoxConstraints(maxHeight: isSmallHeight ? 100 : 200),
-                child: ListView.builder(
-                  shrinkWrap: true,
-                  itemCount: lines.length,
-                  itemBuilder: (context, idx) {
-                    final name = lines[idx];
-                    final active = name == _selectedLineName;
-                    final speed = _lineSpeed(name);
-                    final usable = _isLineUsable(name);
-                    if (!usable && !active) return const SizedBox.shrink();
+    return Material(
+      color: Colors.transparent,
+      child: MubuDialogContainer(
+        maxWidth: dropdownMaxWidth,
+        margin: EdgeInsets.zero,
+        borderRadius: 16,
+        child: _buildLineSelectorContent(),
+      ),
+    );
+  }
 
-                    return GestureDetector(
-                      onTap: () {
-                        _switchLine(name);
-                        setState(() => _expanded = false);
-                      },
-                      child: Container(
-                        margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
-                        padding: EdgeInsets.symmetric(horizontal: 12, vertical: isSmallHeight ? 6 : 8),
-                        decoration: BoxDecoration(
-                          color: active ? _primaryRed : Colors.white.withAlpha(10),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          children: [
-                            _speedDot(speed),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                name,
-                                style: TextStyle(
-                                  color: active ? Colors.white : Colors.white70,
-                                  fontSize: 12,
-                                  fontWeight: active ? FontWeight.bold : FontWeight.normal,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              _speedLabel(speed),
-                              style: TextStyle(
-                                color: active ? Colors.white70 : _speedColor(speed),
-                                fontSize: 10,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
+  Widget _buildLineSelectorContent({bool isBottomSheet = false, bool isDialog = false}) {
+    final lines = _uniqueLineNames;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final isSmallHeight = screenHeight < 500 && !isBottomSheet;
+    
+    return Padding(
+      padding: EdgeInsets.all(isBottomSheet ? 24 : (isSmallHeight ? 10 : 16)),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.shuffle, color: Colors.white38, size: 15),
+              const SizedBox(width: 8),
+              const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              if (!isDialog && !isBottomSheet)
+                GestureDetector(
+                  onTap: () => setState(() => _expanded = false),
+                  child: const Icon(Icons.close, color: Colors.white38, size: 18),
+                )
+              else if (isBottomSheet)
+                GestureDetector(
+                  onTap: () => Navigator.pop(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle),
+                    child: const Icon(Icons.close, color: Colors.white54, size: 16),
+                  ),
                 ),
-              ),
             ],
           ),
-        ),
+          SizedBox(height: isSmallHeight ? 8 : 16),
+          ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: isBottomSheet ? screenHeight * 0.5 : (isSmallHeight ? 100 : 300)),
+            child: ListView.builder(
+              shrinkWrap: true,
+              physics: const BouncingScrollPhysics(),
+              itemCount: lines.length,
+              itemBuilder: (context, idx) {
+                final name = lines[idx];
+                final active = name == _selectedLineName;
+                final speed = _lineSpeed(name);
+                final usable = _isLineUsable(name);
+                if (!usable && !active) return const SizedBox.shrink();
+
+                return GestureDetector(
+                  onTap: () {
+                    _switchLine(name);
+                    if (isDesktopPlatform && _expanded) {
+                      setState(() => _expanded = false);
+                    } else if (isBottomSheet || isDialog) {
+                      Navigator.pop(context);
+                    }
+                  },
+                  child: Container(
+                    margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: isSmallHeight ? 8 : 12),
+                    decoration: BoxDecoration(
+                      color: active ? _primaryRed : Colors.white.withOpacity(0.04),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: active ? _primaryRed : Colors.white.withOpacity(0.05)),
+                    ),
+                    child: Row(
+                      children: [
+                        _speedDot(speed),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            name,
+                            style: TextStyle(
+                              color: active ? Colors.white : Colors.white.withOpacity(0.85),
+                              fontSize: 14,
+                              fontWeight: active ? FontWeight.bold : FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _speedLabel(speed),
+                          style: TextStyle(
+                            color: active ? Colors.white70 : _speedColor(speed),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

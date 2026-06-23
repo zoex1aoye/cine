@@ -8,6 +8,8 @@ import '../widgets/movie_info_dialog.dart';
 import '../widgets/movie_card.dart';
 import '../widgets/movie_sliver_grid.dart';
 import '../widgets/mubu_error_widget.dart';
+import '../widgets/mubu_dialog.dart';
+import '../widgets/mubu_button.dart';
 import 'player_page.dart';
 import 'category_filter_page.dart';
 import 'search_page.dart';
@@ -212,68 +214,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   void _showInfoError(BuildContext ctx, String title) {
-    showDialog(
+    MubuDialog.showCustom(
       context: ctx,
       builder: (ctx) => _InfoErrorDialog(title: title),
     );
   }
 
-  void _showVideoInfo(VideoItem video) async {
-    if (_isLoadingVideoInfo) return;
-    setState(() {
-      _isLoadingVideoInfo = true;
-    });
-
-    BuildContext? dialogContext;
-    showDialog(
+  void _showVideoInfo(VideoItem video) {
+    MovieInfoDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return const Center(child: CircularProgressIndicator(color: kRed));
-      },
-    );
-    try {
-      final detail = await _api.getVideoDetail(video.id, isShort: video.isShortDrama);
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (detail != null) {
-        showDialog(
-          context: context,
-          builder: (ctx) => MovieInfoDialog(
-            detail: detail,
-            video: video,
-            imgDomain: _api.imgDomain,
-            onPlay: () {
-              Navigator.pop(ctx);
-              _playVideo(video);
-            },
-          ),
-        ).then((_) => _loadBookmarksAndHistory());
-      } else {
-        if (context.mounted) {
-          _showInfoError(context, video.title);
-        }
-      }
-    } catch (e) {
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (context.mounted) {
-        _showInfoError(context, video.title);
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingVideoInfo = false;
-        });
-      }
-    }
+      video: video,
+      isShort: video.isShortDrama,
+      imgDomain: _api.imgDomain,
+      onPlay: () => _playVideo(video),
+    ).then((_) => _loadBookmarksAndHistory());
   }
 
 
@@ -1078,8 +1032,6 @@ class _HeroBanner extends StatefulWidget {
 }
 
 class _HeroBannerState extends State<_HeroBanner> {
-  bool _playHovered = false;
-  bool _infoHovered = false;
   VideoDetail? _detail;
   bool _loadingDetail = false;
 
@@ -1151,6 +1103,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                 errorWidget: (_, __, ___) => const SizedBox.shrink(),
               ),
             ),
+          // 1. Left-to-right fade for text readability
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -1163,13 +1116,32 @@ class _HeroBannerState extends State<_HeroBanner> {
               ),
             ),
           ),
+          // 2. Cinematic Dual Vignette (Radial gradient for edge fusion)
           Positioned.fill(
             child: Container(
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: Alignment.topRight,
+                  radius: 1.5,
+                  colors: [
+                    Colors.transparent,
+                    kBg.withOpacity(0.3),
+                    kBg,
+                  ],
+                  stops: const [0.3, 0.7, 1.0],
+                ),
+              ),
+            ),
+          ),
+          // 3. Bottom linear gradient for absolute bottom fusion to lists
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.bottomCenter,
                   end: Alignment.topCenter,
-                  colors: [kBg, Colors.transparent],
+                  colors: [kBg, kBg.withOpacity(0.0)],
+                  stops: const [0.0, 0.3],
                 ),
               ),
             ),
@@ -1283,89 +1255,22 @@ class _HeroBannerState extends State<_HeroBanner> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     // Play Button
-                    MouseRegion(
-                      onEnter: (_) => setState(() => _playHovered = true),
-                      onExit: (_) => setState(() => _playHovered = false),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeOutCubic,
-                        transform: _playHovered
-                            ? (Matrix4.identity()..translate(0.0, -UIAdapt.px(context, 2.0)))
-                            : Matrix4.identity(),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(isSmall ? 8 : 12),
-                          boxShadow: [
-                            BoxShadow(
-                              color: const Color(0xFFE50914).withOpacity(_playHovered ? 0.5 : 0.35),
-                              blurRadius: UIAdapt.px(context, _playHovered ? 20 : 12),
-                              spreadRadius: 1,
-                              offset: Offset(0, UIAdapt.px(context, _playHovered ? 6 : 4)),
-                            ),
-                          ],
-                        ),
-                        child: ElevatedButton.icon(
-                          onPressed: () => widget.onPlay(widget.video),
-                          icon: Icon(Icons.play_circle_fill_rounded, size: UIAdapt.px(context, 20)),
-                          label: Text(
-                            playLabel,
-                            style: TextStyle(
-                              fontSize: UIAdapt.fontSize(context, 14),
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 0.5,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFE50914),
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            minimumSize: Size(playMinW, UIAdapt.px(context, 48)),
-                            padding: isSmall
-                                ? EdgeInsets.symmetric(horizontal: UIAdapt.px(context, 20))
-                                : EdgeInsets.zero,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(isSmall ? 8 : 12),
-                            ),
-                          ).copyWith(
-                            backgroundColor: WidgetStateProperty.resolveWith((states) {
-                              if (states.contains(WidgetState.hovered)) {
-                                return const Color(0xFFF40F1D);
-                              }
-                              return const Color(0xFFE50914);
-                            }),
-                          ),
-                        ),
-                      ),
+                    MubuButton(
+                      label: playLabel,
+                      icon: Icons.play_circle_fill_rounded,
+                      type: MubuButtonType.primary,
+                      onPressed: () => widget.onPlay(widget.video),
+                      customWidth: playMinW,
+                      customHeight: isSmall ? 40 : UIAdapt.px(context, 48),
                     ),
                     SizedBox(width: UIAdapt.px(context, 12)),
-                    // Detail Icon Button (Netflix 风格 ℹ️ 纯图标)
-                    MouseRegion(
-                      onEnter: (_) => setState(() => _infoHovered = true),
-                      onExit: (_) => setState(() => _infoHovered = false),
-                      cursor: SystemMouseCursors.click,
-                      child: GestureDetector(
-                        onTap: () => widget.onInfo(widget.video),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          curve: Curves.easeOutCubic,
-                          transform: _infoHovered
-                              ? (Matrix4.identity()..scale(1.1))
-                              : Matrix4.identity(),
-                          width: UIAdapt.px(context, 28),
-                          height: UIAdapt.px(context, 28),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.white.withOpacity(_infoHovered ? 0.08 : 0.02),
-                            border: Border.all(
-                              color: Colors.white.withOpacity(_infoHovered ? 0.15 : 0.05),
-                            ),
-                          ),
-                          child: Icon(
-                            Icons.info_outline_rounded,
-                            size: UIAdapt.px(context, 16),
-                            color: Colors.white.withOpacity(_infoHovered ? 0.75 : 0.45),
-                          ),
-                        ),
-                      ),
+                    // Detail Button
+                    MubuButton(
+                      label: isSmall ? null : '详情',
+                      icon: Icons.info_outline_rounded,
+                      type: MubuButtonType.secondary,
+                      onPressed: () => widget.onInfo(widget.video),
+                      customHeight: isSmall ? 40 : UIAdapt.px(context, 48),
                     ),
                   ],
                 ),

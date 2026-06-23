@@ -1,4 +1,3 @@
-// lib/widgets/movie_info_dialog.dart
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -6,20 +5,50 @@ import '../models/mubu_models.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_ui_adapt.dart';
+import 'mubu_button.dart';
+import 'mubu_dialog.dart';
+import 'mubu_skeleton.dart';
 
 class MovieInfoDialog extends StatefulWidget {
-  final VideoDetail detail;
   final VideoItem video;
   final String imgDomain;
   final VoidCallback onPlay;
+  final bool isShort;
+  final VideoDetail? preloadedDetail;
 
   const MovieInfoDialog({
     Key? key,
-    required this.detail,
     required this.video,
     required this.imgDomain,
     required this.onPlay,
+    required this.isShort,
+    this.preloadedDetail,
   }) : super(key: key);
+
+  static Future<void> show({
+    required BuildContext context,
+    required VideoItem video,
+    required String imgDomain,
+    required bool isShort,
+    required VoidCallback onPlay,
+  }) {
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withOpacity(0.7),
+      elevation: 0,
+      builder: (ctx) => MovieInfoDialog(
+        video: video,
+        imgDomain: imgDomain,
+        isShort: isShort,
+        onPlay: () {
+          Navigator.pop(ctx);
+          onPlay();
+        },
+      ),
+    );
+  }
 
   @override
   State<MovieInfoDialog> createState() => _MovieInfoDialogState();
@@ -27,11 +56,45 @@ class MovieInfoDialog extends StatefulWidget {
 
 class _MovieInfoDialogState extends State<MovieInfoDialog> {
   bool _isBookmarked = false;
+  VideoDetail? _detail;
+  bool _isLoading = false;
+  bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
+    _detail = widget.preloadedDetail;
     _checkBookmarkStatus();
+    if (_detail == null) {
+      _fetchDetail();
+    }
+  }
+
+  Future<void> _fetchDetail() async {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+    try {
+      final detail = await MubuApiClient.instance.getVideoDetail(
+        widget.video.id, 
+        isShort: widget.isShort
+      );
+      if (mounted) {
+        setState(() {
+          _detail = detail;
+          _isLoading = false;
+          _hasError = detail == null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+        });
+      }
+    }
   }
 
   Future<void> _checkBookmarkStatus() async {
@@ -54,13 +117,6 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
     final isWide = width >= 650;
     final coverUrl = widget.video.coverUrl(widget.imgDomain);
     
-    // Construct meta string matching prototype style: 2026 • 动作/科幻 • 评分 8.9
-    final metaParts = [
-      if (widget.detail.year.isNotEmpty) widget.detail.year,
-      if (widget.video.category.isNotEmpty) widget.video.category,
-      if (widget.detail.score.isNotEmpty) '评分 ${widget.detail.score}',
-    ].join(' • ');
-
     Widget posterWidget() {
       if (coverUrl.isEmpty) {
         return Container(
@@ -81,7 +137,79 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
       );
     }
 
-    Widget contentColumn() {
+    Widget contentWidget() {
+      if (_hasError) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline_rounded, color: Colors.white24, size: UIAdapt.px(context, 48)),
+              SizedBox(height: UIAdapt.px(context, 16)),
+              Text(
+                '加载影片详情失败',
+                style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: UIAdapt.fontSize(context, 14)),
+              ),
+              SizedBox(height: UIAdapt.px(context, 24)),
+              MubuButton(
+                label: '点击重试',
+                icon: Icons.refresh_rounded,
+                type: MubuButtonType.primary,
+                onPressed: _fetchDetail,
+              ),
+            ],
+          ),
+        );
+      }
+
+      if (_isLoading || _detail == null) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      MubuSkeleton(width: UIAdapt.px(context, 48), height: UIAdapt.px(context, 18)),
+                      SizedBox(width: UIAdapt.px(context, 8)),
+                      MubuSkeleton(width: UIAdapt.px(context, 120), height: UIAdapt.px(context, 14)),
+                    ],
+                  ),
+                  SizedBox(height: UIAdapt.px(context, 12)),
+                  MubuSkeleton(width: UIAdapt.px(context, 200), height: UIAdapt.px(context, 28)),
+                  SizedBox(height: UIAdapt.px(context, 16)),
+                  MubuSkeleton(width: double.infinity, height: UIAdapt.px(context, 1)),
+                  SizedBox(height: UIAdapt.px(context, 12)),
+                  MubuSkeleton(width: UIAdapt.px(context, 48), height: UIAdapt.px(context, 12)),
+                  SizedBox(height: UIAdapt.px(context, 8)),
+                  MubuSkeleton(width: double.infinity, height: UIAdapt.px(context, 14)),
+                  SizedBox(height: UIAdapt.px(context, 6)),
+                  MubuSkeleton(width: double.infinity, height: UIAdapt.px(context, 14)),
+                  SizedBox(height: UIAdapt.px(context, 6)),
+                  MubuSkeleton(width: UIAdapt.px(context, 150), height: UIAdapt.px(context, 14)),
+                ],
+              ),
+            ),
+            SizedBox(height: UIAdapt.px(context, 20)),
+            Row(
+              children: [
+                Expanded(flex: 3, child: MubuSkeleton(height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40))),
+                SizedBox(width: UIAdapt.px(context, isWide ? 12 : 8)),
+                Expanded(flex: 2, child: MubuSkeleton(height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40))),
+              ],
+            ),
+          ],
+        );
+      }
+
+      final metaParts = [
+        if (_detail!.year.isNotEmpty) _detail!.year,
+        if (widget.video.category.isNotEmpty) widget.video.category,
+        if (_detail!.score.isNotEmpty) '评分 ${_detail!.score}',
+      ].join(' • ');
+
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -131,7 +259,7 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                 
                 // Title
                 Text(
-                  widget.detail.title,
+                  _detail!.title,
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: UIAdapt.fontSize(context, 24),
@@ -168,7 +296,7 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                   child: SingleChildScrollView(
                     physics: const BouncingScrollPhysics(),
                     child: Text(
-                      widget.detail.description.isNotEmpty ? widget.detail.description : '暂无剧情简介。',
+                      _detail!.description.isNotEmpty ? _detail!.description : '暂无剧情简介。',
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.6),
                         fontSize: UIAdapt.fontSize(context, 13),
@@ -186,100 +314,27 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
           // Actions row
           Row(
             children: [
-              // Play Button with Red Glow Shadow
               Expanded(
                 flex: 3,
-                child: Container(
-                  height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFE50914).withOpacity(0.35),
-                        blurRadius: UIAdapt.px(context, 12),
-                        spreadRadius: 1,
-                        offset: Offset(0, UIAdapt.px(context, 4)),
-                      ),
-                    ],
-                  ),
-                  child: ElevatedButton.icon(
-                    onPressed: widget.onPlay,
-                    icon: Icon(Icons.play_circle_fill_rounded, size: isWide ? UIAdapt.px(context, 20) : UIAdapt.px(context, 16)),
-                    label: Text(
-                      '开始播放',
-                      style: TextStyle(
-                        fontSize: isWide ? UIAdapt.fontSize(context, 14) : UIAdapt.fontSize(context, 12),
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFE50914),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: EdgeInsets.zero,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ).copyWith(
-                      backgroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return const Color(0xFFF40F1D); // Lighter red for hover
-                        }
-                        return const Color(0xFFE50914);
-                      }),
-                    ),
-                  ),
+                child: MubuButton(
+                  label: '开始播放',
+                  icon: Icons.play_circle_fill_rounded,
+                  type: MubuButtonType.primary,
+                  onPressed: widget.onPlay,
+                  fullWidth: true,
+                  customHeight: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
                 ),
               ),
               SizedBox(width: UIAdapt.px(context, isWide ? 12 : 8)),
-              // Glassmorphic Favorite Button (Rectangular Text + Icon)
               Expanded(
                 flex: 2,
-                child: Container(
-                  height: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
-                  child: ElevatedButton.icon(
-                    onPressed: _toggleBookmark,
-                    icon: Icon(
-                      _isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-                      size: isWide ? UIAdapt.px(context, 18) : UIAdapt.px(context, 15),
-                    ),
-                    label: Text(
-                      '收藏',
-                      style: TextStyle(
-                        fontSize: isWide ? UIAdapt.fontSize(context, 14) : UIAdapt.fontSize(context, 12),
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.05),
-                      foregroundColor: _isBookmarked ? const Color(0xFFE50914) : Colors.white.withOpacity(0.8),
-                      shadowColor: Colors.transparent,
-                      surfaceTintColor: Colors.transparent,
-                      elevation: 0,
-                      side: BorderSide(color: Colors.white.withOpacity(0.1)),
-                      padding: EdgeInsets.zero,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ).copyWith(
-                      backgroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return Colors.white.withOpacity(0.12);
-                        }
-                        return Colors.white.withOpacity(0.05);
-                      }),
-                      foregroundColor: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return _isBookmarked ? const Color(0xFFE50914) : Colors.white;
-                        }
-                        return _isBookmarked ? const Color(0xFFE50914) : Colors.white.withOpacity(0.8);
-                      }),
-                      side: WidgetStateProperty.resolveWith((states) {
-                        if (states.contains(WidgetState.hovered)) {
-                          return BorderSide(color: Colors.white.withOpacity(0.2));
-                        }
-                        return BorderSide(color: Colors.white.withOpacity(0.1));
-                      }),
-                    ),
-                  ),
+                child: MubuButton(
+                  label: _isBookmarked ? '已收藏' : '收藏',
+                  icon: _isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+                  type: _isBookmarked ? MubuButtonType.primary : MubuButtonType.secondary,
+                  onPressed: _toggleBookmark,
+                  fullWidth: true,
+                  customHeight: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
                 ),
               ),
             ],
@@ -288,92 +343,67 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
       );
     }
 
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: UIAdapt.px(context, 20),
-        vertical: UIAdapt.px(context, 40),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-          child: Container(
-            width: UIAdapt.px(context, 620),
-            height: UIAdapt.px(context, isWide ? 380 : 540),
-            decoration: BoxDecoration(
-              color: const Color(0xFF16161A).withOpacity(0.95),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: Colors.white.withOpacity(0.08)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.85),
-                  blurRadius: 50,
-                  offset: const Offset(0, 25),
-                ),
-              ],
+    return SafeArea(
+      child: Material(
+        color: Colors.transparent,
+        child: Center(
+          child: MubuDialogContainer(
+            maxWidth: UIAdapt.px(context, 620),
+            margin: EdgeInsets.symmetric(
+              horizontal: UIAdapt.px(context, 20),
+              vertical: UIAdapt.px(context, 40),
             ),
-            child: Stack(
-              children: [
-                isWide
-                    ? Row(
-                        children: [
-                          // Left Poster
-                          SizedBox(
-                            width: UIAdapt.px(context, 240),
-                            height: double.infinity,
-                            child: posterWidget(),
-                          ),
-                          // Right Content
-                          Expanded(
-                            child: Padding(
-                              padding: EdgeInsets.all(UIAdapt.px(context, 28)),
-                              child: contentColumn(),
+            child: SizedBox(
+              height: UIAdapt.px(context, isWide ? 380 : 540),
+              child: Stack(
+                children: [
+                  isWide
+                      ? Row(
+                          children: [
+                            // Left Poster
+                            SizedBox(
+                              width: UIAdapt.px(context, 240),
+                              height: double.infinity,
+                              child: posterWidget(),
                             ),
-                          ),
-                        ],
-                      )
-                    : Column(
-                        children: [
-                          // Top Poster
-                          AspectRatio(
-                            aspectRatio: 16 / 9,
-                            child: posterWidget(),
-                          ),
-                          // Bottom Content
-                          Expanded(
-                            child: Padding(
-                              padding: EdgeInsets.all(UIAdapt.px(context, 20)),
-                              child: contentColumn(),
+                            // Right Content
+                            Expanded(
+                              child: Padding(
+                                padding: EdgeInsets.all(UIAdapt.px(context, 28)),
+                                child: contentWidget(),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                // Top-right close floating button with backdrop blur
-                Positioned(
-                  top: UIAdapt.px(context, 14),
-                  right: UIAdapt.px(context, 14),
-                  child: ClipOval(
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-                      child: Container(
-                        color: Colors.black.withOpacity(0.3),
-                        child: IconButton(
-                          onPressed: () => Navigator.pop(context),
-                          icon: Icon(
-                            Icons.close_rounded,
-                            color: Colors.white.withOpacity(0.8),
-                            size: UIAdapt.px(context, 20),
-                          ),
-                          hoverColor: Colors.white.withOpacity(0.1),
-                          constraints: const BoxConstraints(),
-                          padding: EdgeInsets.all(UIAdapt.px(context, 8)),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            // Top Poster
+                            AspectRatio(
+                              aspectRatio: 16 / 9,
+                              child: posterWidget(),
+                            ),
+                            // Bottom Content
+                            Expanded(
+                              child: Padding(
+                                padding: EdgeInsets.all(UIAdapt.px(context, 20)),
+                                child: contentWidget(),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
+                  // Top-right close floating button (Keep for desktop/tap access)
+                  Positioned(
+                    top: UIAdapt.px(context, 14),
+                    right: UIAdapt.px(context, 14),
+                    child: MubuButton(
+                      icon: Icons.close_rounded,
+                      type: MubuButtonType.icon,
+                      onPressed: () => Navigator.pop(context),
+                      customHeight: UIAdapt.px(context, 32),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

@@ -48,7 +48,9 @@ class MediaKitPlayerImpl implements JpPlayer {
   Future<void> seek(Duration position) async {}
 
   @override
-  Future<void> setSource(String url) async {}
+  Future<void> setSource(String url, {bool autoPlay = true}) async {}
+
+  Future<void> setMpvProperty(String key, String value) async {}
 
   @override
   Future<void> dispose() async {
@@ -62,5 +64,7 @@ class MediaKitPlayerImpl implements JpPlayer {
   }
 
   @override
-  Widget buildVideoWidget(BuildContext context) => const SizedBox.shrink();
+  Widget buildVideoWidget(BuildContext context, {String? title, VoidCallback? onBack, String? previewUrl}) {
+    return const Center(child: Text('Video playback not supported on this platform.'));
+  }
 }

@@ -8,7 +8,7 @@ abstract class JpPlayer {
   Future<void> play();
   Future<void> pause();
   Future<void> seek(Duration position);
-  Future<void> setSource(String url);
+  Future<void> setSource(String url, {bool autoPlay = true});
   Future<void> dispose();
 
   // ValueNotifiers for state observation
@@ -21,5 +21,5 @@ abstract class JpPlayer {
   ValueNotifier<int?> get videoHeightNotifier;
 
   // Build the video rendering widget
-  Widget buildVideoWidget(BuildContext context);
+  Widget buildVideoWidget(BuildContext context, {String? title, VoidCallback? onBack, String? previewUrl});
 }

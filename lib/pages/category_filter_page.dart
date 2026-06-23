@@ -7,6 +7,7 @@ import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
 import '../widgets/movie_info_dialog.dart';
 import '../widgets/movie_sliver_grid.dart';
+import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
 import '../widgets/load_more_button.dart';
@@ -59,6 +60,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   bool _hasMore = true;
   int _page = 1;
   String? _error;
+  int _videoReqId = 0;
 
   static const int _pageSize = 15;
 
@@ -163,8 +165,9 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   }
 
   Future<void> _loadVideos(int catId, {bool reset = false}) async {
-    if (_loadingVideos) return;
+    if (_loadingVideos && !reset) return;
 
+    final int reqId = ++_videoReqId;
     int targetPage = reset ? 1 : _page + 1;
 
     setState(() {
@@ -207,6 +210,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         page: targetPage,
       );
       if (!mounted) return;
+      if (reqId != _videoReqId) return;
       if (catId != _activeCategoryId) return;
 
       if (reset && _scrollController.hasClients) {
@@ -230,6 +234,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     } catch (e) {
       debugPrint('FILTER: Failed to load videos: $e');
       if (!mounted) return;
+      if (reqId != _videoReqId) return;
       if (catId != _activeCategoryId) return;
       setState(() {
         _loadingVideos = false;
@@ -255,58 +260,13 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     );
   }
 
-  void _showVideoInfo(VideoItem video) async {
-    BuildContext? dialogContext;
-    showDialog(
+  void _showVideoInfo(VideoItem video) {
+    MovieInfoDialog.show(
       context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        dialogContext = ctx;
-        return const Center(child: CircularProgressIndicator(color: _kPrimaryRed));
-      },
-    );
-    try {
-      final detail = await _api.getVideoDetail(video.id, isShort: _activeCategoryId == 67 || video.isShortDrama);
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (detail != null) {
-        showDialog(
-          context: context,
-          builder: (ctx) => MovieInfoDialog(
-            detail: detail,
-            video: video,
-            imgDomain: _api.imgDomain,
-            onPlay: () {
-              Navigator.pop(ctx);
-              _playVideo(video);
-            },
-          ),
-        );
-      } else {
-        // API returned null — show a brief toast so the user knows something happened
-        if (context.mounted) {
-          _showInfoError(context, video.title);
-        }
-      }
-    } catch (e) {
-      if (!mounted) return;
-      if (dialogContext != null) {
-        Navigator.of(dialogContext!).pop();
-        dialogContext = null;
-      }
-      if (context.mounted) {
-        _showInfoError(context, video.title);
-      }
-    }
-  }
-
-  void _showInfoError(BuildContext ctx, String title) {
-    showDialog(
-      context: ctx,
-      builder: (ctx) => _InfoErrorDialog(title: title),
+      video: video,
+      isShort: _activeCategoryId == 67 || video.isShortDrama,
+      imgDomain: _api.imgDomain,
+      onPlay: () => _playVideo(video),
     );
   }
 
