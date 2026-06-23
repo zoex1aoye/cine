@@ -79,6 +79,14 @@ class _PlayerPageState extends State<PlayerPage> {
   String? _savedEpisodeName;
   String? _savedLineName;
 
+  // 弱网自动切换：持续缓冲超时后的看门狗
+  Timer? _bufferingWatchdog;
+  VoidCallback? _bufferingListener;
+  // 上次自动切换时间，防止短时间内多次切换
+  int _lastAutoSwitchMs = 0;
+  // 连续触发弱网看门狗的次数（用于逐步放大 cache-pause-wait）
+  int _weakNetworkCount = 0;
+
   // Sticky player for portrait videos
   final ScrollController _scrollController = ScrollController();
   double _scrollOffset = 0.0;
@@ -244,6 +252,10 @@ class _PlayerPageState extends State<PlayerPage> {
   void dispose() {
     _disposed = true;
     _progressTimer?.cancel();
+    _bufferingWatchdog?.cancel();
+    if (_bufferingListener != null) {
+      _player?.isBufferingNotifier.removeListener(_bufferingListener!);
+    }
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     if (_widthListener != null) _player?.videoWidthNotifier.removeListener(_widthListener!);
@@ -294,14 +306,12 @@ class _PlayerPageState extends State<PlayerPage> {
 
   /// 滚动监听回调
   void _onScroll() {
-    if (_scrollController.hasClients && mounted) {
+    if (_scrollController.hasClients) {
       final double offset = _scrollController.offset;
-      if (offset <= 80.0 || _scrollOffset <= 80.0) {
-        setState(() {
-          _scrollOffset = offset;
-        });
-      } else {
-        _scrollOffset = offset;
+      _scrollOffset = offset;
+      // 只在过渡区间 (0-80px) 内触发重绘以更新视频高度，其余位置直接跳过
+      if (offset <= 80.0 && mounted) {
+        setState(() {});
       }
     }
   }
@@ -325,6 +335,62 @@ class _PlayerPageState extends State<PlayerPage> {
         episodeName,
         lineName: lineName,
       );
+    }
+  }
+
+  /// 弱网看门狗：开始监听缓冲状态，播放启动后调用一次
+  void _startBufferingWatchdog() {
+    if (_player == null || _bufferingListener != null) return;
+    _bufferingListener = () {
+      final isBuffering = _player?.isBufferingNotifier.value ?? false;
+      if (isBuffering) {
+        // 已在计时中，不重复启动
+        if (_bufferingWatchdog?.isActive == true) return;
+        // 12 秒仍在缓冲 → 触发弱网逻辑
+        _bufferingWatchdog = Timer(const Duration(seconds: 12), _onBufferingTimeout);
+      } else {
+        _bufferingWatchdog?.cancel();
+        _bufferingWatchdog = null;
+      }
+    };
+    _player!.isBufferingNotifier.addListener(_bufferingListener!);
+  }
+
+  /// 持续缓冲 12s 后的处理：自适应调高缓冲等待 + 尝试切换备用线路
+  void _onBufferingTimeout() {
+    if (_disposed || !mounted) return;
+    _weakNetworkCount++;
+
+    // 逐步放大重新恢复播放所需的缓冲时间（最高 8s），减少反复暂停
+    final newWait = (_weakNetworkCount + 3).clamp(4, 8);
+    _player?.setMpvProperty('cache-pause-wait', '$newWait');
+    debugPrint('PLAYER: weak-network #$_weakNetworkCount → cache-pause-wait=${newWait}s');
+
+    // 防止 30s 内重复自动切换
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastAutoSwitchMs < 30000) return;
+
+    // 寻找当前集数中速度最快的非当前线路
+    if (_sources.isEmpty) return;
+    final currentEpisode = _sources[_selectedSource].sourceName;
+    final currentUrl = _sources[_selectedSource].url;
+
+    final candidates = _sources
+        .where((s) =>
+            s.sourceName == currentEpisode &&
+            s.usable &&
+            s.url != currentUrl &&
+            s.speedMs != null &&
+            s.speedMs! < 999999)
+        .toList()
+      ..sort((a, b) => (a.speedMs ?? 999999).compareTo(b.speedMs ?? 999999));
+
+    if (candidates.isNotEmpty) {
+      final fallback = candidates.first;
+      final idx = _sources.indexOf(fallback);
+      debugPrint('PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.speedMs}ms)');
+      _lastAutoSwitchMs = now;
+      _switchSource(idx);
     }
   }
 
@@ -379,7 +445,7 @@ class _PlayerPageState extends State<PlayerPage> {
   Future<void> _runSpeedTest() async {
     _client = http.Client();
     _testedCount = 0;
-    const delayBetweenTests = Duration(milliseconds: 800);
+    // delayBetweenTests 已废弃——测速改为并行后不再需要串行延迟
 
     // 收集唯一线路，re-enter 时把保存的线路排到第一个
     final uniqueLines = <String>{};
@@ -421,94 +487,109 @@ class _PlayerPageState extends State<PlayerPage> {
       final domain = uri?.host ?? '';
       if (domain.isNotEmpty) {
         final record = nodeBox.get(domain);
-        if (record != null && (now - record.testedAtEpoch) < ttlMs && record.latencyMs < 500) {
-          _sources[idx].speedMs = record.latencyMs;
-          _sources[idx].usable = true;
-          debugPrint('SPEED: [$idx] CACHE HIT ${record.latencyMs}ms for $domain');
+        if (record != null && (now - record.testedAtEpoch) < ttlMs) {
+          if (record.latencyMs < 500) {
+            _sources[idx].speedMs = record.latencyMs;
+            _sources[idx].usable = true;
+            debugPrint('SPEED: [$idx] CACHE HIT ${record.latencyMs}ms for $domain');
+          } else if (record.latencyMs >= 999999) {
+            _sources[idx].speedMs = 999999;
+            _sources[idx].usable = false;
+            debugPrint('SPEED: [$idx] CACHE BLACKLISTED (timeout) for $domain');
+          }
         }
       }
     }
 
-    // 2. 如果缓存中存在可用快线，立即优先起播
+    // 2. 找到最快缓存记录 (Champion) 并复测
     if (!_playerInitialized) {
       int? bestCachedIdx;
+      int minLatency = 999999;
+      
       // 优先看记忆保存的线路是否命中缓存
       if (hasSavedLine) {
         final savedIdx = indices.indexWhere((i) => _sources[i].name == _savedLineName);
         if (savedIdx != -1 && _sources[savedIdx].speedMs != null && _sources[savedIdx].speedMs! < 500) {
           bestCachedIdx = savedIdx;
+          minLatency = _sources[savedIdx].speedMs!;
         }
       }
-      // 如果没有保存的线路，或者保存的没命中，拿第一条命中的缓存线路
+      
+      // 寻找全局最快缓存线路
       if (bestCachedIdx == null) {
         for (final idx in indices) {
-          if (_sources[idx].speedMs != null && _sources[idx].speedMs! < 500) {
+          final speed = _sources[idx].speedMs;
+          if (speed != null && speed < 500 && speed < minLatency) {
+            minLatency = speed;
             bestCachedIdx = idx;
-            break;
           }
         }
       }
 
-      // 如果成功找到缓存快线，直接初始化播放器！
+      // 复测 Champion
       if (bestCachedIdx != null) {
-        _selectedSource = bestCachedIdx;
-        _currentUrl = _sources[bestCachedIdx].url;
-        debugPrint('PLAYER: cached fast line found — init immediately');
-        if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
-        await _initPlayer();
-        if (_disposed) return;
-        if (mounted) setState(() { _stage = LoadingStage.ready; });
+        debugPrint('PLAYER: Champion line found (idx $bestCachedIdx, cached ${minLatency}ms) — re-testing...');
+        _sources[bestCachedIdx].speedMs = null; // Clear to force _testSource
+        if (_client != null) await _testSource(bestCachedIdx, _client!);
+        
+        if (!_disposed && _sources[bestCachedIdx].usable && _sources[bestCachedIdx].speedMs != null && _sources[bestCachedIdx].speedMs! < 500) {
+          _selectedSource = bestCachedIdx;
+          _currentUrl = _sources[bestCachedIdx].url;
+          debugPrint('PLAYER: Champion re-test passed (${_sources[bestCachedIdx].speedMs}ms) — init immediately');
+          if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+          await _initPlayer();
+          if (_disposed) return;
+          if (mounted) setState(() { _stage = LoadingStage.ready; });
+        } else {
+          debugPrint('PLAYER: Champion re-test failed, falling back to slow testing.');
+        }
       }
     }
 
-    // 3. 剩余未命中的线路，进入原本的慢速串行网络测速
-    for (var i = 0; i < indices.length && !_disposed; i++) {
-      final idx = indices[i];
-      
-      // 已经命中缓存的，无需重复测
-      if (_sources[idx].speedMs != null) {
+    // 3. 剩余未命中的线路，并行测速（每条线路独立 http.Client 以支持并发）
+    final pending = indices.where((idx) => _sources[idx].speedMs == null).toList();
+    if (pending.isNotEmpty && !_disposed) {
+      // 为每条线路创建独立 Client，避免单个 Client 的并发限制
+      await Future.wait(pending.map((idx) async {
+        if (_disposed) return;
+        final localClient = http.Client();
+        try {
+          await _testSource(idx, localClient);
+        } finally {
+          localClient.close();
+        }
+        if (_disposed) return;
         if (mounted) setState(() => _testedCount++);
-        continue;
-      }
 
-      await _testSource(idx, _client!);
-      if (_disposed) break;
-      if (mounted) setState(() => _testedCount++);
-
-      if (!_playerInitialized) {
-        final passes = _sources[idx].usable &&
-            _sources[idx].speedMs != null &&
-            _sources[idx].speedMs! < 500;
-        if (passes) {
-          if (hasSavedLine) {
-            if (_sources[idx].name == _savedLineName) {
+        if (!_playerInitialized) {
+          final passes = _sources[idx].usable &&
+              _sources[idx].speedMs != null &&
+              _sources[idx].speedMs! < 500;
+          if (passes) {
+            if (hasSavedLine) {
+              if (_sources[idx].name == _savedLineName) {
+                _selectedSource = idx;
+                _currentUrl = _sources[idx].url;
+                debugPrint('PLAYER: saved line fast — init immediately');
+                if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+                await _initPlayer();
+              }
+            } else {
               _selectedSource = idx;
               _currentUrl = _sources[idx].url;
-              debugPrint('PLAYER: saved line fast — init immediately');
+              debugPrint('PLAYER: first fast line — init immediately');
               if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
               await _initPlayer();
-              if (_disposed) return;
-              if (mounted) setState(() { _stage = LoadingStage.ready; });
             }
-          } else {
-            _selectedSource = idx;
-            _currentUrl = _sources[idx].url;
-            debugPrint('PLAYER: first fast line — init immediately');
-            if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
-            await _initPlayer();
-            if (_disposed) return;
-            if (mounted) setState(() { _stage = LoadingStage.ready; });
           }
         }
-      }
-
-      // 只要不是最后一条，网络请求后必须延迟
-      if (i < indices.length - 1) {
-        await Future.delayed(delayBetweenTests);
-      }
+      }));
+    } else {
+      // 全部命中缓存时更新 testedCount
+      if (mounted) setState(() => _testedCount = indices.length);
     }
 
-    // 测速完成 — 继承同名线路的 speedMs/usable 给未测的源
+    // 测速完成：将 _disposed / 初始化提前退出检查前置，关闭主 client
     _client?.close();
     _client = null;
     if (_disposed) return;
@@ -547,6 +628,17 @@ class _PlayerPageState extends State<PlayerPage> {
     final url = _sources[index].url;
     final name = _sources[index].name;
     final sw = Stopwatch()..start();
+    
+    void recordToCache(int latency) {
+      final uri = Uri.tryParse(url);
+      if (uri != null && uri.host.isNotEmpty) {
+        Hive.box<NodeSpeedRecord>('node_speeds').put(
+          uri.host,
+          NodeSpeedRecord(domainOrUrl: uri.host, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch),
+        );
+      }
+    }
+
     try {
       final resp = await client.head(Uri.parse(url)).timeout(const Duration(seconds: 4));
       sw.stop();
@@ -554,25 +646,23 @@ class _PlayerPageState extends State<PlayerPage> {
       _sources[index].speedMs = ok ? sw.elapsedMilliseconds : 999999;
       if (!ok) {
         _sources[index].usable = false;
-        debugPrint('SPEED: [$index] $name HEAD=${resp.statusCode} ❌');
+        recordToCache(999999);
+        debugPrint('SPEED: [$index] $name HEAD=${resp.statusCode} ❌ (Blacklisted)');
         return;
       }
-      final getResp = await client.get(Uri.parse(url), headers: {'Range': 'bytes=0-65535'}).timeout(const Duration(seconds: 5));
+      // 8KB 足以判断是否为视频流，减少移动端流量消耗（原 64KB）
+      final getResp = await client.get(Uri.parse(url), headers: {'Range': 'bytes=0-8191'}).timeout(const Duration(seconds: 5));
       final body = getResp.bodyBytes;
       final isVideo = body.length > 100 && (getResp.statusCode == 200 || getResp.statusCode == 206) && !_looksLikeHtml(body);
       _sources[index].usable = isVideo;
       
       if (isVideo) {
-        final uri = Uri.tryParse(url);
-        // Only record fast nodes (< 500ms) to the database as requested
-        if (uri != null && uri.host.isNotEmpty && sw.elapsedMilliseconds < 500) {
-          Hive.box<NodeSpeedRecord>('node_speeds').put(
-            uri.host,
-            NodeSpeedRecord(domainOrUrl: uri.host, latencyMs: sw.elapsedMilliseconds, testedAtEpoch: DateTime.now().millisecondsSinceEpoch),
-          );
+        if (sw.elapsedMilliseconds < 500) {
+          recordToCache(sw.elapsedMilliseconds);
         }
       } else {
         _sources[index].speedMs = 999999;
+        recordToCache(999999);
       }
       
       debugPrint('SPEED: [$index] $name ${sw.elapsedMilliseconds}ms ${getResp.statusCode} ${body.length}B ${isVideo ? "✅" : "❌HTML"}');
@@ -580,7 +670,8 @@ class _PlayerPageState extends State<PlayerPage> {
       sw.stop();
       _sources[index].speedMs = 999999;
       _sources[index].usable = false;
-      debugPrint('SPEED: [$index] $name ERROR: $e');
+      recordToCache(999999);
+      debugPrint('SPEED: [$index] $name ERROR: $e (Blacklisted)');
     }
   }
 
@@ -926,6 +1017,27 @@ class _PlayerPageState extends State<PlayerPage> {
     );
   }
 
+  String? _getFastPreviewUrl() {
+    if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
+    final currentEpisode = _sources[_selectedSource].sourceName;
+    final currentUrl = _sources[_selectedSource].url;
+    
+    // Find all usable sources for the same episode
+    final candidates = _sources.where((s) => s.sourceName == currentEpisode && s.usable).toList();
+    if (candidates.isEmpty) return null;
+    
+    // Avoid main stream: If there are multiple lines, strictly exclude the one currently playing
+    if (candidates.length > 1) {
+      candidates.removeWhere((s) => s.url == currentUrl);
+    }
+    
+    // Sort by speedMs (null/timeout goes to bottom)
+    candidates.sort((a, b) => (a.speedMs ?? 999999).compareTo(b.speedMs ?? 999999));
+    
+    // Return the fastest backup line's URL (or the main line if it's the only one available)
+    return candidates.first.url;
+  }
+
   Widget _buildVideoPlayerContainer() {
     final imgDomain = MubuApiClient.instance.imgDomain;
     final coverUrl = widget.video.coverUrl(imgDomain);
@@ -945,7 +1057,12 @@ class _PlayerPageState extends State<PlayerPage> {
             Positioned.fill(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
-                child: _player!.buildVideoWidget(context),
+                child: _player!.buildVideoWidget(
+                  context,
+                  title: widget.video.title,
+                  onBack: () => Navigator.of(context).pop(),
+                  previewUrl: _getFastPreviewUrl(),
+                ),
               ),
             ),
 
@@ -1013,25 +1130,27 @@ class _PlayerPageState extends State<PlayerPage> {
                 curve: Curves.easeOutCubic,
                 child: Center(
                   child: BreathingPlayPulse(
-                    onTap: () {
-                      setState(() {
-                        _startPlayRequested = true;
-                      });
-                      _player?.play().then((_) {
-                        final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
-                        final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;
-                        MubuStorage.recordWatch(
-                          widget.video,
-                          positionMs: _savedPositionMs,
-                          durationMs: _savedDurationMs,
-                          episodeName: episodeName,
-                          lineName: lineName,
-                        );
-                        // Resume from last saved position (only seek after play starts, buffer needs to be active)
-                        if (_savedPositionMs != null && _savedPositionMs! > 5000) {
-                          _player?.seek(Duration(milliseconds: _savedPositionMs!));
-                        }
-                      }).catchError((e) {
+                      onTap: () {
+                        setState(() {
+                          _startPlayRequested = true;
+                        });
+                        _player?.play().then((_) {
+                          final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
+                          final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;
+                          MubuStorage.recordWatch(
+                            widget.video,
+                            positionMs: _savedPositionMs,
+                            durationMs: _savedDurationMs,
+                            episodeName: episodeName,
+                            lineName: lineName,
+                          );
+                          // Resume from last saved position (only seek after play starts, buffer needs to be active)
+                          if (_savedPositionMs != null && _savedPositionMs! > 5000) {
+                            _player?.seek(Duration(milliseconds: _savedPositionMs!));
+                          }
+                          // 启动弱网看门狗（播放开始后才激活，避免加载阶段误触发）
+                          _startBufferingWatchdog();
+                        }).catchError((e) {
                         debugPrint('PLAYER: play() failed: $e');
                       });
                       // Start periodic progress save every 10 seconds
