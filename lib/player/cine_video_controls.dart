@@ -39,11 +39,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   bool _wasPlayingBeforeDrag = false;
   Timer? _previewDisposeTimer;
   Timer? _seekDebounceTimer;
+  Timer? _smartWarmUpTimer;
+  bool _warmUpInProgress = false;
   // 预览上次 seek 的目标位置（毫秒）。-1 表示尚未定位。
   // 用于"少 seek 多播放"策略：仅当手指移动超过阈值才重新定位。
   double _previewSeekTarget = -1;
-  // 手指移动超过该阈值（毫秒）才重新 seek，否则让预览继续向前播放。
-  static const double _kPreviewReseekThresholdMs = 5000;
 
   // 进度条拖动死区（迟滞）半径，单位：物理像素。
   // 触摸屏上手指压住进度条时电容噪声会 ±数像素抖动；半径必须大于抖动幅度，
@@ -63,6 +63,24 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   bool _showIndicator = false;
 
   Player get player => widget.state.widget.controller.player;
+
+  /// 预览源是否为备用线路（与主路 URL 不同才值得后台预热，避免双倍拉同一 CDN）
+  bool get _previewIsBackupLine {
+    final previewUrl = widget.previewUrl;
+    if (previewUrl == null || previewUrl.isEmpty) return false;
+    final medias = player.state.playlist.medias;
+    final idx = player.state.playlist.index;
+    if (medias.isEmpty || idx < 0 || idx >= medias.length) return true;
+    return previewUrl != medias[idx].uri;
+  }
+
+  bool get _canScheduleWarmUp =>
+      _previewIsBackupLine &&
+      !_isBuffering &&
+      !_isDragging &&
+      !_isConfirmingSeek &&
+      _previewPlayer == null &&
+      !_warmUpInProgress;
 
   late StreamSubscription _playingSub;
   late StreamSubscription _positionSub;
@@ -93,7 +111,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     });
 
     _playingSub = player.stream.playing.listen((event) {
-      if (mounted) setState(() => _playing = event);
+      if (mounted) {
+        setState(() => _playing = event);
+        if (event && !_isBuffering) {
+          _scheduleSmartWarmUp(const Duration(seconds: 10));
+        }
+      }
     });
     _positionSub = player.stream.position.listen((event) {
       // 只在控件显示时才触发重绘，隐藏时仅更新内存值，降低移动端 CPU 占用
@@ -114,6 +137,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       // 主播放器缓冲时暂停预览下载，把带宽/解码资源让给主路
       if (event) {
         _previewPlayer?.pause();
+        _cancelSmartWarmUp();
         _bufferingStartTime ??= DateTime.now();
         // 5s 后显示弱网提示
         _bufferingUiTimer ??= Timer(const Duration(seconds: 5), () {
@@ -126,11 +150,16 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         _bufferingUiTimer?.cancel();
         _bufferingUiTimer = null;
         if (_showWeakNetHint) setState(() => _showWeakNetHint = false);
+        if (_playing && _canScheduleWarmUp) {
+          _scheduleSmartWarmUp(const Duration(seconds: 5));
+        }
       }
     });
 
-    // 预览播放器仅在用户拖动进度条时按需创建，避免后台预热与主播放器抢带宽。
-    // （拖动时首次 seek 可能略慢，但正常播放流畅度优先。）
+    // 播放稳定后尝试智能预热；全屏/控件展开时缩短等待（用户更可能拖动）
+    if (_playing && !_isBuffering) {
+      _scheduleSmartWarmUp(const Duration(seconds: 10));
+    }
   }
 
   @override
@@ -154,6 +183,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
   @override
   void dispose() {
+    _cancelSmartWarmUp();
     _previewDisposeTimer?.cancel();
     _seekDebounceTimer?.cancel();
     _previewPlayer?.dispose();
@@ -174,14 +204,51 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _cancelSeek();
       return;
     }
+    final willShow = !_showControls;
     setState(() {
-      _showControls = !_showControls;
+      _showControls = willShow;
     });
-    if (_showControls) {
+    if (willShow) {
       _startHideTimer();
+      if (widget.state.isFullscreen()) {
+        _scheduleSmartWarmUp(const Duration(milliseconds: 500));
+      }
     } else {
       _hideTimer?.cancel();
     }
+  }
+
+  void _scheduleSmartWarmUp(Duration delay) {
+    if (!_canScheduleWarmUp) return;
+    _smartWarmUpTimer?.cancel();
+    _smartWarmUpTimer = Timer(delay, () {
+      if (mounted && _canScheduleWarmUp) {
+        _warmUpPreviewPlayer();
+      }
+    });
+  }
+
+  void _cancelSmartWarmUp() {
+    _smartWarmUpTimer?.cancel();
+    _smartWarmUpTimer = null;
+  }
+
+  /// 主路播放稳定且未缓冲时，后台预热预览播放器并定位到当前进度。
+  /// 仅在备用线路可用时启用，避免与主路抢同一 CDN 连接。
+  void _warmUpPreviewPlayer() {
+    if (!_canScheduleWarmUp) return;
+    _cancelSmartWarmUp();
+    _createPreviewPlayer(initialSeekMs: _position.inMilliseconds.toDouble());
+  }
+
+  void _enterFullscreenWithWarmUp() {
+    widget.state.enterFullscreen();
+    _scheduleSmartWarmUp(const Duration(milliseconds: 800));
+  }
+
+  void _exitFullscreen() {
+    widget.state.exitFullscreen();
+    _cancelSmartWarmUp();
   }
 
   void _startHideTimer() {
@@ -234,7 +301,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   /// Internal: create preview player, configure mpv, and open media.
-  void _createPreviewPlayer() {
+  void _createPreviewPlayer({double? initialSeekMs}) {
+    _warmUpInProgress = true;
     _previewPlayer = Player(configuration: const PlayerConfiguration(logLevel: MPVLogLevel.error));
     _previewPlayer!.setVolume(0.0);
     // Linux: 禁用硬解纹理共享，与主播放器保持一致，规避 VAAPI-OpenGL EGL 互操作崩溃
@@ -266,8 +334,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       native.setProperty('demuxer-max-bytes', previewBuf);
       native.setProperty('cache-pause-initial', 'no');
       native.setProperty('cache-pause-wait', '1');
-      native.setProperty('demuxer-lavf-probesize', '3000000');  // 3 MB（够用）
-      native.setProperty('demuxer-lavf-analyzeduration', isMobile ? '2' : '3');
+      // 预览只需快速出帧：缩小探测窗口 + 低分辨率解码（160×90 窗口足够）
+      native.setProperty('demuxer-lavf-probesize', '1048576');  // 1 MB
+      native.setProperty('demuxer-lavf-analyzeduration', '1');
+      native.setProperty('vf', 'scale=160:-2');
       // 预览播放器同样启用 HLS 并行分片 + 较大读缓冲，保证拖动时帧响应速度
       native.setProperty('demuxer-lavf-o', 'http_multiple=1');
       native.setProperty('demuxer-lavf-o', 'icy=0');
@@ -294,11 +364,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     }
 
     // Mark ready when first video frame is decoded.
-    // 预热阶段（未拖动）保持暂停占用最低；拖动 / 确认中则立即对齐到目标位置。
     _previewPlayer!.stream.width.listen((w) {
       if (mounted && !_isPreviewReady && w != null) {
         setState(() => _isPreviewReady = true);
-        _alignPreviewToDrag();
+        _onPreviewReady(initialSeekMs);
       }
     });
 
@@ -307,9 +376,23 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     durSub = _previewPlayer!.stream.duration.listen((dur) {
       if (dur > Duration.zero && mounted && _isPreviewReady) {
         durSub.cancel();
-        _alignPreviewToDrag();
+        _onPreviewReady(initialSeekMs);
       }
     });
+  }
+
+  /// 预览首帧就绪：拖动中立即跟手；闲置预热则定位到当前进度并暂停。
+  void _onPreviewReady(double? initialSeekMs) {
+    _warmUpInProgress = false;
+    if (_isDragging || _isConfirmingSeek) {
+      _alignPreviewToDrag();
+      return;
+    }
+    final targetMs = initialSeekMs ?? _position.inMilliseconds.toDouble();
+    _previewSeekTarget = targetMs;
+    _previewPlayer?.seek(Duration(milliseconds: targetMs.toInt()));
+    _previewPlayer?.pause();
+    _schedulePreviewDispose();
   }
 
   /// 预览解码就绪 / 切源后，把预览对齐到当前拖动目标：
@@ -333,11 +416,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   /// Ensure preview player exists (create if needed) and cancel any pending dispose.
-  /// Called when user starts dragging — if player was pre-warmed, it's already ready.
   void _initPreviewPlayerIfNeeded() {
     _previewDisposeTimer?.cancel();
+    _cancelSmartWarmUp();
     if (_previewPlayer == null) {
-      _createPreviewPlayer();
+      _createPreviewPlayer(initialSeekMs: _dragValue);
     }
   }
 
@@ -388,11 +471,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _dragValue = milliseconds.clamp(0.0, _duration.inMilliseconds.toDouble());
     });
     
-    // 少 seek 多播放：预览正在向前连续播放，仅当手指移动超过阈值（默认 5s）
-    // 才重新定位；手指小幅移动 / 停住时让预览自然往前播，避免反复从关键帧重启造成卡顿。
+    // 少 seek 多播放：预览正在向前连续播放，仅当手指移动超过阈值才重新定位。
+    // 首次定位或大幅跳转（>3s）立即 seek，保证快速看到目标画面。
     if (_previewController != null && _isPreviewReady) {
       if (_previewSeekTarget < 0 ||
-          (_dragValue - _previewSeekTarget).abs() > _kPreviewReseekThresholdMs) {
+          (_dragValue - _previewSeekTarget).abs() > 3000) {
         _seekPreview(_dragValue);
       }
 
@@ -455,7 +538,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         _previewController = null;
         _isPreviewReady = false;
         _previewSeekTarget = -1;
+        _warmUpInProgress = false;
         setState(() {});
+        if (_playing && !_isBuffering && _previewIsBackupLine) {
+          _scheduleSmartWarmUp(const Duration(seconds: 15));
+        }
       }
     });
   }
@@ -747,9 +834,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                               onPressed: () {
                                 _startHideTimer();
                                 if (widget.state.isFullscreen()) {
-                                  widget.state.exitFullscreen();
+                                  _exitFullscreen();
                                 } else {
-                                  widget.state.enterFullscreen();
+                                  _enterFullscreenWithWarmUp();
                                 }
                               },
                             )
