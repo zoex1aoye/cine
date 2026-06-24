@@ -34,7 +34,6 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   VideoController? _previewController;
   bool _isDragging = false;
   double _dragValue = 0.0;
-  double _horizontalDragAccumulator = 0.0;
   bool _isPreviewReady = false;
   bool _isConfirmingSeek = false;
   bool _wasPlayingBeforeDrag = false;
@@ -45,6 +44,14 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   double _previewSeekTarget = -1;
   // 手指移动超过该阈值（毫秒）才重新 seek，否则让预览继续向前播放。
   static const double _kPreviewReseekThresholdMs = 5000;
+
+  // 进度条拖动死区（迟滞）半径，单位：物理像素。
+  // 触摸屏上手指压住进度条时电容噪声会 ±数像素抖动；半径必须大于抖动幅度，
+  // 才能吸收"微小前进后退"，避免被误判为拖动。同时也充当起步 slop：
+  // 从按下点起，手指要真正推过该距离才开始更新 _dragValue / 预览。
+  static const double _kSliderDeadbandPx = 10.0;
+  // 极短视频下 msPerPixel 很小，给死区一个时间下限，防止过敏。
+  static const double _kSliderDeadbandFloorMs = 1200.0;
 
   // Gestures
   double _brightness = 0.5; // App-level brightness
@@ -383,11 +390,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     final double trackWidth = (screenWidth - 132) > 100 ? (screenWidth - 132) : 100;
     final double msPerPixel = _duration.inMilliseconds / trackWidth;
     
-    // 动态迟滞死区（Hysteresis）：容忍 1.5 个物理像素的硬件触摸误差，最低门槛为 1000 毫秒（1秒）
-    double thresholdMs = msPerPixel * 1.5;
-    if (thresholdMs < 1000) thresholdMs = 1000;
-    
-    // 如果物理位移小于阈值，直接丢弃该次重绘，完美防止长视频下时间文本和预览窗口频繁抖动
+    // 触摸抖动死区（迟滞）：以上次接受的位置为中心、半径 _kSliderDeadbandPx 个物理像素。
+    // 半径远大于触摸抖动幅度，手指压住时的"微小前进后退"会被整体吸收，不更新进度/预览；
+    // 只有朝一个方向真正推过该距离才会突破死区开始跟手（同时充当起步 slop）。
+    double thresholdMs = msPerPixel * _kSliderDeadbandPx;
+    if (thresholdMs < _kSliderDeadbandFloorMs) thresholdMs = _kSliderDeadbandFloorMs;
+
+    // 物理位移小于死区半径，直接丢弃，彻底过滤静止抖动与误触
     if ((milliseconds - _dragValue).abs() < thresholdMs) return;
 
     setState(() {
@@ -466,23 +475,6 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     });
   }
 
-  void _onHorizontalDragStart(DragStartDetails details) {
-    _onDragStart();
-    _horizontalDragAccumulator = _position.inMilliseconds.toDouble();
-    _dragValue = _horizontalDragAccumulator;
-  }
-
-  void _onHorizontalDragUpdate(DragUpdateDetails details) {
-    final dx = details.delta.dx;
-    _horizontalDragAccumulator += (dx * 1000); // 1px = 1 second roughly
-    _onDragUpdate(_horizontalDragAccumulator); 
-    _showActionIndicator(Icons.fast_forward, _formatDuration(Duration(milliseconds: _dragValue.toInt())));
-  }
-
-  void _onHorizontalDragEnd(DragEndDetails details) {
-    _onDragEnd();
-  }
-
   void _onDoubleTapDown(TapDownDetails details, double screenWidth) {
     if (_isConfirmingSeek) {
       _cancelSeek();
@@ -523,9 +515,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             onTap: _toggleControls,
             onDoubleTapDown: (details) => _onDoubleTapDown(details, screenWidth),
             onVerticalDragUpdate: (details) => _onVerticalDragUpdate(details, screenWidth),
-            onHorizontalDragStart: _onHorizontalDragStart,
-            onHorizontalDragUpdate: _onHorizontalDragUpdate,
-            onHorizontalDragEnd: _onHorizontalDragEnd,
+            // 视频画面横滑已移除：预览只由底部进度条拖拽触发（避免画面误滑触发 seek/预览）。
             behavior: HitTestBehavior.opaque,
           ),
         ),
