@@ -84,6 +84,8 @@ class _PlayerPageState extends State<PlayerPage> {
   VoidCallback? _bufferingListener;
   // 上次自动切换时间，防止短时间内多次切换
   int _lastAutoSwitchMs = 0;
+  // 播放开始后中止后台测速，避免与主播放器抢带宽
+  bool _abortSpeedTest = false;
   // 连续触发弱网看门狗的次数（用于逐步放大 cache-pause-wait）
   int _weakNetworkCount = 0;
 
@@ -338,6 +340,15 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  /// 用户点击播放后调用：中止仍在进行的并行测速，把带宽让给主播放器
+  void _abortBackgroundSpeedTest() {
+    if (_abortSpeedTest) return;
+    _abortSpeedTest = true;
+    _client?.close();
+    _client = null;
+    debugPrint('SPEED: aborted — playback started, yielding bandwidth to main player');
+  }
+
   /// 弱网看门狗：开始监听缓冲状态，播放启动后调用一次
   void _startBufferingWatchdog() {
     if (_player == null || _bufferingListener != null) return;
@@ -548,17 +559,17 @@ class _PlayerPageState extends State<PlayerPage> {
 
     // 3. 剩余未命中的线路，并行测速（每条线路独立 http.Client 以支持并发）
     final pending = indices.where((idx) => _sources[idx].speedMs == null).toList();
-    if (pending.isNotEmpty && !_disposed) {
+    if (pending.isNotEmpty && !_disposed && !_abortSpeedTest) {
       // 为每条线路创建独立 Client，避免单个 Client 的并发限制
       await Future.wait(pending.map((idx) async {
-        if (_disposed) return;
+        if (_disposed || _abortSpeedTest) return;
         final localClient = http.Client();
         try {
           await _testSource(idx, localClient);
         } finally {
           localClient.close();
         }
-        if (_disposed) return;
+        if (_disposed || _abortSpeedTest) return;
         if (mounted) setState(() => _testedCount++);
 
         if (!_playerInitialized) {
@@ -625,6 +636,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _testSource(int index, http.Client client) async {
+    if (_abortSpeedTest) return;
     final url = _sources[index].url;
     final name = _sources[index].name;
     final sw = Stopwatch()..start();
@@ -1134,6 +1146,7 @@ class _PlayerPageState extends State<PlayerPage> {
                         setState(() {
                           _startPlayRequested = true;
                         });
+                        _abortBackgroundSpeedTest();
                         _player?.play().then((_) {
                           final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
                           final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;

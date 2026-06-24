@@ -86,17 +86,22 @@ class MediaKitPlayerImpl implements JpPlayer {
       if (_player.platform is NativePlayer) {
         final native = _player.platform as NativePlayer;
         
-        // 按平台区分缓冲区大小：移动端降低内存占用和后台功耗，桌面端保留宽裕缓冲
+        // 按平台区分缓冲区大小：移动端适度缓冲，桌面端宽裕预读
         final isMobile = Platform.isAndroid || Platform.isIOS;
-        // 移动端: 前向 16MB + 后向 16MB；桌面端: 前向 64MB + 后向 64MB
-        final fwdBytes  = isMobile ? '16777216'  : '67108864';   // 16 MB / 64 MB
-        final backBytes = isMobile ? '16777216'  : '67108864';   // 16 MB / 64 MB
-        final readaheadSecs = isMobile ? '10' : '30';
+        // 移动端: 前向 32MB + 后向 24MB；桌面端: 前向 128MB + 后向 64MB
+        // 1080p 约 5–8 Mbps，10s 预读仅 ~6–10MB，原 16MB/10s 容易播一会儿就见底
+        final fwdBytes  = isMobile ? '33554432'  : '134217728';  // 32 MB / 128 MB
+        final backBytes = isMobile ? '25165824'  : '67108864';   // 24 MB / 64 MB
+        final readaheadSecs = isMobile ? '25' : '45';
+        final cacheSecs = isMobile ? '45' : '60';
 
         await native.setProperty('cache', 'yes');
+        await native.setProperty('cache-secs', cacheSecs);
         await native.setProperty('demuxer-readahead-secs', readaheadSecs);
         await native.setProperty('demuxer-max-bytes', fwdBytes);
         await native.setProperty('demuxer-max-back-bytes', backBytes);
+        // 已下载分片保留在内存，减少 HLS 反复拉同一 TS 分片
+        await native.setProperty('demuxer-seekable-cache', 'yes');
 
         // 启动缓冲 — 播放前先缓存一段数据，避免开场卡顿（cache-pause-wait 已在下方统一设置）
         await native.setProperty('cache-pause-initial', 'yes');
@@ -137,8 +142,8 @@ class MediaKitPlayerImpl implements JpPlayer {
 
         // 流底层 I/O 读缓冲（stream-buffer-size）：
         // 每次从网络/文件系统读取的块大小，更大的块 = 更少的 I/O syscall = CPU 利用率更均匀。
-        // 移动端 512KB（平衡内存与频率），桌面端 2MB（读写吞吐量优先）。
-        await native.setProperty('stream-buffer-size', isMobile ? '524288' : '2097152');
+        // 移动端 1MB，桌面端 4MB（提高持续下载吞吐，减少频繁小读导致的缓冲见底）。
+        await native.setProperty('stream-buffer-size', isMobile ? '1048576' : '4194304');
 
         // demuxer 独立线程（通常默认开启，但显式声明确保所有平台行为一致）：
         // 解复用(I/O) 和解码(CPU) 各占一个线程，两者并行流水线化，
@@ -148,9 +153,8 @@ class MediaKitPlayerImpl implements JpPlayer {
         // 网络超时：10 秒无响应即触发重连，而非无限等待（MPV 默认 60s 会让用户以为死机）
         await native.setProperty('network-timeout', '10');
 
-        // 弱网缓冲策略：缓冲耗尽后等积累 4s 再恢复，防止 start-stop-start 反复卡顿
-        // （原 2s 在弱网下会立即又触发下一次缓冲暂停，体验更差）
-        await native.setProperty('cache-pause-wait', isMobile ? '4' : '3');
+        // 弱网缓冲策略：缓冲耗尽后等积累足够数据再恢复，防止 start-stop-start 反复卡顿
+        await native.setProperty('cache-pause-wait', '5');
 
         jpLog('PLAYER', 'MediaKitPlayerImpl: buffer/protocol configured (mobile=$isMobile)');
       } else {

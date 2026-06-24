@@ -111,7 +111,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     _bufferingSub = player.stream.buffering.listen((event) {
       if (!mounted) return;
       setState(() => _isBuffering = event);
+      // 主播放器缓冲时暂停预览下载，把带宽/解码资源让给主路
       if (event) {
+        _previewPlayer?.pause();
         _bufferingStartTime ??= DateTime.now();
         // 5s 后显示弱网提示
         _bufferingUiTimer ??= Timer(const Duration(seconds: 5), () {
@@ -127,15 +129,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       }
     });
 
-    // 延迟预热预览播放器：等待 3 秒再启动，避免进入页面时同时开启两个 MPV 实例
-    // 移动端功耗敏感，尤其需要避免主播放器初始化期间就分配第二个解码器
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        Future.delayed(const Duration(seconds: 3), () {
-          if (mounted) _warmUpPreviewPlayer();
-        });
-      }
-    });
+    // 预览播放器仅在用户拖动进度条时按需创建，避免后台预热与主播放器抢带宽。
+    // （拖动时首次 seek 可能略慢，但正常播放流畅度优先。）
   }
 
   @override
@@ -238,17 +233,6 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     }
   }
 
-  /// Pre-warm the preview player so media starts loading immediately.
-  /// Called once in initState — the backup source loads in the background
-  /// so that when the user first drags the slider, the preview is already decoded.
-  void _warmUpPreviewPlayer() {
-    if (_previewPlayer != null) return; // Already exists
-    if (widget.previewUrl == null || widget.previewUrl!.isEmpty) return; // No URL yet
-    _createPreviewPlayer();
-    // Auto-schedule a delayed dispose so pre-warmed player doesn't live forever
-    _schedulePreviewDispose();
-  }
-
   /// Internal: create preview player, configure mpv, and open media.
   void _createPreviewPlayer() {
     _previewPlayer = Player(configuration: const PlayerConfiguration(logLevel: MPVLogLevel.error));
@@ -272,14 +256,15 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       native.setProperty('vd-lavc-threads', '0');
       native.setProperty('vd-lavc-dr', 'yes');
 
-      // 移动端缓冲：8MB，桌面端：32MB（预览窗口尺寸小，用不到大缓冲）
+      // 预览窗口仅 160×90，缓冲尽量小，避免拖动时与主播放器抢带宽
       final isMobile = Platform.isAndroid || Platform.isIOS;
-      final previewBuf = isMobile ? '8388608' : '33554432'; // 8 MB / 32 MB
-      final previewReadahead = isMobile ? '5' : '10';
+      final previewBuf = isMobile ? '4194304' : '8388608'; // 4 MB / 8 MB
+      final previewReadahead = isMobile ? '3' : '5';
       native.setProperty('cache', 'yes');
+      native.setProperty('cache-secs', previewReadahead);
       native.setProperty('demuxer-readahead-secs', previewReadahead);
       native.setProperty('demuxer-max-bytes', previewBuf);
-      native.setProperty('cache-pause-initial', 'yes');
+      native.setProperty('cache-pause-initial', 'no');
       native.setProperty('cache-pause-wait', '1');
       native.setProperty('demuxer-lavf-probesize', '3000000');  // 3 MB（够用）
       native.setProperty('demuxer-lavf-analyzeduration', isMobile ? '2' : '3');
