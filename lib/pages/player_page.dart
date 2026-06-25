@@ -585,9 +585,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         record.effectiveTierIndex < QualityTier.values.length) {
       tier = QualityTier.values[record.effectiveTierIndex];
     }
+
+    // New caches store startupMs in latencyMs; legacy stored playlist-only.
+    var startupMs = record.latencyMs;
+    int? playlistMs;
+    if (record.usable && record.firstFrameMs > 0) {
+      if (record.latencyMs < record.firstFrameMs) {
+        startupMs = record.latencyMs + record.firstFrameMs;
+        playlistMs = record.latencyMs;
+      } else {
+        playlistMs = record.latencyMs - record.firstFrameMs;
+        if (playlistMs <= 0) playlistMs = null;
+      }
+    } else if (record.usable) {
+      playlistMs = record.latencyMs;
+    }
+
     target.applyProbeMetrics(
       usable: record.usable,
-      latencyMs: record.latencyMs,
+      startupMs: startupMs,
+      playlistMs: playlistMs,
       probeWidth: record.usable && record.width > 0 ? record.width : null,
       probeHeight: record.usable && record.height > 0 ? record.height : null,
       probeBitrateKbps:
@@ -780,7 +797,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     try {
       final available = await StreamProbe.checkAvailability(url, client);
       if (!available) {
-        src.applyProbeMetrics(usable: false, latencyMs: 999999);
+        src.applyProbeMetrics(usable: false, startupMs: 999999);
         _writeProbeCache(lineName, url, src);
         _propagateLineMetrics(lineName, src);
         debugPrint('SPEED: [$index] $lineName availability ❌');
@@ -791,7 +808,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (result.success) {
         src.applyProbeMetrics(
           usable: true,
-          latencyMs: result.latencyMs,
+          startupMs: result.selectionMs,
+          playlistMs: result.playlistMs > 0 ? result.playlistMs : null,
           probeWidth: result.width > 0 ? result.width : null,
           probeHeight: result.height > 0 ? result.height : null,
           probeBitrateKbps:
@@ -800,16 +818,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           probedTier: result.effectiveTier,
         );
       } else {
-        src.applyProbeMetrics(usable: false, latencyMs: 999999);
+        src.applyProbeMetrics(usable: false, startupMs: 999999);
       }
       _writeProbeCache(lineName, url, src);
       _propagateLineMetrics(lineName, src);
       debugPrint(
-        'SPEED: [$index] $lineName ${src.speedMs}ms '
-        '${result.success ? "✅ ${src.probeWidth}x${src.probeHeight} tier=${src.probedTier}" : "❌ probe"}',
+        'SPEED: [$index] $lineName 起播${src.speedMs}ms '
+        '(清单${result.playlistMs}ms 首段${result.firstFrameMs}ms) '
+        '${result.success ? "✅ ${src.probeWidth}x${src.probeHeight}" : "❌"}',
       );
     } catch (e) {
-      src.applyProbeMetrics(usable: false, latencyMs: 999999);
+      src.applyProbeMetrics(usable: false, startupMs: 999999);
       _writeProbeCache(lineName, url, src);
       _propagateLineMetrics(lineName, src);
       debugPrint('SPEED: [$index] $lineName ERROR: $e');
@@ -837,7 +856,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String _speedLabel(int? ms) {
     if (ms == null) return '...';
     if (ms >= 999999) return '超时';
-    return '${ms}ms';
+    return '起播 ${ms}ms';
   }
 
   double get _loadingProgress {
@@ -941,8 +960,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (s.probeBitrateKbps != null && s.probeBitrateKbps! > 0) {
       parts.add('${s.probeBitrateKbps}kbps');
     }
+    if (s.playlistMs != null && s.playlistMs! > 0) {
+      parts.add('清单${s.playlistMs}ms');
+    }
     if (s.firstFrameMs != null && s.firstFrameMs! > 0) {
-      parts.add('首帧${s.firstFrameMs}ms');
+      parts.add('首段${s.firstFrameMs}ms');
     }
     if (parts.isEmpty) {
       if (badge.isNotEmpty) return '$badge · $lineName';

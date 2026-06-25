@@ -5,22 +5,34 @@ import 'source_quality.dart';
 /// Result of a two-phase stream probe (availability + M3U8 analysis).
 class StreamProbeResult {
   final bool success;
-  final int latencyMs;
+  /// Time to fetch the first playlist only (master or media `.m3u8`).
+  final int playlistMs;
+  /// Time to fetch the first segment (Range 0–256KB), separate request.
+  final int firstFrameMs;
+  /// End-to-end probe time through first segment — best proxy for playback start.
+  final int startupMs;
   final int width;
   final int height;
   final int bitrateKbps;
-  final int firstFrameMs;
   final QualityTier effectiveTier;
 
   const StreamProbeResult({
     required this.success,
-    this.latencyMs = 999999,
+    this.playlistMs = 999999,
+    this.firstFrameMs = 0,
+    this.startupMs = 999999,
     this.width = 0,
     this.height = 0,
     this.bitrateKbps = 0,
-    this.firstFrameMs = 0,
     this.effectiveTier = QualityTier.unknown,
   });
+
+  /// Metric used for line ranking (prefers full startup path, then segment, then playlist).
+  int get selectionMs {
+    if (startupMs > 0 && startupMs < 999999) return startupMs;
+    if (firstFrameMs > 0) return firstFrameMs;
+    return playlistMs;
+  }
 
   static const failed = StreamProbeResult(success: false);
 }
@@ -131,11 +143,12 @@ abstract final class StreamProbe {
 
       return StreamProbeResult(
         success: true,
-        latencyMs: playlistLatency,
+        playlistMs: playlistLatency,
+        firstFrameMs: firstFrameMs,
+        startupMs: sw.elapsedMilliseconds,
         width: width,
         height: height,
         bitrateKbps: bitrateKbps,
-        firstFrameMs: firstFrameMs,
         effectiveTier: tier,
       );
     } catch (_) {

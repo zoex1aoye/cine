@@ -33,7 +33,7 @@ Single tier `常规线路` per episode — quality picker falls back to latency-
 
 | Player | Selection |
 |--------|-----------|
-| Main | Distinct lines per video: phase 1 availability → phase 2 probe; latency pool (≤500ms, then ≤800ms) → **highest tier champion** → **min latency within tier** |
+| Main | Distinct lines: availability → probe; latency pool uses **startupMs** (playlist chain + first segment); tier champion → min startup within tier |
 | Preview | **流畅 / 标清** preferred, then lowest ms within tier |
 | Cache | `source_probes` box keyed by `videoId\|lineName`, TTL 12h; propagates to all episodes sharing the line |
 

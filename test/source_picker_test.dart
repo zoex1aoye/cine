@@ -63,6 +63,16 @@ high/index.m3u8
       expect(result.value.toString(), contains('high/index.m3u8'));
     });
 
+    test('selectionMs prefers full startup path', () {
+      const r = StreamProbeResult(
+        success: true,
+        playlistMs: 40,
+        firstFrameMs: 180,
+        startupMs: 350,
+      );
+      expect(r.selectionMs, 350);
+    });
+
     test('firstSegmentUrl resolves relative path', () {
       const media = '''
 #EXTM3U

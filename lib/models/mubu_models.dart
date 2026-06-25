@@ -106,6 +106,7 @@ class VideoSource {
   int? probeWidth;
   int? probeHeight;
   int? probeBitrateKbps;
+  int? playlistMs;
   int? firstFrameMs;
   QualityTier? probedTier;
 
@@ -119,13 +120,15 @@ class VideoSource {
     this.probeWidth,
     this.probeHeight,
     this.probeBitrateKbps,
+    this.playlistMs,
     this.firstFrameMs,
     this.probedTier,
   });
 
   void applyProbeMetrics({
     required bool usable,
-    required int latencyMs,
+    required int startupMs,
+    int? playlistMs,
     int? probeWidth,
     int? probeHeight,
     int? probeBitrateKbps,
@@ -133,14 +136,16 @@ class VideoSource {
     QualityTier? probedTier,
   }) {
     this.usable = usable;
-    speedMs = latencyMs;
+    speedMs = startupMs;
     if (usable) {
+      this.playlistMs = playlistMs;
       this.probeWidth = probeWidth;
       this.probeHeight = probeHeight;
       this.probeBitrateKbps = probeBitrateKbps;
       this.firstFrameMs = firstFrameMs;
       this.probedTier = probedTier;
     } else {
+      this.playlistMs = null;
       this.probeWidth = null;
       this.probeHeight = null;
       this.probeBitrateKbps = null;
@@ -152,6 +157,7 @@ class VideoSource {
   void copyProbeFrom(VideoSource other) {
     usable = other.usable;
     speedMs = other.speedMs;
+    playlistMs = other.playlistMs;
     probeWidth = other.probeWidth;
     probeHeight = other.probeHeight;
     probeBitrateKbps = other.probeBitrateKbps;
