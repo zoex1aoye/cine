@@ -99,6 +99,7 @@ class VideoSource {
   final String name;
   final String sourceName;
   final String url;
+  final String sourceConfigName;
   int? speedMs;
   bool usable;
 
@@ -106,6 +107,7 @@ class VideoSource {
     required this.name,
     required this.sourceName,
     required this.url,
+    this.sourceConfigName = '',
     this.speedMs,
     this.usable = true,
   });
@@ -114,6 +116,7 @@ class VideoSource {
         name: json['name'] ?? '',
         sourceName: json['source_name'] ?? '',
         url: json['url'] ?? '',
+        sourceConfigName: json['source_config_name'] ?? json['sourceConfigName'] ?? '',
         speedMs: json['speedMs'] != null ? json['speedMs'] as int : null,
         usable: json['usable'] ?? true,
       );
@@ -228,6 +231,7 @@ class VideoDetail {
                       name: src['name'] ?? '',
                       sourceName: item['source_name'] ?? '',
                       url: item['url'] ?? '',
+                      sourceConfigName: item['source_config_name']?.toString() ?? '',
                     )))
             .toList(),
       );

@@ -11,6 +11,8 @@ import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
+import '../utils/source_picker.dart';
+import '../utils/source_quality.dart';
 import '../widgets/mubu_dialog.dart';
 import 'package:hive/hive.dart';
 import '../models/mubu_hive.dart';
@@ -45,6 +47,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String _currentUrl = '';
   int _selectedSource = 0;
   int? _fastestIndex;
+  String? _recommendedLineName;
   String _description = '';
 
   // Speed‑test progress
@@ -307,7 +310,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     } catch (e) {
       if (player != null && player != _player) {
-        await player!.dispose();
+        await player.dispose();
       }
       throw Exception('播放器初始化失败: $e');
     }
@@ -445,28 +448,61 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastAutoSwitchMs < 30000) return;
 
-    // 寻找当前集数中速度最快的非当前线路
+    // 寻找当前集数中质量+延迟最优的备用线路（弱网允许低档）
     if (_sources.isEmpty) return;
     final currentEpisode = _sources[_selectedSource].sourceName;
     final currentUrl = _sources[_selectedSource].url;
 
-    final candidates = _sources
-        .where((s) =>
-            s.sourceName == currentEpisode &&
-            s.usable &&
-            s.url != currentUrl &&
-            s.speedMs != null &&
-            s.speedMs! < 999999)
-        .toList()
-      ..sort((a, b) => (a.speedMs ?? 999999).compareTo(b.speedMs ?? 999999));
+    final fallback = SourcePicker.pickMain(
+      _sources,
+      episodeName: currentEpisode,
+      excludeUrl: currentUrl,
+      preferLowerTierOnWeakNet: true,
+    );
 
-    if (candidates.isNotEmpty) {
-      final fallback = candidates.first;
+    if (fallback != null) {
       final idx = _sources.indexOf(fallback);
       debugPrint('PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.speedMs}ms)');
       _lastAutoSwitchMs = now;
       _switchSource(idx);
     }
+  }
+
+  String get _currentEpisodeName =>
+      _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
+
+  /// 测速完成后按「延迟池 + 清晰度优先」选定推荐源
+  Future<void> _applyRecommendedSource({bool autoInit = false}) async {
+    if (_sources.isEmpty) return;
+    final episode = _currentEpisodeName.isNotEmpty
+        ? _currentEpisodeName
+        : _sources.first.sourceName;
+
+    final idx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
+    if (idx == null) return;
+
+    _recommendedLineName = _sources[idx].name;
+    _fastestIndex = SourcePicker.indexOfFastest(_sources, episodeName: episode);
+
+    final shouldUpgrade = _playerInitialized &&
+        !_startPlayRequested &&
+        idx != _selectedSource;
+
+    if (autoInit && !_playerInitialized) {
+      _selectedSource = idx;
+      _currentUrl = _sources[idx].url;
+      debugPrint('PLAYER: auto-pick ${ _sources[idx].name} (${_sources[idx].speedMs}ms) for $episode');
+      if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+      await _initPlayer();
+    } else if (shouldUpgrade) {
+      debugPrint('PLAYER: upgrade to recommended ${_sources[idx].name}');
+      _switchSource(idx);
+    } else if (!_playerInitialized) {
+      _selectedSource = idx;
+      _currentUrl = _sources[idx].url;
+    }
+
+    if (mounted) setState(() {});
   }
 
   /// Re-enter 时根据保存的集数名 + 线路名选择播放源（三级优先级）
@@ -549,7 +585,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
 
     // 逐条测速 + 延迟间隔
-    final hasSavedLine = _savedLineName != null && _savedLineName!.isNotEmpty;
     final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
     final now = DateTime.now().millisecondsSinceEpoch;
     final ttlMs = 12 * 60 * 60 * 1000; // 12 hours
@@ -576,40 +611,38 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     }
 
-    // 2. 找到最快缓存记录 (Champion) 并复测
+    // 2. 找到缓存命中的推荐档 (Champion) 并复测
     if (!_playerInitialized) {
-      int? bestCachedIdx;
-      int minLatency = 999999;
-      
-      // 优先看记忆保存的线路是否命中缓存
-      if (hasSavedLine) {
-        final savedIdx = indices.indexWhere((i) => _sources[i].name == _savedLineName);
-        if (savedIdx != -1 && _sources[savedIdx].speedMs != null && _sources[savedIdx].speedMs! < 500) {
-          bestCachedIdx = savedIdx;
-          minLatency = _sources[savedIdx].speedMs!;
-        }
-      }
-      
-      // 寻找全局最快缓存线路
-      if (bestCachedIdx == null) {
-        for (final idx in indices) {
-          final speed = _sources[idx].speedMs;
-          if (speed != null && speed < 500 && speed < minLatency) {
-            minLatency = speed;
-            bestCachedIdx = idx;
+      final episode = _savedEpisodeName?.isNotEmpty == true
+          ? _savedEpisodeName!
+          : (_sources.isNotEmpty ? _sources.first.sourceName : '');
+
+      int? championIdx;
+      if (episode.isNotEmpty) {
+        championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
+        if (championIdx != null) {
+          final speed = _sources[championIdx].speedMs;
+          if (speed == null || speed >= SourcePicker.latencyGood) {
+            championIdx = null;
           }
         }
       }
 
       // 复测 Champion
-      if (bestCachedIdx != null) {
+      if (championIdx != null) {
+        final bestCachedIdx = championIdx;
+        final minLatency = _sources[bestCachedIdx].speedMs!;
         debugPrint('PLAYER: Champion line found (idx $bestCachedIdx, cached ${minLatency}ms) — re-testing...');
-        _sources[bestCachedIdx].speedMs = null; // Clear to force _testSource
+        _sources[bestCachedIdx].speedMs = null;
         if (_client != null) await _testSource(bestCachedIdx, _client!);
-        
-        if (!_disposed && _sources[bestCachedIdx].usable && _sources[bestCachedIdx].speedMs != null && _sources[bestCachedIdx].speedMs! < 500) {
+
+        if (!_disposed &&
+            _sources[bestCachedIdx].usable &&
+            _sources[bestCachedIdx].speedMs != null &&
+            _sources[bestCachedIdx].speedMs! < SourcePicker.latencyGood) {
           _selectedSource = bestCachedIdx;
           _currentUrl = _sources[bestCachedIdx].url;
+          _recommendedLineName = _sources[bestCachedIdx].name;
           debugPrint('PLAYER: Champion re-test passed (${_sources[bestCachedIdx].speedMs}ms) — init immediately');
           if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
           await _initPlayer();
@@ -634,29 +667,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
         if (_disposed || _abortSpeedTest) return;
         if (mounted) setState(() => _testedCount++);
-
-        if (!_playerInitialized) {
-          final passes = _sources[idx].usable &&
-              _sources[idx].speedMs != null &&
-              _sources[idx].speedMs! < 500;
-          if (passes) {
-            if (hasSavedLine) {
-              if (_sources[idx].name == _savedLineName) {
-                _selectedSource = idx;
-                _currentUrl = _sources[idx].url;
-                debugPrint('PLAYER: saved line fast — init immediately');
-                if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
-                await _initPlayer();
-              }
-            } else {
-              _selectedSource = idx;
-              _currentUrl = _sources[idx].url;
-              debugPrint('PLAYER: first fast line — init immediately');
-              if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
-              await _initPlayer();
-            }
-          }
-        }
+        // 不在并行测速中 early init，等全部测完再按质量+延迟统一选源
       }));
     } else {
       // 全部命中缓存时更新 testedCount
@@ -681,21 +692,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     }
 
-    // 更新最快线路索引（仅用于下拉框标记，不自动切换播放源）
-    var fastest = _selectedSource;
-    var fastestMs = _sources[_selectedSource].speedMs ?? 999999;
-    for (var i = 0; i < _sources.length; i++) {
-      if (!_sources[i].usable || _sources[i].speedMs == null) continue;
-      final ms = _sources[i].speedMs!;
-      if (ms < fastestMs) {
-        fastest = i;
-        fastestMs = ms;
-      }
-    }
-    _fastestIndex = fastest;
+    // 更新最快线路索引 + 应用推荐选源
+    await _applyRecommendedSource(autoInit: !_playerInitialized);
 
     final usable = _sources.where((s) => s.usable && s.speedMs != null).length;
-    debugPrint('SPEED: done | tested=$_testedCount usable=$usable');
+    debugPrint('SPEED: done | tested=$_testedCount usable=$usable recommended=$_recommendedLineName');
   }
 
   Future<void> _testSource(int index, http.Client client) async {
@@ -847,6 +848,28 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   String get _selectedLineName => _sources.isNotEmpty ? _sources[_selectedSource].name : '';
+
+  String? get _fastestLineName =>
+      _fastestIndex != null && _fastestIndex! >= 0 && _fastestIndex! < _sources.length
+          ? _sources[_fastestIndex!].name
+          : null;
+
+  String _lineQualityCaption(String lineName) {
+    final tier = SourceQuality.classify(lineName);
+    final badge = SourceQuality.shortBadge(tier);
+    if (badge.isEmpty) return lineName;
+    return '$badge · $lineName';
+  }
+
+  Color _qualityTierColor(String lineName) {
+    return switch (SourceQuality.classify(lineName)) {
+      QualityTier.hd => Colors.lightBlueAccent,
+      QualityTier.bluRay || QualityTier.vip => const Color(0xFFFFD700),
+      QualityTier.sd => Colors.white54,
+      QualityTier.smooth => Colors.white38,
+      _ => Colors.white24,
+    };
+  }
 
   int? _lineSpeed(String lineName) {
     final idx = _sources.indexWhere((s) => s.name == lineName);
@@ -1096,21 +1119,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
     final currentEpisode = _sources[_selectedSource].sourceName;
     final currentUrl = _sources[_selectedSource].url;
-    
-    // Find all usable sources for the same episode
-    final candidates = _sources.where((s) => s.sourceName == currentEpisode && s.usable).toList();
-    if (candidates.isEmpty) return null;
-    
-    // Avoid main stream: If there are multiple lines, strictly exclude the one currently playing
-    if (candidates.length > 1) {
-      candidates.removeWhere((s) => s.url == currentUrl);
-    }
-    
-    // Sort by speedMs (null/timeout goes to bottom)
-    candidates.sort((a, b) => (a.speedMs ?? 999999).compareTo(b.speedMs ?? 999999));
-    
-    // Return the fastest backup line's URL (or the main line if it's the only one available)
-    return candidates.first.url;
+    return SourcePicker.pickPreview(
+      _sources,
+      episodeName: currentEpisode,
+      excludeUrl: currentUrl,
+    )?.url;
   }
 
   Widget _buildVideoPlayerContainer() {
@@ -1421,7 +1434,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                           _speedDot(_sources.isNotEmpty ? _sources[_selectedSource].speedMs : null),
                           const SizedBox(width: 6),
                           Text(
-                            '1080P ${_sources[_selectedSource].name}',
+                            '${_lineQualityCaption(_sources[_selectedSource].name)} · ${_speedLabel(_sources[_selectedSource].speedMs)}',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 10,
@@ -1448,7 +1461,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     border: Border.all(color: Colors.white.withOpacity(0.12)),
                   ),
                   child: const Text(
-                    '1080P',
+                    '清晰度',
                     style: TextStyle(
                       color: Colors.white70,
                       fontSize: 10,
@@ -1648,7 +1661,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             children: [
               const Icon(Icons.shuffle, color: Colors.white38, size: 15),
               const SizedBox(width: 8),
-              const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+              const Text('切换清晰度', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
               const Spacer(),
               if (!isDialog && !isBottomSheet)
                 GestureDetector(
@@ -1678,6 +1691,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 final active = name == _selectedLineName;
                 final speed = _lineSpeed(name);
                 final usable = _isLineUsable(name);
+                final isRecommended = _recommendedLineName != null && name == _recommendedLineName;
+                final isFastest = _fastestLineName != null && name == _fastestLineName && !isRecommended;
                 if (!usable && !active) return const SizedBox.shrink();
 
                 return GestureDetector(
@@ -1702,24 +1717,61 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         _speedDot(speed),
                         const SizedBox(width: 10),
                         Expanded(
-                          child: Text(
-                            name,
-                            style: TextStyle(
-                              color: active ? Colors.white : Colors.white.withOpacity(0.85),
-                              fontSize: 14,
-                              fontWeight: active ? FontWeight.bold : FontWeight.w500,
-                            ),
-                            overflow: TextOverflow.ellipsis,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                style: TextStyle(
+                                  color: active ? Colors.white : Colors.white.withOpacity(0.85),
+                                  fontSize: 14,
+                                  fontWeight: active ? FontWeight.bold : FontWeight.w500,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _lineQualityCaption(name),
+                                style: TextStyle(
+                                  color: _qualityTierColor(name).withOpacity(0.9),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Text(
-                          _speedLabel(speed),
-                          style: TextStyle(
-                            color: active ? Colors.white70 : _speedColor(speed),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              _speedLabel(speed),
+                              style: TextStyle(
+                                color: active ? Colors.white70 : _speedColor(speed),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            if (isRecommended || isFastest) ...[
+                              const SizedBox(height: 4),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: (isRecommended ? _primaryRed : Colors.green).withOpacity(0.2),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  isRecommended ? '推荐' : '最快',
+                                  style: TextStyle(
+                                    color: isRecommended ? _primaryRed : Colors.greenAccent,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                       ],
                     ),

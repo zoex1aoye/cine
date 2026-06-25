@@ -1,0 +1,168 @@
+// Audit: fetch detailv2/detail raw responses for quality tier analysis.
+// Run from repo root: dart run tool/audit_video_detail.dart
+import 'dart:convert';
+import 'dart:io';
+import 'package:hive/hive.dart';
+import '../lib/api/jp_api.dart';
+import '../lib/models/mubu_hive.dart';
+
+Future<void> main() async {
+  final hiveDir = Directory.systemTemp.createTempSync('cine_audit_hive');
+  Hive.init(hiveDir.path);
+  Hive.registerAdapter(NodeSpeedRecordAdapter());
+  await Hive.openBox<String>('config');
+  await Hive.openBox<NodeSpeedRecord>('node_speeds');
+
+  final api = JpApi();
+  await api.init();
+
+  final tags = await api.getTagVideos(1, page: 1, count: 5);
+  final shortList = await api.getFilteredVideos(fcatePid: 67, page: 1);
+
+  final movieIds = <int>[];
+  movieIds.addAll(tags.map((v) => v.id));
+  if (movieIds.length < 2) {
+    final search = await api.search('热门', page: 1);
+    for (final v in search.videos) {
+      if (!movieIds.contains(v.id)) movieIds.add(v.id);
+      if (movieIds.length >= 2) break;
+    }
+  }
+
+  final samples = <Map<String, dynamic>>[];
+
+  if (movieIds.isNotEmpty) {
+    final id = movieIds.first;
+    final raw = await api.getRawResponse('/video/detailv2?id=$id');
+    if (raw != null) {
+      samples.add({'type': 'movie', 'id': id, 'raw': raw});
+      _printAudit('movie', id, raw);
+    }
+  }
+
+  if (movieIds.length > 1) {
+    final id = movieIds[1];
+    final raw = await api.getRawResponse('/video/detailv2?id=$id');
+    if (raw != null) {
+      samples.add({'type': 'movie2', 'id': id, 'raw': raw});
+      _printAudit('movie2', id, raw);
+    }
+  }
+
+  if (shortList.isNotEmpty) {
+    final id = shortList.first.id;
+    final raw = await api.getRawResponse('/detail?vid=$id');
+    if (raw != null) {
+      samples.add({'type': 'short', 'id': id, 'raw': raw});
+      _printAudit('short', id, raw);
+    }
+  }
+
+  final outDir = Directory('test/fixtures');
+  if (!outDir.existsSync()) outDir.createSync(recursive: true);
+  Directory('docs').createSync(recursive: true);
+
+  final sanitized = samples.map(_sanitizeSample).toList();
+  File('test/fixtures/video_detail_sample.json').writeAsStringSync(
+    const JsonEncoder.withIndent('  ').convert(sanitized),
+  );
+
+  File('docs/source-quality-audit.md').writeAsStringSync(_buildAuditDoc(samples));
+
+  print('\nWrote test/fixtures/video_detail_sample.json (${sanitized.length} samples)');
+  print('Wrote docs/source-quality-audit.md');
+}
+
+Map<String, dynamic> _sanitizeSample(Map<String, dynamic> sample) {
+  final raw = Map<String, dynamic>.from(sample['raw'] as Map);
+  final data = raw['data'];
+  if (data is Map) _sanitizeUrlsInMap(data);
+  return {'type': sample['type'], 'id': sample['id'], 'raw': raw};
+}
+
+void _sanitizeUrlsInMap(Map map) {
+  for (final key in map.keys.toList()) {
+    final v = map[key];
+    if (v is String && key.toString() == 'url' && v.startsWith('http')) {
+      map[key] = '${Uri.parse(v).origin}${Uri.parse(v).path}?[redacted]';
+    } else if (v is Map) {
+      _sanitizeUrlsInMap(v);
+    } else if (v is List) {
+      for (final item in v) {
+        if (item is Map) _sanitizeUrlsInMap(item);
+      }
+    }
+  }
+}
+
+void _printAudit(String label, int id, Map<String, dynamic> raw) {
+  print('\n=== $label id=$id ===');
+  final data = raw['data'];
+  if (data is! Map) {
+    print('No data key');
+    return;
+  }
+  print('Top-level data keys: ${data.keys.toList()}');
+  final sls = data['source_list_source'];
+  final vip = data['vip_source_list_source'];
+  print('source_list_source: ${sls is List ? sls.length : sls}');
+  print('vip_source_list_source: ${vip is List ? vip.length : vip}');
+
+  final sourceList = (sls ?? vip) as List?;
+  if (sourceList != null) {
+    final names = <String>{};
+    final configNames = <String>{};
+    final episodes = <String, Set<String>>{};
+    for (final src in sourceList) {
+      if (src is! Map) continue;
+      final gName = src['name']?.toString() ?? '';
+      names.add(gName);
+      for (final item in (src['source_list'] as List? ?? [])) {
+        if (item is! Map) continue;
+        final ep = item['source_name']?.toString() ?? '';
+        final cfg = item['source_config_name']?.toString() ?? '';
+        if (cfg.isNotEmpty) configNames.add(cfg);
+        episodes.putIfAbsent(ep, () => {}).add(gName);
+      }
+    }
+    print('Group names: $names');
+    print('source_config_name values: $configNames');
+    for (final e in episodes.entries.take(3)) {
+      print('Episode "${e.key}" tiers (${e.value.length}): ${e.value}');
+    }
+  }
+
+  final playlist = data['playlist'] as List?;
+  if (playlist != null) {
+    final cfg = playlist.map((e) => (e as Map)['source_config_name']).toSet();
+    print('Short playlist source_config_name: $cfg');
+  }
+}
+
+String _buildAuditDoc(List<Map<String, dynamic>> samples) {
+  final buf = StringBuffer('# Source quality API audit\n\n');
+  buf.writeln('Generated by `dart run tool/audit_video_detail.dart`.\n');
+  for (final s in samples) {
+    final raw = s['raw'] as Map;
+    final data = raw['data'] as Map?;
+    if (data == null) continue;
+    buf.writeln('## ${s['type']} id=${s['id']}\n');
+    buf.writeln('- data keys: `${data.keys.toList()}`');
+    buf.writeln('- `source_list_source`: ${data['source_list_source'] is List ? (data['source_list_source'] as List).length : 'absent'}');
+    buf.writeln('- `vip_source_list_source`: ${data['vip_source_list_source'] is List ? (data['vip_source_list_source'] as List).length : 'absent'}');
+    final sourceList = (data['source_list_source'] ?? data['vip_source_list_source']) as List?;
+    if (sourceList != null) {
+      final names = <String>{};
+      for (final src in sourceList) {
+        if (src is Map) names.add(src['name']?.toString() ?? '');
+      }
+      buf.writeln('- quality group names: `$names`');
+    }
+    buf.writeln('');
+  }
+  buf.writeln('## Conclusion\n');
+  buf.writeln('- Parser uses `source_list_source`; fall back to `vip_source_list_source` if needed.');
+  buf.writeln('- `VideoSource.name` maps to group `name` (quality tier label).');
+  buf.writeln('- Quality-aware pick: 高清 > 极速蓝光 > 标清 > 流畅 within latency pools.');
+  return buf.toString();
+}
