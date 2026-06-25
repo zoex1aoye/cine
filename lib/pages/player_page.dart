@@ -29,7 +29,7 @@ class PlayerPage extends StatefulWidget {
   State<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> {
+class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   static const _primaryRed = Color(0xFFE50914);
   static const kRed = Color(0xFFE50914);
   static const kGlass = Color(0xFF16161A);
@@ -89,6 +89,9 @@ class _PlayerPageState extends State<PlayerPage> {
   // 连续触发弱网看门狗的次数（用于逐步放大 cache-pause-wait）
   int _weakNetworkCount = 0;
 
+  // 防止并行测速期间多次并发 init；切后台后用于判断是否可重试
+  Future<void>? _initPlayerFuture;
+
   // Sticky player for portrait videos
   final ScrollController _scrollController = ScrollController();
   double _scrollOffset = 0.0;
@@ -96,9 +99,50 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_onScroll);
     _checkBookmarkStatus();
     _loadAndPrepare();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_disposed) return;
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // 切后台时关闭测速 HTTP，避免挂起的请求阻塞恢复后的加载流程
+      _client?.close();
+      _client = null;
+    } else if (state == AppLifecycleState.resumed) {
+      _recoverStuckLoading();
+    }
+  }
+
+  /// 切回前台时：若播放器已就绪但 stage 未更新，或 init 在后台挂起，则恢复/重试
+  Future<void> _recoverStuckLoading() async {
+    if (_disposed || !mounted) return;
+    if (_stage == LoadingStage.ready || _stage == LoadingStage.error) return;
+
+    if (_playerInitialized && _player != null) {
+      setState(() => _stage = LoadingStage.ready);
+      return;
+    }
+
+    if (_stage == LoadingStage.initPlayer &&
+        _initPlayerFuture == null &&
+        _currentUrl.isNotEmpty) {
+      debugPrint('PLAYER: retrying init after app resume');
+      try {
+        await _initPlayer();
+      } catch (e) {
+        debugPrint('PLAYER: resume init failed: $e');
+        if (mounted && !_disposed) {
+          setState(() {
+            _stage = LoadingStage.error;
+            _errorMessage = '播放器初始化失败，请重试';
+          });
+        }
+      }
+    }
   }
 
   Future<void> _checkBookmarkStatus() async {
@@ -156,8 +200,10 @@ class _PlayerPageState extends State<PlayerPage> {
       if (_disposed) return;
 
       if (_playerInitialized) {
-        // 播放器已在测速期间初始化（普通场景首条快线 或 re-enter 保存线路快）
-        // 下拉框速度标签会在 _runSpeedTest 后续迭代中自动更新
+        // 播放器已在测速期间初始化；确保 stage 同步到 ready（并行测速路径可能遗漏）
+        if (mounted && _stage != LoadingStage.ready) {
+          setState(() => _stage = LoadingStage.ready);
+        }
       } else if (_savedEpisodeName != null && _savedEpisodeName!.isNotEmpty) {
         // Re-enter: 保存线路慢，需要选源再 init
         _applySavedEpisodeSelection();
@@ -192,7 +238,14 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  Future<void> _initPlayer() async {
+  Future<void> _initPlayer() {
+    return _initPlayerFuture ??= _initPlayerOnce().whenComplete(() {
+      _initPlayerFuture = null;
+    });
+  }
+
+  Future<void> _initPlayerOnce() async {
+    MediaKitPlayerImpl? player;
     try {
       // 先清理旧播放器（重试场景）
       if (_player != null) {
@@ -202,50 +255,60 @@ class _PlayerPageState extends State<PlayerPage> {
         _player = null;
         _playerInitialized = false;
       }
-      final player = MediaKitPlayerImpl(
+      final activePlayer = MediaKitPlayerImpl(
         initialUrl: _currentUrl,
         isShort: widget.video.isShortDrama,
       );
-      await player.initialize();
-      await player.pause();
+      player = activePlayer;
+      await activePlayer.initialize().timeout(
+        const Duration(seconds: 20),
+        onTimeout: () => throw TimeoutException('播放器加载超时'),
+      );
+      await activePlayer.pause();
       if (_disposed) {
-        await player.dispose();
+        await activePlayer.dispose();
         return;
       }
       // 等待 duration > 0，确保媒体已加载到可以 seek 的程度
-      if (player.durationNotifier.value <= Duration.zero) {
+      if (activePlayer.durationNotifier.value <= Duration.zero) {
         final completer = Completer<void>();
         void listener() {
-          if (player.durationNotifier.value > Duration.zero && !completer.isCompleted) {
+          if (activePlayer.durationNotifier.value > Duration.zero && !completer.isCompleted) {
             completer.complete();
-            player.durationNotifier.removeListener(listener);
+            activePlayer.durationNotifier.removeListener(listener);
           }
         }
-        player.durationNotifier.addListener(listener);
+        activePlayer.durationNotifier.addListener(listener);
         // 10秒超时保护，避免永远卡住
         await completer.future.timeout(const Duration(seconds: 10), onTimeout: () {
           if (!completer.isCompleted) {
-            player.durationNotifier.removeListener(listener);
+            activePlayer.durationNotifier.removeListener(listener);
             completer.complete();
           }
         });
       }
       // 监听视频尺寸，动态调整宽高比
-      _widthListener = () => _updateAspectRatio(player);
-      _heightListener = () => _updateAspectRatio(player);
-      player.videoWidthNotifier.addListener(_widthListener!);
-      player.videoHeightNotifier.addListener(_heightListener!);
+      _widthListener = () => _updateAspectRatio(activePlayer);
+      _heightListener = () => _updateAspectRatio(activePlayer);
+      activePlayer.videoWidthNotifier.addListener(_widthListener!);
+      activePlayer.videoHeightNotifier.addListener(_heightListener!);
       // 立即检查一次（可能已有值）
-      _updateAspectRatio(player);
+      _updateAspectRatio(activePlayer);
       if (mounted) {
         setState(() {
-          _player = player;
+          _player = activePlayer;
           _playerInitialized = true;
+          if (_stage != LoadingStage.error) {
+            _stage = LoadingStage.ready;
+          }
         });
       } else {
-        await player.dispose();
+        await activePlayer.dispose();
       }
     } catch (e) {
+      if (player != null && player != _player) {
+        await player!.dispose();
+      }
       throw Exception('播放器初始化失败: $e');
     }
   }
@@ -253,6 +316,7 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void dispose() {
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();
     _bufferingWatchdog?.cancel();
     if (_bufferingListener != null) {
@@ -550,7 +614,6 @@ class _PlayerPageState extends State<PlayerPage> {
           if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
           await _initPlayer();
           if (_disposed) return;
-          if (mounted) setState(() { _stage = LoadingStage.ready; });
         } else {
           debugPrint('PLAYER: Champion re-test failed, falling back to slow testing.');
         }
