@@ -13,6 +13,7 @@ import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
 import '../utils/source_picker.dart';
 import '../utils/source_quality.dart';
+import '../utils/stream_probe.dart';
 import '../widgets/mubu_dialog.dart';
 import 'package:hive/hive.dart';
 import '../models/mubu_hive.dart';
@@ -471,7 +472,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String get _currentEpisodeName =>
       _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
-  /// 测速完成后按「延迟池 + 清晰度优先」选定推荐源
+  /// 测速完成后按「延迟池 + 同档最低延迟」选定推荐源
   Future<void> _applyRecommendedSource({bool autoInit = false}) async {
     if (_sources.isEmpty) return;
     final episode = _currentEpisodeName.isNotEmpty
@@ -481,8 +482,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final idx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
     if (idx == null) return;
 
-    _recommendedLineName = _sources[idx].name;
-    _fastestIndex = SourcePicker.indexOfFastest(_sources, episodeName: episode);
+    final picked = _sources[idx];
+    _recommendedLineName = picked.name;
+    _fastestIndex = SourcePicker.indexOfFastest(
+      _sources,
+      episodeName: episode,
+      withinTier: SourceQuality.effectiveTierFor(
+        name: picked.name,
+        sourceConfigName: picked.sourceConfigName,
+        probedTier: picked.probedTier,
+      ),
+    );
 
     final shouldUpgrade = _playerInitialized &&
         !_startPlayRequested &&
@@ -553,26 +563,88 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  int _representativeIndexForLine(String lineName) {
+    final episode = _currentEpisodeName.isNotEmpty
+        ? _currentEpisodeName
+        : (_savedEpisodeName?.isNotEmpty == true
+            ? _savedEpisodeName!
+            : (_sources.isNotEmpty ? _sources.first.sourceName : ''));
+    if (episode.isNotEmpty) {
+      final episodeIdx = _sources.indexWhere(
+        (s) => s.name == lineName && s.sourceName == episode,
+      );
+      if (episodeIdx != -1) return episodeIdx;
+    }
+    return _sources.indexWhere((s) => s.name == lineName);
+  }
+
+  void _applyProbeRecord(VideoSource target, SourceProbeRecord record) {
+    QualityTier? tier;
+    if (record.usable &&
+        record.effectiveTierIndex >= 0 &&
+        record.effectiveTierIndex < QualityTier.values.length) {
+      tier = QualityTier.values[record.effectiveTierIndex];
+    }
+    target.applyProbeMetrics(
+      usable: record.usable,
+      latencyMs: record.latencyMs,
+      probeWidth: record.usable && record.width > 0 ? record.width : null,
+      probeHeight: record.usable && record.height > 0 ? record.height : null,
+      probeBitrateKbps:
+          record.usable && record.bitrateKbps > 0 ? record.bitrateKbps : null,
+      firstFrameMs:
+          record.usable && record.firstFrameMs > 0 ? record.firstFrameMs : null,
+      probedTier: tier,
+    );
+  }
+
+  void _propagateLineMetrics(String lineName, VideoSource template) {
+    for (var i = 0; i < _sources.length; i++) {
+      if (_sources[i].name == lineName) {
+        _sources[i].copyProbeFrom(template);
+      }
+    }
+  }
+
+  void _writeProbeCache(String lineName, String probeUrl, VideoSource src) {
+    final key = SourceProbeKeys.lineKey(widget.video.id, lineName);
+    final tier = src.probedTier ?? QualityTier.unknown;
+    Hive.box<SourceProbeRecord>('source_probes').put(
+      key,
+      SourceProbeRecord(
+        probeUrl: probeUrl,
+        usable: src.usable,
+        latencyMs: src.speedMs ?? 999999,
+        width: src.probeWidth ?? 0,
+        height: src.probeHeight ?? 0,
+        bitrateKbps: src.probeBitrateKbps ?? 0,
+        firstFrameMs: src.firstFrameMs ?? 0,
+        effectiveTierIndex: tier.index,
+        testedAtEpoch: DateTime.now().millisecondsSinceEpoch,
+      ),
+    );
+  }
+
   Future<void> _runSpeedTest() async {
     _client = http.Client();
     _testedCount = 0;
-    // delayBetweenTests 已废弃——测速改为并行后不再需要串行延迟
 
-    // 收集唯一线路，re-enter 时把保存的线路排到第一个
-    final uniqueLines = <String>{};
+    // distinct 线路：每种 name 测一次（代表 URL 优先当前集）
+    final uniqueLines = <String>[];
     final indices = <int>[];
     for (var i = 0; i < _sources.length; i++) {
       final lineName = _sources[i].name;
       if (!uniqueLines.contains(lineName)) {
         uniqueLines.add(lineName);
-        indices.add(i);
+        indices.add(_representativeIndexForLine(lineName));
       }
     }
 
     if (_savedLineName != null && _savedLineName!.isNotEmpty) {
-      final savedIdx = indices.indexWhere((i) => _sources[i].name == _savedLineName);
-      if (savedIdx > 0) {
-        final idx = indices.removeAt(savedIdx);
+      final savedRep = _representativeIndexForLine(_savedLineName!);
+      final savedPos = indices.indexOf(savedRep);
+      if (savedPos > 0) {
+        final idx = indices.removeAt(savedPos);
         indices.insert(0, idx);
       }
     }
@@ -584,34 +656,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       });
     }
 
-    // 逐条测速 + 延迟间隔
-    final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
+    final probeBox = Hive.box<SourceProbeRecord>('source_probes');
     final now = DateTime.now().millisecondsSinceEpoch;
-    final ttlMs = 12 * 60 * 60 * 1000; // 12 hours
+    const ttlMs = 12 * 60 * 60 * 1000;
 
-    // 1. 全局第一遍：全部过一遍缓存
-    for (var i = 0; i < indices.length; i++) {
-      final idx = indices[i];
-      final url = _sources[idx].url;
-      final uri = Uri.tryParse(url);
-      final domain = uri?.host ?? '';
-      if (domain.isNotEmpty) {
-        final record = nodeBox.get(domain);
-        if (record != null && (now - record.testedAtEpoch) < ttlMs) {
-          if (record.latencyMs < 500) {
-            _sources[idx].speedMs = record.latencyMs;
-            _sources[idx].usable = true;
-            debugPrint('SPEED: [$idx] CACHE HIT ${record.latencyMs}ms for $domain');
-          } else if (record.latencyMs >= 999999) {
-            _sources[idx].speedMs = 999999;
-            _sources[idx].usable = false;
-            debugPrint('SPEED: [$idx] CACHE BLACKLISTED (timeout) for $domain');
-          }
-        }
+    // 1. 线路级缓存预热 + 传播到各集
+    for (final idx in indices) {
+      if (idx < 0) continue;
+      final lineName = _sources[idx].name;
+      final key = SourceProbeKeys.lineKey(widget.video.id, lineName);
+      final record = probeBox.get(key);
+      if (record != null && (now - record.testedAtEpoch) < ttlMs) {
+        _applyProbeRecord(_sources[idx], record);
+        _propagateLineMetrics(lineName, _sources[idx]);
+        debugPrint(
+          'SPEED: [$idx] CACHE HIT $lineName ${record.latencyMs}ms usable=${record.usable}',
+        );
       }
     }
 
-    // 2. 找到缓存命中的推荐档 (Champion) 并复测
+    // 2. Champion 快启：缓存命中的推荐线路复测阶段 1+2
     if (!_playerInitialized) {
       final episode = _savedEpisodeName?.isNotEmpty == true
           ? _savedEpisodeName!
@@ -628,134 +692,129 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       }
 
-      // 复测 Champion
-      if (championIdx != null) {
-        final bestCachedIdx = championIdx;
-        final minLatency = _sources[bestCachedIdx].speedMs!;
-        debugPrint('PLAYER: Champion line found (idx $bestCachedIdx, cached ${minLatency}ms) — re-testing...');
-        _sources[bestCachedIdx].speedMs = null;
-        if (_client != null) await _testSource(bestCachedIdx, _client!);
+      if (championIdx != null && _client != null) {
+        final lineName = _sources[championIdx].name;
+        final repIdx = _representativeIndexForLine(lineName);
+        debugPrint(
+          'PLAYER: Champion $lineName cached — re-testing rep idx $repIdx...',
+        );
+        _sources[repIdx].speedMs = null;
+        await _testLine(repIdx, _client!);
 
         if (!_disposed &&
-            _sources[bestCachedIdx].usable &&
-            _sources[bestCachedIdx].speedMs != null &&
-            _sources[bestCachedIdx].speedMs! < SourcePicker.latencyGood) {
-          _selectedSource = bestCachedIdx;
-          _currentUrl = _sources[bestCachedIdx].url;
-          _recommendedLineName = _sources[bestCachedIdx].name;
-          debugPrint('PLAYER: Champion re-test passed (${_sources[bestCachedIdx].speedMs}ms) — init immediately');
-          if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+            _sources[repIdx].usable &&
+            _sources[repIdx].speedMs != null &&
+            _sources[repIdx].speedMs! < SourcePicker.latencyGood) {
+          final playIdx =
+              SourcePicker.pickMainIndex(_sources, episodeName: episode) ??
+                  championIdx;
+          _selectedSource = playIdx;
+          _currentUrl = _sources[playIdx].url;
+          _recommendedLineName = _sources[playIdx].name;
+          debugPrint(
+            'PLAYER: Champion re-test passed (${_sources[repIdx].speedMs}ms) — init',
+          );
+          if (mounted) setState(() => _stage = LoadingStage.initPlayer);
           await _initPlayer();
           if (_disposed) return;
         } else {
-          debugPrint('PLAYER: Champion re-test failed, falling back to slow testing.');
+          debugPrint('PLAYER: Champion re-test failed, continuing full test.');
         }
       }
     }
 
-    // 3. 剩余未命中的线路，并行测速（每条线路独立 http.Client 以支持并发）
-    final pending = indices.where((idx) => _sources[idx].speedMs == null).toList();
+    // 3. 剩余 distinct 线路并行两阶段检测
+    final pending =
+        indices.where((idx) => idx >= 0 && _sources[idx].speedMs == null).toList();
     if (pending.isNotEmpty && !_disposed && !_abortSpeedTest) {
-      // 为每条线路创建独立 Client，避免单个 Client 的并发限制
       await Future.wait(pending.map((idx) async {
         if (_disposed || _abortSpeedTest) return;
         final localClient = http.Client();
         try {
-          await _testSource(idx, localClient);
+          await _testLine(idx, localClient);
         } finally {
           localClient.close();
         }
         if (_disposed || _abortSpeedTest) return;
         if (mounted) setState(() => _testedCount++);
-        // 不在并行测速中 early init，等全部测完再按质量+延迟统一选源
       }));
-    } else {
-      // 全部命中缓存时更新 testedCount
-      if (mounted) setState(() => _testedCount = indices.length);
+    } else if (mounted) {
+      setState(() => _testedCount = indices.length);
     }
 
-    // 测速完成：将 _disposed / 初始化提前退出检查前置，关闭主 client
     _client?.close();
     _client = null;
     if (_disposed) return;
 
-    final lineSpeeds = <String, int?>{};
-    final lineUsable = <String, bool>{};
+    // 4. 传播 distinct 线路结果到本剧所有同 name 源
+    final lineTemplates = <String, VideoSource>{};
     for (final idx in _indicesToTest) {
-      lineSpeeds[_sources[idx].name] = _sources[idx].speedMs;
-      lineUsable[_sources[idx].name] = _sources[idx].usable;
+      if (idx >= 0) {
+        lineTemplates[_sources[idx].name] = _sources[idx];
+      }
     }
     for (var i = 0; i < _sources.length; i++) {
-      if (!_indicesToTest.contains(i)) {
-        _sources[i].speedMs = lineSpeeds[_sources[i].name];
-        _sources[i].usable = lineUsable[_sources[i].name] ?? true;
+      final template = lineTemplates[_sources[i].name];
+      if (template != null) {
+        _sources[i].copyProbeFrom(template);
       }
     }
 
-    // 更新最快线路索引 + 应用推荐选源
     await _applyRecommendedSource(autoInit: !_playerInitialized);
 
     final usable = _sources.where((s) => s.usable && s.speedMs != null).length;
-    debugPrint('SPEED: done | tested=$_testedCount usable=$usable recommended=$_recommendedLineName');
+    debugPrint(
+      'SPEED: done | tested=$_testedCount usable=$usable recommended=$_recommendedLineName',
+    );
   }
 
-  Future<void> _testSource(int index, http.Client client) async {
-    if (_abortSpeedTest) return;
-    final url = _sources[index].url;
-    final name = _sources[index].name;
-    final sw = Stopwatch()..start();
-    
-    void recordToCache(int latency) {
-      final uri = Uri.tryParse(url);
-      if (uri != null && uri.host.isNotEmpty) {
-        Hive.box<NodeSpeedRecord>('node_speeds').put(
-          uri.host,
-          NodeSpeedRecord(domainOrUrl: uri.host, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch),
-        );
-      }
-    }
+  /// 两阶段：可用性 → 流探测；写线路级缓存并传播。
+  Future<void> _testLine(int index, http.Client client) async {
+    if (_abortSpeedTest || index < 0 || index >= _sources.length) return;
+    final src = _sources[index];
+    final lineName = src.name;
+    final url = src.url;
+    final label =
+        src.sourceConfigName.isNotEmpty ? src.sourceConfigName : lineName;
 
     try {
-      final resp = await client.head(Uri.parse(url)).timeout(const Duration(seconds: 4));
-      sw.stop();
-      final ok = resp.statusCode == 200 || resp.statusCode == 302 || resp.statusCode == 301;
-      _sources[index].speedMs = ok ? sw.elapsedMilliseconds : 999999;
-      if (!ok) {
-        _sources[index].usable = false;
-        recordToCache(999999);
-        debugPrint('SPEED: [$index] $name HEAD=${resp.statusCode} ❌ (Blacklisted)');
+      final available = await StreamProbe.checkAvailability(url, client);
+      if (!available) {
+        src.applyProbeMetrics(usable: false, latencyMs: 999999);
+        _writeProbeCache(lineName, url, src);
+        _propagateLineMetrics(lineName, src);
+        debugPrint('SPEED: [$index] $lineName availability ❌');
         return;
       }
-      // 8KB 足以判断是否为视频流，减少移动端流量消耗（原 64KB）
-      final getResp = await client.get(Uri.parse(url), headers: {'Range': 'bytes=0-8191'}).timeout(const Duration(seconds: 5));
-      final body = getResp.bodyBytes;
-      final isVideo = body.length > 100 && (getResp.statusCode == 200 || getResp.statusCode == 206) && !_looksLikeHtml(body);
-      _sources[index].usable = isVideo;
-      
-      if (isVideo) {
-        if (sw.elapsedMilliseconds < 500) {
-          recordToCache(sw.elapsedMilliseconds);
-        }
+
+      final result = await StreamProbe.probe(url, client, label: label);
+      if (result.success) {
+        src.applyProbeMetrics(
+          usable: true,
+          latencyMs: result.latencyMs,
+          probeWidth: result.width > 0 ? result.width : null,
+          probeHeight: result.height > 0 ? result.height : null,
+          probeBitrateKbps:
+              result.bitrateKbps > 0 ? result.bitrateKbps : null,
+          firstFrameMs: result.firstFrameMs > 0 ? result.firstFrameMs : null,
+          probedTier: result.effectiveTier,
+        );
       } else {
-        _sources[index].speedMs = 999999;
-        recordToCache(999999);
+        src.applyProbeMetrics(usable: false, latencyMs: 999999);
       }
-      
-      debugPrint('SPEED: [$index] $name ${sw.elapsedMilliseconds}ms ${getResp.statusCode} ${body.length}B ${isVideo ? "✅" : "❌HTML"}');
+      _writeProbeCache(lineName, url, src);
+      _propagateLineMetrics(lineName, src);
+      debugPrint(
+        'SPEED: [$index] $lineName ${src.speedMs}ms '
+        '${result.success ? "✅ ${src.probeWidth}x${src.probeHeight} tier=${src.probedTier}" : "❌ probe"}',
+      );
     } catch (e) {
-      sw.stop();
-      _sources[index].speedMs = 999999;
-      _sources[index].usable = false;
-      recordToCache(999999);
-      debugPrint('SPEED: [$index] $name ERROR: $e (Blacklisted)');
+      src.applyProbeMetrics(usable: false, latencyMs: 999999);
+      _writeProbeCache(lineName, url, src);
+      _propagateLineMetrics(lineName, src);
+      debugPrint('SPEED: [$index] $lineName ERROR: $e');
     }
   }
-
-  bool _looksLikeHtml(List<int> bytes) {
-    final head = String.fromCharCodes(bytes.take(200));
-    return head.contains('<html') || head.contains('<HTML') || head.contains('<!DOCTYPE');
-  }
-
   void _switchSource(int index) {
     // Save progress before switching
     _saveProgress();
@@ -855,14 +914,57 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           : null;
 
   String _lineQualityCaption(String lineName) {
-    final tier = SourceQuality.classify(lineName);
+    var idx = _sources.indexWhere(
+      (s) => s.name == lineName && s.sourceName == _currentEpisodeName,
+    );
+    if (idx == -1) {
+      idx = _sources.indexWhere((s) => s.name == lineName);
+    }
+    if (idx == -1) return lineName;
+
+    final s = _sources[idx];
+    if (s.speedMs == null) return '检测中…';
+
+    final tier = SourceQuality.effectiveTierFor(
+      name: s.name,
+      sourceConfigName: s.sourceConfigName,
+      probedTier: s.probedTier,
+    );
     final badge = SourceQuality.shortBadge(tier);
-    if (badge.isEmpty) return lineName;
-    return '$badge · $lineName';
+    final parts = <String>[];
+    if (s.probeWidth != null &&
+        s.probeHeight != null &&
+        s.probeWidth! > 0 &&
+        s.probeHeight! > 0) {
+      parts.add('${s.probeWidth}×${s.probeHeight}');
+    }
+    if (s.probeBitrateKbps != null && s.probeBitrateKbps! > 0) {
+      parts.add('${s.probeBitrateKbps}kbps');
+    }
+    if (s.firstFrameMs != null && s.firstFrameMs! > 0) {
+      parts.add('首帧${s.firstFrameMs}ms');
+    }
+    if (parts.isEmpty) {
+      if (badge.isNotEmpty) return '$badge · $lineName';
+      return lineName;
+    }
+    return parts.join(' · ');
   }
 
   Color _qualityTierColor(String lineName) {
-    return switch (SourceQuality.classify(lineName)) {
+    var idx = _sources.indexWhere(
+      (s) => s.name == lineName && s.sourceName == _currentEpisodeName,
+    );
+    if (idx == -1) {
+      idx = _sources.indexWhere((s) => s.name == lineName);
+    }
+    if (idx == -1) return Colors.white24;
+    final s = _sources[idx];
+    return switch (SourceQuality.effectiveTierFor(
+      name: s.name,
+      sourceConfigName: s.sourceConfigName,
+      probedTier: s.probedTier,
+    )) {
       QualityTier.hd => Colors.lightBlueAccent,
       QualityTier.bluRay || QualityTier.vip => const Color(0xFFFFD700),
       QualityTier.sd => Colors.white54,

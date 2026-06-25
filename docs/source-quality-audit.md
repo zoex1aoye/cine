@@ -19,7 +19,7 @@ VIP线路, 极速蓝光, 高速蓝光, 蓝光线路,
 LZ线路, SN线路, MT线路, … (CDN mirrors)
 ```
 
-**Important:** `name` is **not** only clarity tiers — it mixes quality groups and CDN line mirrors. Quality classification uses keyword matching (`高清`, `蓝光`, `标清`, `流畅`, `*线路`).
+**Important:** `name` is **not** only clarity tiers — it mixes quality groups and CDN line mirrors. CDN lines have no clarity in API metadata; client **probes** M3U8 to assign `probedTier`.
 
 ### Multi-tier per episode
 
@@ -27,15 +27,16 @@ Same episode can appear under VIP线路 + 极速蓝光 + 高速蓝光 (3 URLs).
 
 ### Short drama
 
-Single tier `常规线路` per episode — quality picker falls back to latency-only.
+Single tier `常规线路` per episode — quality picker falls back to latency-only within tier.
 
 ## Client strategy
 
 | Player | Selection |
 |--------|-----------|
-| Main | Latency pool (≤500ms, then ≤800ms) → **高清 > 蓝光/VIP > 标清 > 流畅** → tie-break by ms |
-| Preview | **流畅 / 标清** preferred, then lowest ms |
+| Main | Distinct lines per video: phase 1 availability → phase 2 probe; latency pool (≤500ms, then ≤800ms) → **highest tier champion** → **min latency within tier** |
+| Preview | **流畅 / 标清** preferred, then lowest ms within tier |
+| Cache | `source_probes` box keyed by `videoId\|lineName`, TTL 12h; propagates to all episodes sharing the line |
 
 ## Go decision
 
-**Go** — multi-tier independent URLs confirmed; quality-aware pick is feasible with label heuristics.
+**Go** — multi-tier independent URLs confirmed; probe-aware pick with line-level distinct testing is feasible.

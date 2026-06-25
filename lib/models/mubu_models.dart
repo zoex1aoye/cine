@@ -1,5 +1,6 @@
 // lib/models/mubu_models.dart
 // Unified data models for Mubu client
+import '../utils/source_quality.dart';
 
 /// Video item model
 class VideoItem {
@@ -102,6 +103,11 @@ class VideoSource {
   final String sourceConfigName;
   int? speedMs;
   bool usable;
+  int? probeWidth;
+  int? probeHeight;
+  int? probeBitrateKbps;
+  int? firstFrameMs;
+  QualityTier? probedTier;
 
   VideoSource({
     required this.name,
@@ -110,7 +116,48 @@ class VideoSource {
     this.sourceConfigName = '',
     this.speedMs,
     this.usable = true,
+    this.probeWidth,
+    this.probeHeight,
+    this.probeBitrateKbps,
+    this.firstFrameMs,
+    this.probedTier,
   });
+
+  void applyProbeMetrics({
+    required bool usable,
+    required int latencyMs,
+    int? probeWidth,
+    int? probeHeight,
+    int? probeBitrateKbps,
+    int? firstFrameMs,
+    QualityTier? probedTier,
+  }) {
+    this.usable = usable;
+    speedMs = latencyMs;
+    if (usable) {
+      this.probeWidth = probeWidth;
+      this.probeHeight = probeHeight;
+      this.probeBitrateKbps = probeBitrateKbps;
+      this.firstFrameMs = firstFrameMs;
+      this.probedTier = probedTier;
+    } else {
+      this.probeWidth = null;
+      this.probeHeight = null;
+      this.probeBitrateKbps = null;
+      this.firstFrameMs = null;
+      this.probedTier = null;
+    }
+  }
+
+  void copyProbeFrom(VideoSource other) {
+    usable = other.usable;
+    speedMs = other.speedMs;
+    probeWidth = other.probeWidth;
+    probeHeight = other.probeHeight;
+    probeBitrateKbps = other.probeBitrateKbps;
+    firstFrameMs = other.firstFrameMs;
+    probedTier = other.probedTier;
+  }
 
   factory VideoSource.fromJson(Map<String, dynamic> json) => VideoSource(
         name: json['name'] ?? '',

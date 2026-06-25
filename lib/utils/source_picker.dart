@@ -1,12 +1,17 @@
 import '../models/mubu_models.dart';
 import 'source_quality.dart';
 
-/// Picks playback sources by latency pool + quality rank.
+QualityTier _tier(VideoSource s) => SourceQuality.effectiveTierFor(
+      name: s.name,
+      sourceConfigName: s.sourceConfigName,
+      probedTier: s.probedTier,
+    );
+
+/// Picks playback sources: latency pool → highest tier → min latency within tier.
 abstract final class SourcePicker {
   static const latencyGood = 500;
   static const latencyAcceptable = 800;
 
-  /// Main player: among [episodeName], pick highest quality in the best latency pool.
   static int? pickMainIndex(
     List<VideoSource> sources, {
     required String episodeName,
@@ -41,7 +46,7 @@ abstract final class SourcePicker {
     if (preferLowerTierOnWeakNet) {
       final low = _pickFromPool(
         candidates.where((s) {
-          final t = SourceQuality.classify(s.name, sourceConfigName: s.sourceConfigName);
+          final t = _tier(s);
           return t == QualityTier.smooth || t == QualityTier.sd;
         }).toList(),
         latencyGood,
@@ -61,10 +66,9 @@ abstract final class SourcePicker {
     );
     if (ok != null) return ok;
 
-    return _bestByQualityThenLatency(candidates);
+    return _bestByLatencyThenTier(candidates);
   }
 
-  /// Preview player: prefer 流畅 / 标清, then lowest latency.
   static VideoSource? pickPreview(
     List<VideoSource> sources, {
     required String episodeName,
@@ -79,15 +83,14 @@ abstract final class SourcePicker {
     if (candidates.isEmpty) return null;
 
     final lowTiers = candidates.where((s) {
-      final t = SourceQuality.classify(s.name, sourceConfigName: s.sourceConfigName);
+      final t = _tier(s);
       return t == QualityTier.smooth || t == QualityTier.sd;
     }).toList();
 
     if (lowTiers.isNotEmpty) {
       lowTiers.sort((a, b) {
-        final ta = SourceQuality.classify(a.name, sourceConfigName: a.sourceConfigName);
-        final tb = SourceQuality.classify(b.name, sourceConfigName: b.sourceConfigName);
-        // 预览优先流畅（分片更小），同档比延迟
+        final ta = _tier(a);
+        final tb = _tier(b);
         if (ta == QualityTier.smooth && tb != QualityTier.smooth) return -1;
         if (tb == QualityTier.smooth && ta != QualityTier.smooth) return 1;
         return _latency(a).compareTo(_latency(b));
@@ -95,18 +98,21 @@ abstract final class SourcePicker {
       return lowTiers.first;
     }
 
-    return _bestByQualityThenLatency(candidates);
+    return _bestByLatencyThenTier(candidates);
   }
 
+  /// Fastest source within [withinTier] (same episode); omit tier for global fastest.
   static int? indexOfFastest(
     List<VideoSource> sources, {
     String? episodeName,
+    QualityTier? withinTier,
   }) {
     int? bestIdx;
     var bestMs = 999999;
     for (var i = 0; i < sources.length; i++) {
       final s = sources[i];
       if (episodeName != null && s.sourceName != episodeName) continue;
+      if (withinTier != null && _tier(s) != withinTier) continue;
       if (!s.usable || s.speedMs == null) continue;
       final ms = s.speedMs!;
       if (ms >= 999999) continue;
@@ -120,18 +126,51 @@ abstract final class SourcePicker {
 
   static VideoSource? _pickFromPool(List<VideoSource> pool, int maxMs) {
     if (pool.isEmpty) return null;
-    final tested = pool.where((s) => s.speedMs != null && s.speedMs! <= maxMs).toList();
+    final tested =
+        pool.where((s) => s.speedMs != null && s.speedMs! <= maxMs).toList();
     if (tested.isEmpty) return null;
-    return _bestByQualityThenLatency(tested);
+    return _pickBestTierChampion(tested);
   }
 
-  static VideoSource? _bestByQualityThenLatency(List<VideoSource> list) {
+  /// Per-tier min latency champion, then highest-rank tier wins.
+  static VideoSource? _pickBestTierChampion(List<VideoSource> list) {
+    if (list.isEmpty) return null;
+
+    final champions = <QualityTier, VideoSource>{};
+    for (final s in list) {
+      final tier = _tier(s);
+      final existing = champions[tier];
+      if (existing == null || _latency(s) < _latency(existing)) {
+        champions[tier] = s;
+      }
+    }
+
+    QualityTier? bestTier;
+    for (final tier in champions.keys) {
+      if (bestTier == null ||
+          SourceQuality.rank(tier) > SourceQuality.rank(bestTier)) {
+        bestTier = tier;
+      }
+    }
+    return bestTier != null ? champions[bestTier] : null;
+  }
+
+  static VideoSource? _bestByLatencyThenTier(List<VideoSource> list) {
     if (list.isEmpty) return null;
     list.sort((a, b) {
-      final q = SourceQuality.rankForSource(b.name, sourceConfigName: b.sourceConfigName)
-          .compareTo(SourceQuality.rankForSource(a.name, sourceConfigName: a.sourceConfigName));
-      if (q != 0) return q;
-      return _latency(a).compareTo(_latency(b));
+      final lat = _latency(a).compareTo(_latency(b));
+      if (lat != 0) return lat;
+      return SourceQuality.effectiveRankFor(
+        name: b.name,
+        sourceConfigName: b.sourceConfigName,
+        probedTier: b.probedTier,
+      ).compareTo(
+        SourceQuality.effectiveRankFor(
+          name: a.name,
+          sourceConfigName: a.sourceConfigName,
+          probedTier: a.probedTier,
+        ),
+      );
     });
     return list.first;
   }
