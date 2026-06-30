@@ -15,6 +15,10 @@ class StreamProbeResult {
   final int height;
   final int bitrateKbps;
   final QualityTier effectiveTier;
+  /// Total duration in seconds summed from #EXTINF tags; 0 if unavailable (e.g. live).
+  final int durationSec;
+  /// Whether the media playlist contains #EXT-X-ENDLIST (VOD).
+  final bool hasEndlist;
 
   const StreamProbeResult({
     required this.success,
@@ -25,6 +29,8 @@ class StreamProbeResult {
     this.height = 0,
     this.bitrateKbps = 0,
     this.effectiveTier = QualityTier.unknown,
+    this.durationSec = 0,
+    this.hasEndlist = false,
   });
 
   /// Metric used for line ranking (prefers full startup path, then segment, then playlist).
@@ -87,7 +93,10 @@ abstract final class StreamProbe {
       var width = 0;
       var height = 0;
       var bitrateKbps = 0;
+      var durationSec = 0;
+      var hasEndlist = false;
       String? segmentUrl;
+      String? mediaBody;
 
       if (isMasterPlaylist(body)) {
         final variant = pickBestVariant(body, playlistUri);
@@ -95,17 +104,19 @@ abstract final class StreamProbe {
         bitrateKbps = variant.key ~/ 1000;
         final mediaResp = await client.get(variant.value).timeout(timeout);
         if (mediaResp.statusCode != 200) return StreamProbeResult.failed;
+        mediaBody = mediaResp.body;
         final resolution = parseResolutionFromInf(body) ??
-            parseResolutionFromInf(mediaResp.body);
+            parseResolutionFromInf(mediaBody!);
         if (resolution != null) {
           width = resolution.$1;
           height = resolution.$2;
         }
-        segmentUrl = firstSegmentUrl(mediaResp.body, variant.value)?.toString();
+        segmentUrl = firstSegmentUrl(mediaBody!, variant.value)?.toString();
         if (bitrateKbps == 0) {
-          bitrateKbps = (parseBandwidthFromInf(mediaResp.body) ?? 0) ~/ 1000;
+          bitrateKbps = (parseBandwidthFromInf(mediaBody!) ?? 0) ~/ 1000;
         }
       } else {
+        mediaBody = body;
         final resolution = parseResolutionFromInf(body);
         if (resolution != null) {
           width = resolution.$1;
@@ -113,6 +124,11 @@ abstract final class StreamProbe {
         }
         bitrateKbps = (parseBandwidthFromInf(body) ?? 0) ~/ 1000;
         segmentUrl = firstSegmentUrl(body, playlistUri)?.toString();
+      }
+
+      if (mediaBody != null) {
+        durationSec = sumExtinfDuration(mediaBody);
+        hasEndlist = mediaBody.contains('#EXT-X-ENDLIST');
       }
 
       var firstFrameMs = 0;
@@ -150,6 +166,8 @@ abstract final class StreamProbe {
         height: height,
         bitrateKbps: bitrateKbps,
         effectiveTier: tier,
+        durationSec: durationSec,
+        hasEndlist: hasEndlist,
       );
     } catch (_) {
       return StreamProbeResult.failed;
@@ -207,6 +225,17 @@ abstract final class StreamProbe {
 
   static int? parseBandwidthFromInf(String content) {
     return _attrInt(content, 'BANDWIDTH');
+  }
+
+  /// Sum all #EXTINF:duration values in a media playlist.
+  /// Returns 0 if no EXTINF tags found (e.g. live stream).
+  static int sumExtinfDuration(String content) {
+    final regex = RegExp(r'#EXTINF:([\d.]+)');
+    var total = 0.0;
+    for (final match in regex.allMatches(content)) {
+      total += double.tryParse(match.group(1)!) ?? 0;
+    }
+    return total.floor();
   }
 
   static int? _attrInt(String line, String key) {

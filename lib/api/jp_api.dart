@@ -493,6 +493,8 @@ class VideoSource {
   int? speedMs;
   /// 线路可用状态标志。若握手或视频流校验失败会置为 false
   bool usable = true;
+  /// Duration in seconds from API time_data.total_duration (fallback).
+  int? apiDurationSec;
 
   VideoSource({
     required this.name,
@@ -500,6 +502,7 @@ class VideoSource {
     required this.url,
     this.sourceConfigName = '',
     this.speedMs,
+    this.apiDurationSec,
   });
 }
 
@@ -525,6 +528,14 @@ class VideoDetail {
   factory VideoDetail.fromJson(Map<String, dynamic> json) {
     final sources = <VideoSource>[];
 
+    // Video-level duration fallback (time_data.total_duration).
+    // `time_data` may be absent, a String, or an object depending on the
+    // endpoint, so guard with `is Map` instead of an unconditional cast.
+    final timeDataRaw = json['time_data'];
+    final timeData = timeDataRaw is Map ? timeDataRaw : null;
+    final videoDurationSec =
+        timeData != null ? _parseInt(timeData['total_duration']) : null;
+
     void appendSourceList(List? sourceList) {
       if (sourceList == null) return;
       for (final src in sourceList) {
@@ -539,6 +550,7 @@ class VideoDetail {
             sourceName: item['source_name']?.toString() ?? '',
             url: url,
             sourceConfigName: item['source_config_name']?.toString() ?? '',
+            apiDurationSec: _parseInt(item['total_duration']) ?? videoDurationSec,
           ));
         }
       }
@@ -559,6 +571,7 @@ class VideoDetail {
           name: lineName,
           sourceName: episodeTitle,
           url: playUrl,
+          apiDurationSec: _parseInt(item['total_duration']) ?? videoDurationSec,
         ));
       }
     }
@@ -581,4 +594,12 @@ class VideoDetail {
     if (sameEp.isEmpty) return sources.first.url;
     return sameEp.first.url;
   }
+}
+
+/// Safely parse an int from a dynamic value (handles String, num, null).
+int? _parseInt(dynamic v) {
+  if (v == null) return null;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v);
+  return null;
 }

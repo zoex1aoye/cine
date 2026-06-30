@@ -9,7 +9,8 @@ VideoSource _src(
   String ep,
   int ms, {
   bool usable = true,
-  QualityTier? probedTier,
+  int probeWidth = 1920,
+  int probeHeight = 1080,
 }) =>
     VideoSource(
       name: name,
@@ -17,7 +18,8 @@ VideoSource _src(
       url: 'https://example.com/$name/$ep.m3u8',
       speedMs: ms,
       usable: usable,
-      probedTier: probedTier,
+      probeWidth: probeWidth,
+      probeHeight: probeHeight,
     );
 
 void main() {
@@ -29,6 +31,19 @@ void main() {
       expect(SourceQuality.classify('标清'), QualityTier.sd);
       expect(SourceQuality.classify('流畅'), QualityTier.smooth);
       expect(SourceQuality.classify('LZ线路'), QualityTier.cdn);
+    });
+
+    test('resolutionLabel from probe dimensions', () {
+      expect(
+        SourceQuality.resolutionLabel(_src('a', 'ep', 1)),
+        '1080P',
+      );
+      expect(
+        SourceQuality.resolutionLabel(
+          _src('b', 'ep', 1, probeWidth: 1280, probeHeight: 720),
+        ),
+        '720P',
+      );
     });
 
     test('tierFromProbe maps resolution', () {
@@ -91,61 +106,35 @@ seg001.ts
   group('SourcePicker.pickMain', () {
     const ep = '第01集';
 
-    test('all tiers under 500ms picks 高清 (highest tier champion)', () {
+    test('same 1080P picks lowest latency', () {
       final sources = [
-        _src('流畅', ep, 80),
+        _src('流畅', ep, 80, probeWidth: 640, probeHeight: 360),
         _src('极速蓝光', ep, 95),
         _src('高清线路1', ep, 120),
-      ];
-      final picked = SourcePicker.pickMain(sources, episodeName: ep);
-      expect(picked?.name, '高清线路1');
-    });
-
-    test('same tier picks lowest latency', () {
-      final sources = [
-        _src('高清线路1', ep, 150),
-        _src('高清线路2', ep, 80),
-        _src('极速蓝光', ep, 200),
-      ];
-      final picked = SourcePicker.pickMain(sources, episodeName: ep);
-      expect(picked?.name, '高清线路2');
-    });
-
-    test('CDN probed as hd groups with 高清 and picks faster hd', () {
-      final sources = [
-        _src('高清线路1', ep, 150),
-        _src('LZ线路', ep, 90, probedTier: QualityTier.hd),
-      ];
-      final picked = SourcePicker.pickMain(sources, episodeName: ep);
-      expect(picked?.name, 'LZ线路');
-    });
-
-    test('only bluRay and smooth qualify picks bluRay', () {
-      final sources = [
-        _src('流畅', ep, 100),
-        _src('极速蓝光', ep, 150),
-        _src('高清线路1', ep, 600),
       ];
       final picked = SourcePicker.pickMain(sources, episodeName: ep);
       expect(picked?.name, '极速蓝光');
     });
 
-    test('excludes main url when requested via pickPreview', () {
-      final main = _src('高清线路1', ep, 100);
+    test('picks highest resolution when latency OK', () {
       final sources = [
-        main,
-        _src('流畅', ep, 90),
-        _src('标清', ep, 110),
+        _src('720线', ep, 80, probeWidth: 1280, probeHeight: 720),
+        _src('1080线', ep, 120),
       ];
-      final preview = SourcePicker.pickPreview(
-        sources,
-        episodeName: ep,
-        excludeUrl: main.url,
-      );
-      expect(preview?.name, '流畅');
+      final picked = SourcePicker.pickMain(sources, episodeName: ep);
+      expect(picked?.name, '1080线');
     });
 
-    test('indexOfFastest within tier returns lowest ms', () {
+    test('falls back globally when episode group has no usable lines', () {
+      final sources = [
+        _src('极速蓝光', 'BD英语', 999999, usable: false),
+        _src('高清线路3', '其他版本', 956),
+      ];
+      final picked = SourcePicker.pickMain(sources, episodeName: 'BD英语');
+      expect(picked?.name, '高清线路3');
+    });
+
+    test('indexOfFastest within resolution returns lowest ms', () {
       final sources = [
         _src('高清线路1', ep, 200),
         _src('高清线路2', ep, 80),
@@ -154,9 +143,9 @@ seg001.ts
       final idx = SourcePicker.indexOfFastest(
         sources,
         episodeName: ep,
-        withinTier: QualityTier.hd,
+        withinResolution: '1080P',
       );
-      expect(idx, 1);
+      expect(idx, 2);
     });
   });
 }

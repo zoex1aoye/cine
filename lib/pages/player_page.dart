@@ -204,12 +204,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (_disposed) return;
 
       if (_playerInitialized) {
-        // 播放器已在测速期间初始化；确保 stage 同步到 ready（并行测速路径可能遗漏）
         if (mounted && _stage != LoadingStage.ready) {
           setState(() => _stage = LoadingStage.ready);
         }
       } else if (_savedEpisodeName != null && _savedEpisodeName!.isNotEmpty) {
-        // Re-enter: 保存线路慢，需要选源再 init
         _applySavedEpisodeSelection();
         if (mounted) {
           setState(() { _stage = LoadingStage.initPlayer; });
@@ -220,7 +218,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           setState(() { _stage = LoadingStage.ready; });
         }
       } else {
-        // 普通场景但没有快线 — 用默认源 init
         if (mounted) {
           setState(() { _stage = LoadingStage.initPlayer; });
         }
@@ -251,7 +248,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _initPlayerOnce() async {
     MediaKitPlayerImpl? player;
     try {
-      // 先清理旧播放器（重试场景）
       if (_player != null) {
         if (_widthListener != null) _player!.videoWidthNotifier.removeListener(_widthListener!);
         if (_heightListener != null) _player!.videoHeightNotifier.removeListener(_heightListener!);
@@ -273,7 +269,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         await activePlayer.dispose();
         return;
       }
-      // 等待 duration > 0，确保媒体已加载到可以 seek 的程度
       if (activePlayer.durationNotifier.value <= Duration.zero) {
         final completer = Completer<void>();
         void listener() {
@@ -283,7 +278,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           }
         }
         activePlayer.durationNotifier.addListener(listener);
-        // 10秒超时保护，避免永远卡住
         await completer.future.timeout(const Duration(seconds: 10), onTimeout: () {
           if (!completer.isCompleted) {
             activePlayer.durationNotifier.removeListener(listener);
@@ -291,12 +285,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           }
         });
       }
-      // 监听视频尺寸，动态调整宽高比
       _widthListener = () => _updateAspectRatio(activePlayer);
       _heightListener = () => _updateAspectRatio(activePlayer);
       activePlayer.videoWidthNotifier.addListener(_widthListener!);
       activePlayer.videoHeightNotifier.addListener(_heightListener!);
-      // 立即检查一次（可能已有值）
       _updateAspectRatio(activePlayer);
       if (mounted) {
         setState(() {
@@ -483,15 +475,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (idx == null) return;
 
     final picked = _sources[idx];
+    final resolution = SourceQuality.resolutionLabel(picked);
     _recommendedLineName = picked.name;
     _fastestIndex = SourcePicker.indexOfFastest(
       _sources,
       episodeName: episode,
-      withinTier: SourceQuality.effectiveTierFor(
-        name: picked.name,
-        sourceConfigName: picked.sourceConfigName,
-        probedTier: picked.probedTier,
-      ),
+      withinResolution: resolution,
     );
 
     final shouldUpgrade = _playerInitialized &&
@@ -501,11 +490,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (autoInit && !_playerInitialized) {
       _selectedSource = idx;
       _currentUrl = _sources[idx].url;
-      debugPrint('PLAYER: auto-pick ${ _sources[idx].name} (${_sources[idx].speedMs}ms) for $episode');
+      debugPrint('PLAYER: auto-pick ${resolution ?? _sources[idx].name} (${_sources[idx].playlistMs ?? _sources[idx].speedMs}ms) for $episode');
       if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
       await _initPlayer();
     } else if (shouldUpgrade) {
-      debugPrint('PLAYER: upgrade to recommended ${_sources[idx].name}');
+      debugPrint('PLAYER: upgrade to recommended ${resolution ?? _sources[idx].name}');
       _switchSource(idx);
     } else if (!_playerInitialized) {
       _selectedSource = idx;
@@ -612,6 +601,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       firstFrameMs:
           record.usable && record.firstFrameMs > 0 ? record.firstFrameMs : null,
       probedTier: tier,
+      probeDurationSec:
+          record.usable && record.durationSec > 0 ? record.durationSec : null,
+      probeHasEndlist: record.usable ? record.hasEndlist : null,
     );
   }
 
@@ -638,6 +630,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         firstFrameMs: src.firstFrameMs ?? 0,
         effectiveTierIndex: tier.index,
         testedAtEpoch: DateTime.now().millisecondsSinceEpoch,
+        durationSec: src.probeDurationSec ?? 0,
+        hasEndlist: src.probeHasEndlist ?? false,
       ),
     );
   }
@@ -816,6 +810,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               result.bitrateKbps > 0 ? result.bitrateKbps : null,
           firstFrameMs: result.firstFrameMs > 0 ? result.firstFrameMs : null,
           probedTier: result.effectiveTier,
+          probeDurationSec: result.durationSec > 0 ? result.durationSec : null,
+          probeHasEndlist: result.hasEndlist,
         );
       } else {
         src.applyProbeMetrics(usable: false, startupMs: 999999);
@@ -835,7 +831,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
   void _switchSource(int index) {
-    // Save progress before switching
     _saveProgress();
     final src = _sources[index];
     _selectedSource = index;
@@ -856,7 +851,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String _speedLabel(int? ms) {
     if (ms == null) return '...';
     if (ms >= 999999) return '超时';
-    return '起播 ${ms}ms';
+    return '${ms}ms';
   }
 
   double get _loadingProgress {
@@ -925,84 +920,68 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return names.toList();
   }
 
-  String get _selectedLineName => _sources.isNotEmpty ? _sources[_selectedSource].name : '';
+  String get _selectedLineName =>
+      _sources.isNotEmpty ? _sources[_selectedSource].name : '';
 
   String? get _fastestLineName =>
-      _fastestIndex != null && _fastestIndex! >= 0 && _fastestIndex! < _sources.length
+      _fastestIndex != null &&
+              _fastestIndex! >= 0 &&
+              _fastestIndex! < _sources.length
           ? _sources[_fastestIndex!].name
           : null;
 
-  String _lineQualityCaption(String lineName) {
+  VideoSource? _representativeForLine(String lineName) {
     var idx = _sources.indexWhere(
       (s) => s.name == lineName && s.sourceName == _currentEpisodeName,
     );
     if (idx == -1) {
       idx = _sources.indexWhere((s) => s.name == lineName);
     }
-    if (idx == -1) return lineName;
-
-    final s = _sources[idx];
-    if (s.speedMs == null) return '检测中…';
-
-    final tier = SourceQuality.effectiveTierFor(
-      name: s.name,
-      sourceConfigName: s.sourceConfigName,
-      probedTier: s.probedTier,
-    );
-    final badge = SourceQuality.shortBadge(tier);
-    final parts = <String>[];
-    if (s.probeWidth != null &&
-        s.probeHeight != null &&
-        s.probeWidth! > 0 &&
-        s.probeHeight! > 0) {
-      parts.add('${s.probeWidth}×${s.probeHeight}');
-    }
-    if (s.probeBitrateKbps != null && s.probeBitrateKbps! > 0) {
-      parts.add('${s.probeBitrateKbps}kbps');
-    }
-    if (s.playlistMs != null && s.playlistMs! > 0) {
-      parts.add('清单${s.playlistMs}ms');
-    }
-    if (s.firstFrameMs != null && s.firstFrameMs! > 0) {
-      parts.add('首段${s.firstFrameMs}ms');
-    }
-    if (parts.isEmpty) {
-      if (badge.isNotEmpty) return '$badge · $lineName';
-      return lineName;
-    }
-    return parts.join(' · ');
+    return idx != -1 ? _sources[idx] : null;
   }
 
-  Color _qualityTierColor(String lineName) {
-    var idx = _sources.indexWhere(
-      (s) => s.name == lineName && s.sourceName == _currentEpisodeName,
-    );
-    if (idx == -1) {
-      idx = _sources.indexWhere((s) => s.name == lineName);
-    }
-    if (idx == -1) return Colors.white24;
-    final s = _sources[idx];
-    return switch (SourceQuality.effectiveTierFor(
-      name: s.name,
-      sourceConfigName: s.sourceConfigName,
-      probedTier: s.probedTier,
-    )) {
-      QualityTier.hd => Colors.lightBlueAccent,
-      QualityTier.bluRay || QualityTier.vip => const Color(0xFFFFD700),
-      QualityTier.sd => Colors.white54,
-      QualityTier.smooth => Colors.white38,
-      _ => Colors.white24,
-    };
+  String _lineQualityCaption(String lineName) {
+    final s = _representativeForLine(lineName);
+    if (s == null) return lineName;
+    if (s.speedMs == null) return '检测中…';
+    return SourceQuality.resolutionLabel(s) ?? lineName;
+  }
+
+  Color _lineQualityColor(String lineName) {
+    final s = _representativeForLine(lineName);
+    if (s == null) return Colors.white24;
+    return SourceQuality.resolutionColor(s);
   }
 
   int? _lineSpeed(String lineName) {
-    final idx = _sources.indexWhere((s) => s.name == lineName);
-    return idx != -1 ? _sources[idx].speedMs : null;
+    final s = _representativeForLine(lineName);
+    return s?.playlistMs ?? s?.speedMs;
   }
 
   bool _isLineUsable(String lineName) {
-    final idx = _sources.indexWhere((s) => s.name == lineName);
-    return idx != -1 ? _sources[idx].usable : true;
+    final s = _representativeForLine(lineName);
+    return s?.usable ?? true;
+  }
+
+  /// Sort by probe resolution ↓ → duration ↓ → bitrate → latency ↑.
+  int _compareLineForSelector(String a, String b) {
+    final sA = _representativeForLine(a);
+    final sB = _representativeForLine(b);
+    final rankA = sA != null ? SourceQuality.resolutionRank(sA) : 0;
+    final rankB = sB != null ? SourceQuality.resolutionRank(sB) : 0;
+    if (rankA != rankB) return rankB.compareTo(rankA);
+
+    final minA = sA?.durationMinute ?? 0;
+    final minB = sB?.durationMinute ?? 0;
+    if (minA != minB) return minB.compareTo(minA);
+
+    final brA = (sA?.probeBitrateKbps ?? 0) > 0;
+    final brB = (sB?.probeBitrateKbps ?? 0) > 0;
+    if (brA != brB) return brA ? -1 : 1;
+
+    final latA = sA?.playlistMs ?? sA?.speedMs ?? 999999;
+    final latB = sB?.playlistMs ?? sB?.speedMs ?? 999999;
+    return latA.compareTo(latB);
   }
 
   List<int> get _currentLineSourceIndices {
@@ -1016,25 +995,88 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return indices;
   }
 
+  /// Long episode labels (e.g. movie versions like "BD英语中字") read poorly in
+  /// the fixed square grid, so we fall back to an auto-sizing wrap layout.
+  bool _episodesNeedWrap(List<int> epIndices) {
+    for (final i in epIndices) {
+      if (_sources[i].sourceName.length > 4) return true;
+    }
+    return false;
+  }
+
+  /// Episode grid: square cells for short labels, wrapped pills for long ones.
+  Widget _buildEpisodeGrid(
+    List<int> epIndices, {
+    bool closeOnTap = false,
+  }) {
+    void onTap(int sourceIdx) {
+      _switchSource(sourceIdx);
+      if (closeOnTap) Navigator.pop(context);
+    }
+
+    if (_episodesNeedWrap(epIndices)) {
+      return Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final sourceIdx in epIndices)
+            _EpisodeButton(
+              label: _sources[sourceIdx].sourceName,
+              duration: SourceQuality.formatDurationMmSs(_sources[sourceIdx]),
+              active: sourceIdx == _selectedSource,
+              flexible: true,
+              onTap: () => onTap(sourceIdx),
+            ),
+        ],
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            childAspectRatio: 1.6,
+            crossAxisSpacing: 8,
+            mainAxisSpacing: 8,
+          ),
+          itemCount: epIndices.length,
+          itemBuilder: (context, index) {
+            final sourceIdx = epIndices[index];
+            final s = _sources[sourceIdx];
+            return _EpisodeButton(
+              label: s.sourceName,
+              duration: SourceQuality.formatDurationMmSs(s),
+              active: sourceIdx == _selectedSource,
+              onTap: () => onTap(sourceIdx),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _switchLine(String newLineName) {
     if (newLineName == _selectedLineName) return;
-    
+
     final currentEpisodeName = _sources[_selectedSource].sourceName;
     int targetIdx = -1;
     for (var i = 0; i < _sources.length; i++) {
-      if (_sources[i].name == newLineName && _sources[i].sourceName == currentEpisodeName) {
+      if (_sources[i].name == newLineName &&
+          _sources[i].sourceName == currentEpisodeName) {
         targetIdx = i;
         break;
       }
     }
-    
+
     if (targetIdx == -1) {
       targetIdx = _sources.indexWhere((s) => s.name == newLineName);
     }
-    
-    if (targetIdx != -1) {
-      _switchSource(targetIdx);
-    }
+
+    if (targetIdx != -1) _switchSource(targetIdx);
   }
 
   @override
@@ -1239,17 +1281,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
   }
 
-  String? _getFastPreviewUrl() {
-    if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
-    final currentEpisode = _sources[_selectedSource].sourceName;
-    final currentUrl = _sources[_selectedSource].url;
-    return SourcePicker.pickPreview(
-      _sources,
-      episodeName: currentEpisode,
-      excludeUrl: currentUrl,
-    )?.url;
-  }
-
   Widget _buildVideoPlayerContainer() {
     final imgDomain = MubuApiClient.instance.imgDomain;
     final coverUrl = widget.video.coverUrl(imgDomain);
@@ -1273,7 +1304,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   context,
                   title: widget.video.title,
                   onBack: () => Navigator.of(context).pop(),
-                  previewUrl: _getFastPreviewUrl(),
                 ),
               ),
             ),
@@ -1487,30 +1517,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 12),
                   Expanded(
-                    child: GridView.builder(
+                    child: SingleChildScrollView(
                       controller: scrollController,
                       physics: const BouncingScrollPhysics(),
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 4,
-                        childAspectRatio: 1.6,
-                        crossAxisSpacing: 8,
-                        mainAxisSpacing: 8,
-                      ),
-                      itemCount: epIndices.length,
-                      itemBuilder: (context, index) {
-                        final sourceIdx = epIndices[index];
-                        final s = _sources[sourceIdx];
-                        final active = sourceIdx == _selectedSource;
-
-                        return _EpisodeButton(
-                          label: s.sourceName,
-                          active: active,
-                          onTap: () {
-                            _switchSource(sourceIdx);
-                            Navigator.pop(context);
-                          },
-                        );
-                      },
+                      child: _buildEpisodeGrid(epIndices, closeOnTap: true),
                     ),
                   ),
                 ],
@@ -1558,7 +1568,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                           _speedDot(_sources.isNotEmpty ? _sources[_selectedSource].speedMs : null),
                           const SizedBox(width: 6),
                           Text(
-                            '${_lineQualityCaption(_sources[_selectedSource].name)} · ${_speedLabel(_sources[_selectedSource].speedMs)}',
+                            '${_selectedLineName.isNotEmpty ? _selectedLineName : '清晰度'} · ${_speedLabel(_sources[_selectedSource].speedMs)}',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 10,
@@ -1660,33 +1670,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             else if (epIndices.isEmpty)
               const Text('暂无剧集数据', style: TextStyle(color: Colors.white24, fontSize: 12))
             else
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
-                  return GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: crossAxisCount,
-                      childAspectRatio: 1.6,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
-                    ),
-                    itemCount: epIndices.length,
-                    itemBuilder: (context, index) {
-                      final sourceIdx = epIndices[index];
-                      final s = _sources[sourceIdx];
-                      final active = sourceIdx == _selectedSource;
-
-                      return _EpisodeButton(
-                        label: s.sourceName,
-                        active: active,
-                        onTap: () => _switchSource(sourceIdx),
-                      );
-                    },
-                  );
-                },
-              ),
+              _buildEpisodeGrid(epIndices),
           ],
         ],
       ),
@@ -1771,7 +1755,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Widget _buildLineSelectorContent({bool isBottomSheet = false, bool isDialog = false}) {
-    final lines = _uniqueLineNames;
+    final lines = _uniqueLineNames.toList()
+      ..sort((a, b) => _compareLineForSelector(a, b));
     final screenHeight = MediaQuery.of(context).size.height;
     final isSmallHeight = screenHeight < 500 && !isBottomSheet;
     
@@ -1785,7 +1770,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             children: [
               const Icon(Icons.shuffle, color: Colors.white38, size: 15),
               const SizedBox(width: 8),
-              const Text('切换清晰度', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+              const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
               const Spacer(),
               if (!isDialog && !isBottomSheet)
                 GestureDetector(
@@ -1815,8 +1800,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 final active = name == _selectedLineName;
                 final speed = _lineSpeed(name);
                 final usable = _isLineUsable(name);
-                final isRecommended = _recommendedLineName != null && name == _recommendedLineName;
-                final isFastest = _fastestLineName != null && name == _fastestLineName && !isRecommended;
+                final isRecommended =
+                    _recommendedLineName != null && name == _recommendedLineName;
+                final isFastest = _fastestLineName != null &&
+                    name == _fastestLineName &&
+                    !isRecommended;
                 if (!usable && !active) return const SizedBox.shrink();
 
                 return GestureDetector(
@@ -1857,7 +1845,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                               Text(
                                 _lineQualityCaption(name),
                                 style: TextStyle(
-                                  color: _qualityTierColor(name).withOpacity(0.9),
+                                  color: _lineQualityColor(name).withOpacity(0.9),
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -2137,12 +2125,19 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
 
 class _EpisodeButton extends StatefulWidget {
   final String label;
+  final String? duration;
   final bool active;
+
+  /// When true, the button sizes to its content (for [Wrap] layouts with long
+  /// labels) and wraps text over up to two lines instead of clipping.
+  final bool flexible;
   final VoidCallback onTap;
 
   const _EpisodeButton({
     required this.label,
+    this.duration,
     required this.active,
+    this.flexible = false,
     required this.onTap,
   });
 
@@ -2157,6 +2152,45 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
   Widget build(BuildContext context) {
     final active = widget.active;
     const primaryRed = Color(0xFFE50914);
+    final flexible = widget.flexible;
+
+    final content = Column(
+      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment:
+          flexible ? CrossAxisAlignment.start : CrossAxisAlignment.center,
+      children: [
+        Text(
+          widget.label,
+          maxLines: flexible ? 2 : 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: flexible ? TextAlign.start : TextAlign.center,
+          style: TextStyle(
+            color: active
+                ? Colors.white
+                : (_hovered ? Colors.white : Colors.white60),
+            fontSize: 12,
+            height: 1.25,
+            fontWeight: active ? FontWeight.bold : FontWeight.w500,
+          ),
+        ),
+        if (widget.duration != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            widget.duration!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: active
+                  ? Colors.white70
+                  : (_hovered ? Colors.white54 : Colors.white38),
+              fontSize: 10,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ],
+    );
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -2167,6 +2201,12 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
+          constraints: flexible
+              ? const BoxConstraints(minWidth: 64, maxWidth: 220)
+              : null,
+          padding: flexible
+              ? const EdgeInsets.symmetric(horizontal: 14, vertical: 8)
+              : null,
           transform: _hovered
               ? (Matrix4.identity()..scale(1.05))
               : Matrix4.identity(),
@@ -2200,19 +2240,8 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                       ]
                     : null),
           ),
-          alignment: Alignment.center,
-          child: Text(
-            widget.label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: active
-                  ? Colors.white
-                  : (_hovered ? Colors.white : Colors.white60),
-              fontSize: 12,
-              fontWeight: active ? FontWeight.bold : FontWeight.w500,
-            ),
-          ),
+          alignment: flexible ? null : Alignment.center,
+          child: content,
         ),
       ),
     );

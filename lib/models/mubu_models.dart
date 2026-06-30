@@ -109,6 +109,22 @@ class VideoSource {
   int? playlistMs;
   int? firstFrameMs;
   QualityTier? probedTier;
+  /// Total duration in seconds from M3U8 #EXTINF summation.
+  int? probeDurationSec;
+  /// Duration in seconds from API time_data.total_duration (fallback).
+  int? apiDurationSec;
+  /// Whether the M3U8 playlist contained #EXT-X-ENDLIST (VOD).
+  bool? probeHasEndlist;
+
+  /// Effective duration in minutes, preferring M3U8 data over API fallback.
+  /// Returns 0 if no duration info is available.
+  int get durationMinute {
+    final sec = probeDurationSec ?? apiDurationSec ?? 0;
+    return sec > 0 ? sec ~/ 60 : 0;
+  }
+
+  /// Whether this source is a live/ongoing stream (no EXT-X-ENDLIST).
+  bool get isLive => probeHasEndlist == false;
 
   VideoSource({
     required this.name,
@@ -123,6 +139,9 @@ class VideoSource {
     this.playlistMs,
     this.firstFrameMs,
     this.probedTier,
+    this.probeDurationSec,
+    this.apiDurationSec,
+    this.probeHasEndlist,
   });
 
   void applyProbeMetrics({
@@ -134,6 +153,8 @@ class VideoSource {
     int? probeBitrateKbps,
     int? firstFrameMs,
     QualityTier? probedTier,
+    int? probeDurationSec,
+    bool? probeHasEndlist,
   }) {
     this.usable = usable;
     speedMs = startupMs;
@@ -144,6 +165,8 @@ class VideoSource {
       this.probeBitrateKbps = probeBitrateKbps;
       this.firstFrameMs = firstFrameMs;
       this.probedTier = probedTier;
+      this.probeDurationSec = probeDurationSec;
+      this.probeHasEndlist = probeHasEndlist;
     } else {
       this.playlistMs = null;
       this.probeWidth = null;
@@ -151,6 +174,8 @@ class VideoSource {
       this.probeBitrateKbps = null;
       this.firstFrameMs = null;
       this.probedTier = null;
+      this.probeDurationSec = null;
+      this.probeHasEndlist = null;
     }
   }
 
@@ -163,6 +188,9 @@ class VideoSource {
     probeBitrateKbps = other.probeBitrateKbps;
     firstFrameMs = other.firstFrameMs;
     probedTier = other.probedTier;
+    probeDurationSec = other.probeDurationSec;
+    apiDurationSec = other.apiDurationSec;
+    probeHasEndlist = other.probeHasEndlist;
   }
 
   factory VideoSource.fromJson(Map<String, dynamic> json) => VideoSource(
@@ -172,7 +200,15 @@ class VideoSource {
         sourceConfigName: json['source_config_name'] ?? json['sourceConfigName'] ?? '',
         speedMs: json['speedMs'] != null ? json['speedMs'] as int : null,
         usable: json['usable'] ?? true,
+        apiDurationSec: _parseIntField(json['total_duration']),
       );
+}
+
+/// Safely parse an int from a dynamic JSON value (handles String, num, null).
+int? _parseIntField(dynamic v) {
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v);
+  return null;
 }
 
 /// Category item model

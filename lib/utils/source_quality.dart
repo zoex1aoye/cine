@@ -4,6 +4,10 @@
 /// - Quality tiers: 高清线路*, 极速蓝光, 高速蓝光, 蓝光线路, VIP线路
 /// - CDN mirrors: LZ线路, SN线路, … (ends with 线路, no quality keyword)
 /// - Short drama: source_config_name often "常规线路"
+import 'package:flutter/material.dart';
+
+import '../models/mubu_models.dart';
+
 enum QualityTier {
   hd,
   bluRay,
@@ -106,6 +110,48 @@ abstract final class SourceQuality {
         QualityTier.cdn => 'CDN',
         QualityTier.unknown => '',
       };
+
+  /// Standard resolution label from probe dimensions (e.g. 1080P, 720P, 4K).
+  static String? resolutionLabel(VideoSource s) {
+    final h = s.probeHeight;
+    final w = s.probeWidth;
+    if (h == null || w == null || h <= 0 || w <= 0) return null;
+    if (h >= 2160 || w >= 3840) return '4K';
+    if (h >= 1080 || w >= 1920) return '1080P';
+    if (h >= 720 || w >= 1280) return '720P';
+    if (h >= 480 || w >= 854) return '480P';
+    return '${h}P';
+  }
+
+  /// Higher rank = sharper stream (used for auto-pick and selector sort).
+  static int resolutionRank(VideoSource s) {
+    return switch (resolutionLabel(s)) {
+      '4K' => 5,
+      '1080P' => 4,
+      '720P' => 3,
+      '480P' => 2,
+      final _? => 1,
+      null => 0,
+    };
+  }
+
+  /// UI accent for resolution badges in the line selector.
+  static Color resolutionColor(VideoSource s) => switch (resolutionLabel(s)) {
+        '4K' => const Color(0xFFFFD700),
+        '1080P' => Colors.lightBlueAccent,
+        '720P' => Colors.white54,
+        '480P' => Colors.white38,
+        _ => Colors.white24,
+      };
+
+  /// Episode duration as MM:SS from probe or API fallback; null if unknown.
+  static String? formatDurationMmSs(VideoSource s) {
+    final totalSec = s.probeDurationSec ?? s.apiDurationSec ?? 0;
+    if (totalSec <= 0) return null;
+    final min = totalSec ~/ 60;
+    final sec = totalSec % 60;
+    return '${min.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+  }
 
   static String _normalize(String raw) => raw.toLowerCase().trim();
 }
