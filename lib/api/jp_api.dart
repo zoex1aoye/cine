@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:hive/hive.dart';
 import '../models/jp_models.dart';
 import '../models/mubu_hive.dart';
+import '../utils/detail_source_parse.dart';
 import 'jp_log.dart';
 
 /// 荐片 API 服务核心类 (单例)
@@ -489,6 +490,14 @@ class VideoSource {
   final String url;
   /// 项级配置名（source_config_name），与 name 不一致时更准确
   final String sourceConfigName;
+  /// API `weight`，集数主键（优先于 source_name 匹配）
+  final String weight;
+  /// 片头时长（秒），来自 time_data.titles_duration
+  final int titlesDurationSec;
+  /// 片尾时长（秒），来自 time_data.trailer_duration
+  final int trailerDurationSec;
+  /// 在 source_list_source 中的出现顺序，用于同分打破平局
+  final int listOrder;
   /// 并发测试得出的延迟网速（毫秒），若超时通常置为 999999
   int? speedMs;
   /// 线路可用状态标志。若握手或视频流校验失败会置为 false
@@ -499,8 +508,13 @@ class VideoSource {
     required this.sourceName,
     required this.url,
     this.sourceConfigName = '',
+    this.weight = '',
+    this.titlesDurationSec = 0,
+    this.trailerDurationSec = 0,
+    this.listOrder = 0,
     this.speedMs,
-  });
+    bool usable = true,
+  }) : usable = usable;
 }
 
 /// 视频详情（含剧集与线路）数据模型
@@ -521,47 +535,22 @@ class VideoDetail {
     this.sources = const [],
   });
 
-  /// 解析普通视频的 source_list_source / vip_source_list_source 数组或短剧的 playlist
   factory VideoDetail.fromJson(Map<String, dynamic> json) {
-    final sources = <VideoSource>[];
-
-    void appendSourceList(List? sourceList) {
-      if (sourceList == null) return;
-      for (final src in sourceList) {
-        if (src is! Map) continue;
-        final srcName = src['name']?.toString() ?? '';
-        for (final item in (src['source_list'] as List? ?? [])) {
-          if (item is! Map) continue;
-          final url = item['url']?.toString() ?? '';
-          if (url.isEmpty) continue;
-          sources.add(VideoSource(
-            name: srcName,
-            sourceName: item['source_name']?.toString() ?? '',
-            url: url,
-            sourceConfigName: item['source_config_name']?.toString() ?? '',
-          ));
-        }
-      }
-    }
-
-    // VIP 清晰度组优先，再合并常规 source_list_source（含 CDN 线路与高清组）
-    appendSourceList(json['vip_source_list_source'] as List?);
-    appendSourceList(json['source_list_source'] as List?);
-
-    // 2. 短剧分类：从 playlist 数据节点进行适配解析
-    final playlist = json['playlist'] as List?;
-    if (playlist != null) {
-      for (final item in playlist) {
-        final lineName = item['source_config_name']?.toString() ?? '常规线路';
-        final episodeTitle = item['title']?.toString() ?? '';
-        final playUrl = item['url']?.toString() ?? '';
-        sources.add(VideoSource(
-          name: lineName,
-          sourceName: episodeTitle,
-          url: playUrl,
-        ));
-      }
-    }
+    final sources = parseDetailSources(json)
+        .map(
+          (f) => VideoSource(
+            name: f.name,
+            sourceName: f.sourceName,
+            url: f.url,
+            sourceConfigName: f.sourceConfigName,
+            weight: f.weight,
+            titlesDurationSec: f.titlesDurationSec,
+            trailerDurationSec: f.trailerDurationSec,
+            listOrder: f.listOrder,
+            usable: f.usable,
+          ),
+        )
+        .toList();
 
     return VideoDetail(
       id: json['id'] ?? 0,
@@ -576,9 +565,14 @@ class VideoDetail {
   /// 获取当前线路集合中的首选/默认播放 URL（首集 + 质量/延迟策略需由 SourcePicker 在 UI 层应用）
   String? get bestUrl {
     if (sources.isEmpty) return null;
-    final firstEpisode = sources.first.sourceName;
-    final sameEp = sources.where((s) => s.sourceName == firstEpisode && s.usable);
-    if (sameEp.isEmpty) return sources.first.url;
+    final first = sources.first;
+    final ref = first.weight.isNotEmpty ? first.weight : first.sourceName;
+    final sameEp = sources.where(
+      (s) =>
+          (s.weight.isNotEmpty ? s.weight == ref : s.sourceName == ref) &&
+          s.usable,
+    );
+    if (sameEp.isEmpty) return first.url;
     return sameEp.first.url;
   }
 }

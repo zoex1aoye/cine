@@ -70,6 +70,7 @@ abstract final class StreamProbe {
     http.Client client, {
     String label = '',
     Duration timeout = _probeTimeout,
+    bool preferLowestVariant = false,
   }) async {
     final sw = Stopwatch()..start();
     try {
@@ -90,20 +91,26 @@ abstract final class StreamProbe {
       String? segmentUrl;
 
       if (isMasterPlaylist(body)) {
-        final variant = pickBestVariant(body, playlistUri);
+        final variant = preferLowestVariant
+            ? pickLowestVariant(body, playlistUri)
+            : pickBestVariant(body, playlistUri);
         if (variant == null) return StreamProbeResult.failed;
         bitrateKbps = variant.key ~/ 1000;
         final mediaResp = await client.get(variant.value).timeout(timeout);
         if (mediaResp.statusCode != 200) return StreamProbeResult.failed;
+        final mediaBody = mediaResp.body;
+        if (mediaBody.isEmpty || isMasterPlaylist(mediaBody)) {
+          return StreamProbeResult.failed;
+        }
         final resolution = parseResolutionFromInf(body) ??
-            parseResolutionFromInf(mediaResp.body);
+            parseResolutionFromInf(mediaBody);
         if (resolution != null) {
           width = resolution.$1;
           height = resolution.$2;
         }
-        segmentUrl = firstSegmentUrl(mediaResp.body, variant.value)?.toString();
+        segmentUrl = firstSegmentUrl(mediaBody, variant.value)?.toString();
         if (bitrateKbps == 0) {
-          bitrateKbps = (parseBandwidthFromInf(mediaResp.body) ?? 0) ~/ 1000;
+          bitrateKbps = (parseBandwidthFromInf(mediaBody) ?? 0) ~/ 1000;
         }
       } else {
         final resolution = parseResolutionFromInf(body);
@@ -134,6 +141,10 @@ abstract final class StreamProbe {
       }
 
       sw.stop();
+      if (segmentUrl == null || segmentUrl.isEmpty) {
+        return StreamProbeResult.failed;
+      }
+
       final tier = SourceQuality.tierFromProbe(
         width,
         height,
@@ -184,6 +195,34 @@ abstract final class StreamProbe {
     }
     if (bestUri == null) return null;
     return MapEntry(bestBw > 0 ? bestBw : 0, bestUri);
+  }
+
+  /// Returns (bandwidth, media playlist URI) for lowest-bandwidth variant.
+  static MapEntry<int, Uri>? pickLowestVariant(String masterContent, Uri baseUri) {
+    final lines = masterContent.split('\n');
+    var bestBw = 1 << 62;
+    Uri? bestUri;
+
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i].trim();
+      if (!line.startsWith('#EXT-X-STREAM-INF')) continue;
+      final bw = _attrInt(line, 'BANDWIDTH') ?? 0;
+      Uri? mediaUri;
+      for (var j = i + 1; j < lines.length; j++) {
+        final next = lines[j].trim();
+        if (next.isEmpty || next.startsWith('#')) continue;
+        mediaUri = baseUri.resolve(next);
+        break;
+      }
+      if (mediaUri == null) continue;
+      final effectiveBw = bw > 0 ? bw : 1 << 61;
+      if (effectiveBw < bestBw) {
+        bestBw = effectiveBw;
+        bestUri = mediaUri;
+      }
+    }
+    if (bestUri == null) return null;
+    return MapEntry(bestBw >= (1 << 62) ? 0 : bestBw, bestUri);
   }
 
   static Uri? firstSegmentUrl(String mediaContent, Uri baseUri) {

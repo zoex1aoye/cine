@@ -1,4 +1,5 @@
 import '../models/mubu_models.dart';
+import 'episode_utils.dart';
 import 'source_quality.dart';
 
 QualityTier _tier(VideoSource s) => SourceQuality.effectiveTierFor(
@@ -35,7 +36,7 @@ abstract final class SourcePicker {
     bool preferLowerTierOnWeakNet = false,
   }) {
     var candidates = sources.where((s) {
-      if (s.sourceName != episodeName) return false;
+      if (!matchesEpisode(s, episodeName)) return false;
       if (!s.usable) return false;
       if (excludeUrl != null && s.url == excludeUrl) return false;
       return true;
@@ -76,7 +77,7 @@ abstract final class SourcePicker {
   }) {
     final candidates = sources
         .where((s) =>
-            s.sourceName == episodeName &&
+            matchesEpisode(s, episodeName) &&
             s.usable &&
             s.url != excludeUrl)
         .toList();
@@ -111,7 +112,7 @@ abstract final class SourcePicker {
     var bestMs = 999999;
     for (var i = 0; i < sources.length; i++) {
       final s = sources[i];
-      if (episodeName != null && s.sourceName != episodeName) continue;
+      if (episodeName != null && !matchesEpisode(s, episodeName)) continue;
       if (withinTier != null && _tier(s) != withinTier) continue;
       if (!s.usable || s.speedMs == null) continue;
       final ms = s.speedMs!;
@@ -140,7 +141,10 @@ abstract final class SourcePicker {
     for (final s in list) {
       final tier = _tier(s);
       final existing = champions[tier];
-      if (existing == null || _latency(s) < _latency(existing)) {
+      if (existing == null ||
+          _latency(s) < _latency(existing) ||
+          (_latency(s) == _latency(existing) &&
+              s.listOrder < existing.listOrder)) {
         champions[tier] = s;
       }
     }
@@ -160,7 +164,7 @@ abstract final class SourcePicker {
     list.sort((a, b) {
       final lat = _latency(a).compareTo(_latency(b));
       if (lat != 0) return lat;
-      return SourceQuality.effectiveRankFor(
+      final tier = SourceQuality.effectiveRankFor(
         name: b.name,
         sourceConfigName: b.sourceConfigName,
         probedTier: b.probedTier,
@@ -171,6 +175,8 @@ abstract final class SourcePicker {
           probedTier: a.probedTier,
         ),
       );
+      if (tier != 0) return tier;
+      return a.listOrder.compareTo(b.listOrder);
     });
     return list.first;
   }

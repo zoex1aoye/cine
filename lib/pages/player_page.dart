@@ -11,6 +11,7 @@ import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
+import '../utils/episode_utils.dart';
 import '../utils/source_picker.dart';
 import '../utils/source_quality.dart';
 import '../utils/stream_probe.dart';
@@ -265,7 +266,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       );
       player = activePlayer;
       await activePlayer.initialize().timeout(
-        const Duration(seconds: 20),
+        const Duration(seconds: 30),
         onTimeout: () => throw TimeoutException('播放器加载超时'),
       );
       await activePlayer.pause();
@@ -451,7 +452,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     // 寻找当前集数中质量+延迟最优的备用线路（弱网允许低档）
     if (_sources.isEmpty) return;
-    final currentEpisode = _sources[_selectedSource].sourceName;
+    final currentEpisode = _currentEpisodeRef;
     final currentUrl = _sources[_selectedSource].url;
 
     final fallback = SourcePicker.pickMain(
@@ -469,15 +470,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  String get _currentEpisodeRef =>
+      _sources.isNotEmpty ? episodeRef(_sources[_selectedSource]) : '';
+
   String get _currentEpisodeName =>
       _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
   /// 测速完成后按「延迟池 + 同档最低延迟」选定推荐源
   Future<void> _applyRecommendedSource({bool autoInit = false}) async {
     if (_sources.isEmpty) return;
-    final episode = _currentEpisodeName.isNotEmpty
-        ? _currentEpisodeName
-        : _sources.first.sourceName;
+    final episode = _currentEpisodeRef.isNotEmpty
+        ? _currentEpisodeRef
+        : _sources.first.sourceName.isNotEmpty
+            ? episodeRef(_sources.first)
+            : '';
 
     final idx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
     if (idx == null) return;
@@ -518,11 +524,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// Re-enter 时根据保存的集数名 + 线路名选择播放源（三级优先级）
   void _applySavedEpisodeSelection() {
     if (_savedEpisodeName == null || _savedEpisodeName!.isEmpty) return;
+    final savedRef = _savedEpisodeName!;
     var matched = false;
-    // 优先级1: 精确匹配 — 同集数名 + 同线路名 + 可用
     if (_savedLineName != null && _savedLineName!.isNotEmpty) {
       final exactIdx = _sources.indexWhere((s) =>
-          s.sourceName == _savedEpisodeName &&
+          matchesEpisode(s, savedRef) &&
           s.name == _savedLineName &&
           s.usable &&
           s.speedMs != null &&
@@ -537,8 +543,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 优先级2: 集数名匹配（任意线路）
     if (!matched) {
       for (var i = 0; i < _sources.length; i++) {
-        if (_sources[i].sourceName == _savedEpisodeName && _sources[i].usable &&
-            _sources[i].speedMs != null && _sources[i].speedMs! < 999999) {
+        if (matchesEpisode(_sources[i], savedRef) &&
+            _sources[i].usable &&
+            _sources[i].speedMs != null &&
+            _sources[i].speedMs! < 999999) {
           _selectedSource = i;
           _currentUrl = _sources[i].url;
           matched = true;
@@ -551,7 +559,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (!matched && _fastestIndex != null) {
       final fastestLineName = _sources[_fastestIndex!].name;
       final matchIdx = _sources.indexWhere((s) =>
-          s.name == fastestLineName && s.sourceName == _savedEpisodeName && s.usable);
+          s.name == fastestLineName && matchesEpisode(s, savedRef) && s.usable);
       if (matchIdx != -1) {
         _selectedSource = matchIdx;
         _currentUrl = _sources[matchIdx].url;
@@ -564,14 +572,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   int _representativeIndexForLine(String lineName) {
-    final episode = _currentEpisodeName.isNotEmpty
-        ? _currentEpisodeName
+    final ref = _currentEpisodeRef.isNotEmpty
+        ? _currentEpisodeRef
         : (_savedEpisodeName?.isNotEmpty == true
             ? _savedEpisodeName!
-            : (_sources.isNotEmpty ? _sources.first.sourceName : ''));
-    if (episode.isNotEmpty) {
+            : (_sources.isNotEmpty ? episodeRef(_sources.first) : ''));
+    if (ref.isNotEmpty) {
       final episodeIdx = _sources.indexWhere(
-        (s) => s.name == lineName && s.sourceName == episode,
+        (s) => s.name == lineName && matchesEpisode(s, ref),
       );
       if (episodeIdx != -1) return episodeIdx;
     }
@@ -696,7 +704,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (!_playerInitialized) {
       final episode = _savedEpisodeName?.isNotEmpty == true
           ? _savedEpisodeName!
-          : (_sources.isNotEmpty ? _sources.first.sourceName : '');
+          : (_sources.isNotEmpty ? episodeRef(_sources.first) : '');
 
       int? championIdx;
       if (episode.isNotEmpty) {
@@ -789,6 +797,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _testLine(int index, http.Client client) async {
     if (_abortSpeedTest || index < 0 || index >= _sources.length) return;
     final src = _sources[index];
+    if (!src.url.startsWith('http')) {
+      src.applyProbeMetrics(usable: false, startupMs: 999999);
+      _writeProbeCache(src.name, src.url, src);
+      _propagateLineMetrics(src.name, src);
+      debugPrint('SPEED: [$index] ${src.name} skipped non-http URL');
+      return;
+    }
     final lineName = src.name;
     final url = src.url;
     final label =
@@ -934,7 +949,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   String _lineQualityCaption(String lineName) {
     var idx = _sources.indexWhere(
-      (s) => s.name == lineName && s.sourceName == _currentEpisodeName,
+      (s) => s.name == lineName && matchesEpisode(s, _currentEpisodeRef),
     );
     if (idx == -1) {
       idx = _sources.indexWhere((s) => s.name == lineName);
@@ -975,7 +990,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Color _qualityTierColor(String lineName) {
     var idx = _sources.indexWhere(
-      (s) => s.name == lineName && s.sourceName == _currentEpisodeName,
+      (s) => s.name == lineName && matchesEpisode(s, _currentEpisodeRef),
     );
     if (idx == -1) {
       idx = _sources.indexWhere((s) => s.name == lineName);
@@ -1020,11 +1035,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (newLineName == _selectedLineName) return;
     
     final currentEpisodeName = _sources[_selectedSource].sourceName;
+    final currentEpisodeRef = _currentEpisodeRef;
     int targetIdx = -1;
     for (var i = 0; i < _sources.length; i++) {
-      if (_sources[i].name == newLineName && _sources[i].sourceName == currentEpisodeName) {
+      if (_sources[i].name == newLineName &&
+          matchesEpisode(_sources[i], currentEpisodeRef)) {
         targetIdx = i;
         break;
+      }
+    }
+    
+    if (targetIdx == -1) {
+      for (var i = 0; i < _sources.length; i++) {
+        if (_sources[i].name == newLineName &&
+            _sources[i].sourceName == currentEpisodeName) {
+          targetIdx = i;
+          break;
+        }
       }
     }
     
@@ -1241,13 +1268,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   String? _getFastPreviewUrl() {
     if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
-    final currentEpisode = _sources[_selectedSource].sourceName;
+    final currentEpisode = _currentEpisodeRef;
     final currentUrl = _sources[_selectedSource].url;
     return SourcePicker.pickPreview(
       _sources,
       episodeName: currentEpisode,
       excludeUrl: currentUrl,
     )?.url;
+  }
+
+  /// Resume position with optional intro skip (titles_duration from API).
+  int? _playbackStartPositionMs() {
+    if (_selectedSource < 0 || _selectedSource >= _sources.length) return null;
+    final introMs = _sources[_selectedSource].titlesDurationSec * 1000;
+    var target = _savedPositionMs;
+    if (introMs > 0 && (target == null || target < introMs)) {
+      target = introMs;
+    }
+    if (target != null && target > 3000) return target;
+    if (introMs > 0) return introMs;
+    return null;
   }
 
   Widget _buildVideoPlayerContainer() {
@@ -1357,9 +1397,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             episodeName: episodeName,
                             lineName: lineName,
                           );
-                          // Resume from last saved position (only seek after play starts, buffer needs to be active)
-                          if (_savedPositionMs != null && _savedPositionMs! > 5000) {
-                            _player?.seek(Duration(milliseconds: _savedPositionMs!));
+                          final startMs = _playbackStartPositionMs();
+                          if (startMs != null) {
+                            _player?.seek(Duration(milliseconds: startMs));
                           }
                           // 启动弱网看门狗（播放开始后才激活，避免加载阶段误触发）
                           _startBufferingWatchdog();

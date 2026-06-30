@@ -1,5 +1,6 @@
 // lib/models/mubu_models.dart
 // Unified data models for Mubu client
+import '../utils/detail_source_parse.dart';
 import '../utils/source_quality.dart';
 
 /// Video item model
@@ -101,6 +102,10 @@ class VideoSource {
   final String sourceName;
   final String url;
   final String sourceConfigName;
+  final String weight;
+  final int titlesDurationSec;
+  final int trailerDurationSec;
+  final int listOrder;
   int? speedMs;
   bool usable;
   int? probeWidth;
@@ -115,6 +120,10 @@ class VideoSource {
     required this.sourceName,
     required this.url,
     this.sourceConfigName = '',
+    this.weight = '',
+    this.titlesDurationSec = 0,
+    this.trailerDurationSec = 0,
+    this.listOrder = 0,
     this.speedMs,
     this.usable = true,
     this.probeWidth,
@@ -278,14 +287,20 @@ class VideoDetail {
         description: json['description'] ?? '',
         score: json['score'] ?? '',
         year: json['year'] ?? '',
-        sources: (json['source_list_source'] as List? ?? [])
-            .expand((src) => (src['source_list'] as List? ?? [])
-                .map((item) => VideoSource(
-                      name: src['name'] ?? '',
-                      sourceName: item['source_name'] ?? '',
-                      url: item['url'] ?? '',
-                      sourceConfigName: item['source_config_name']?.toString() ?? '',
-                    )))
+        sources: parseDetailSources(json)
+            .map(
+              (f) => VideoSource(
+                name: f.name,
+                sourceName: f.sourceName,
+                url: f.url,
+                sourceConfigName: f.sourceConfigName,
+                weight: f.weight,
+                titlesDurationSec: f.titlesDurationSec,
+                trailerDurationSec: f.trailerDurationSec,
+                listOrder: f.listOrder,
+                usable: f.usable,
+              ),
+            )
             .toList(),
       );
 

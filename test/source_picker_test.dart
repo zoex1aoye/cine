@@ -44,6 +44,23 @@ void main() {
   });
 
   group('StreamProbe parsing', () {
+    test('pickLowestVariant selects lowest bandwidth', () {
+      const master = '''
+#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+high/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+low/index.m3u8
+''';
+      final result = StreamProbe.pickLowestVariant(
+        master,
+        Uri.parse('https://cdn.example.com/master.m3u8'),
+      );
+      expect(result, isNotNull);
+      expect(result!.key, 800000);
+      expect(result.value.toString(), contains('low/index.m3u8'));
+    });
+
     test('pickBestVariant selects highest bandwidth', () {
       const master = '''
 #EXTM3U
