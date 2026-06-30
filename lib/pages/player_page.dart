@@ -983,16 +983,29 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return indices;
   }
 
-  /// Long episode labels (e.g. movie versions like "BD英语中字") read poorly in
-  /// the fixed square grid, so we fall back to an auto-sizing wrap layout.
-  bool _episodesNeedWrap(List<int> epIndices) {
-    for (final i in epIndices) {
-      if (_sources[i].sourceName.length > 4) return true;
+  /// Grid metrics: equal-width cells; fewer/wider columns when labels are long.
+  (int crossAxisCount, double childAspectRatio) _episodeGridMetrics(
+    double width,
+    List<int> epIndices,
+  ) {
+    if (epIndices.isEmpty) {
+      final fallback = (width / 80).floor().clamp(3, 8);
+      return (fallback, 1.6);
     }
-    return false;
+
+    final hasLongLabel = epIndices.any((i) => _sources[i].sourceName.length > 4);
+    final compact = hasLongLabel || epIndices.length <= 8;
+
+    if (compact) {
+      final cross = width >= 900 ? 3 : 2;
+      return (cross, hasLongLabel ? 1.42 : 1.55);
+    }
+
+    final cross = (width / 72).floor().clamp(4, 10);
+    return (cross, 1.6);
   }
 
-  /// Episode grid: square cells for short labels, wrapped pills for long ones.
+  /// Episode grid with equal-width cells (no variable-width wrap).
   Widget _buildEpisodeGrid(
     List<int> epIndices, {
     bool closeOnTap = false,
@@ -1002,32 +1015,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (closeOnTap) Navigator.pop(context);
     }
 
-    if (_episodesNeedWrap(epIndices)) {
-      return Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          for (final sourceIdx in epIndices)
-            _EpisodeButton(
-              label: _sources[sourceIdx].sourceName,
-              duration: SourceQuality.formatDurationMmSs(_sources[sourceIdx]),
-              active: sourceIdx == _selectedSource,
-              flexible: true,
-              onTap: () => onTap(sourceIdx),
-            ),
-        ],
-      );
-    }
-
     return LayoutBuilder(
       builder: (context, constraints) {
-        final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
+        final (crossAxisCount, aspectRatio) =
+            _episodeGridMetrics(constraints.maxWidth, epIndices);
+
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: crossAxisCount,
-            childAspectRatio: 1.6,
+            childAspectRatio: aspectRatio,
             crossAxisSpacing: 8,
             mainAxisSpacing: 8,
           ),
@@ -1702,15 +1700,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   /// 加载中显示的剧集骨架屏
   Widget _buildEpisodeSkeleton() {
+    final epIndices = _currentLineSourceIndices;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final crossAxisCount = (constraints.maxWidth / 80).floor().clamp(3, 8);
+        final (crossAxisCount, aspectRatio) =
+            _episodeGridMetrics(constraints.maxWidth, epIndices);
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: crossAxisCount,
-            childAspectRatio: 1.6,
+            childAspectRatio: aspectRatio,
             crossAxisSpacing: 8,
             mainAxisSpacing: 8,
           ),
@@ -2150,17 +2150,12 @@ class _EpisodeButton extends StatefulWidget {
   final String label;
   final String? duration;
   final bool active;
-
-  /// When true, the button sizes to its content (for [Wrap] layouts with long
-  /// labels) and wraps text over up to two lines instead of clipping.
-  final bool flexible;
   final VoidCallback onTap;
 
   const _EpisodeButton({
     required this.label,
     this.duration,
     required this.active,
-    this.flexible = false,
     required this.onTap,
   });
 
@@ -2175,45 +2170,6 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
   Widget build(BuildContext context) {
     final active = widget.active;
     const primaryRed = Color(0xFFE50914);
-    final flexible = widget.flexible;
-
-    final content = Column(
-      mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment:
-          flexible ? CrossAxisAlignment.start : CrossAxisAlignment.center,
-      children: [
-        Text(
-          widget.label,
-          maxLines: flexible ? 2 : 1,
-          overflow: TextOverflow.ellipsis,
-          textAlign: flexible ? TextAlign.start : TextAlign.center,
-          style: TextStyle(
-            color: active
-                ? Colors.white
-                : (_hovered ? Colors.white : Colors.white60),
-            fontSize: 12,
-            height: 1.25,
-            fontWeight: active ? FontWeight.bold : FontWeight.w500,
-          ),
-        ),
-        if (widget.duration != null) ...[
-          const SizedBox(height: 3),
-          Text(
-            widget.duration!,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              color: active
-                  ? Colors.white70
-                  : (_hovered ? Colors.white54 : Colors.white38),
-              fontSize: 10,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ],
-    );
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -2224,47 +2180,88 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
-          constraints: flexible
-              ? const BoxConstraints(minWidth: 64, maxWidth: 220)
-              : null,
-          padding: flexible
-              ? const EdgeInsets.symmetric(horizontal: 14, vertical: 8)
-              : null,
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
           transform: _hovered
-              ? (Matrix4.identity()..scale(1.05))
+              ? (Matrix4.identity()..scale(1.02))
               : Matrix4.identity(),
           transformAlignment: Alignment.center,
           decoration: BoxDecoration(
             color: active
                 ? primaryRed
-                : (_hovered ? Colors.white.withOpacity(0.12) : Colors.white.withOpacity(0.05)),
-            borderRadius: BorderRadius.circular(8),
+                : (_hovered
+                    ? Colors.white.withOpacity(0.1)
+                    : Colors.white.withOpacity(0.05)),
+            borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: active
                   ? primaryRed
-                  : (_hovered ? Colors.white.withOpacity(0.2) : Colors.white.withOpacity(0.05)),
+                  : (_hovered
+                      ? Colors.white.withOpacity(0.18)
+                      : Colors.white.withOpacity(0.08)),
             ),
             boxShadow: active
                 ? [
                     BoxShadow(
-                      color: primaryRed.withOpacity(_hovered ? 0.55 : 0.35),
-                      blurRadius: _hovered ? 12 : 8,
-                      spreadRadius: 1,
-                      offset: Offset(0, _hovered ? 3 : 2),
-                    )
+                      color: primaryRed.withOpacity(_hovered ? 0.5 : 0.32),
+                      blurRadius: _hovered ? 10 : 6,
+                      offset: Offset(0, _hovered ? 2 : 1),
+                    ),
                   ]
-                : (_hovered
-                    ? [
-                        BoxShadow(
-                          color: Colors.white.withOpacity(0.05),
-                          blurRadius: 6,
-                          offset: const Offset(0, 2),
-                        )
-                      ]
-                    : null),
+                : null,
           ),
-          alignment: flexible ? null : Alignment.center,
-          child: content,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: Center(
+                  child: Text(
+                    widget.label,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: active
+                          ? Colors.white
+                          : (_hovered ? Colors.white : Colors.white60),
+                      fontSize: 12,
+                      height: 1.3,
+                      fontWeight: active ? FontWeight.bold : FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ),
+              if (widget.duration != null) ...[
+                const SizedBox(height: 6),
+                Center(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: active
+                          ? Colors.white.withOpacity(0.18)
+                          : Colors.white.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      widget.duration!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: active
+                            ? Colors.white.withOpacity(0.92)
+                            : (_hovered
+                                ? Colors.white54
+                                : Colors.white38),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -2308,7 +2305,7 @@ class _EpisodeSkeletonCellState extends State<_EpisodeSkeletonCell>
           child: Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(10),
             ),
           ),
         );
