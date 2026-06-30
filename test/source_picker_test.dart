@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cine/models/mubu_models.dart';
+import 'package:cine/utils/episode_utils.dart';
 import 'package:cine/utils/source_picker.dart';
 import 'package:cine/utils/source_quality.dart';
 import 'package:cine/utils/stream_probe.dart';
@@ -11,10 +12,12 @@ VideoSource _src(
   bool usable = true,
   int probeWidth = 1920,
   int probeHeight = 1080,
+  String weight = '',
 }) =>
     VideoSource(
       name: name,
       sourceName: ep,
+      weight: weight,
       url: 'https://example.com/$name/$ep.m3u8',
       playlistMs: ms,
       usable: usable,
@@ -120,10 +123,18 @@ seg001.ts
     });
   });
 
+  group('episodeRef / matchesEpisode', () {
+    test('episodeRef prefers source_name over weight', () {
+      final s = _src('SN线路', 'HD国语', 1, weight: 'mirror-w1');
+      expect(episodeRef(s), 'HD国语');
+      expect(matchesEpisode(_src('JS线路', 'HD国语', 1, weight: 'mirror-w2'), 'HD国语'), isTrue);
+    });
+  });
+
   group('SourcePicker.pickMain', () {
     const ep = '第01集';
 
-    test('same 1080P picks lowest latency', () {
+    test('close latency tie-breaks toward sharper resolution', () {
       final sources = [
         _src('流畅', ep, 80, probeWidth: 640, probeHeight: 360),
         _src('极速蓝光', ep, 95),
@@ -133,10 +144,19 @@ seg001.ts
       expect(picked?.name, '极速蓝光');
     });
 
-    test('picks highest resolution when latency OK', () {
+    test('large latency gap prefers faster line over resolution', () {
       final sources = [
         _src('720线', ep, 80, probeWidth: 1280, probeHeight: 720),
-        _src('1080线', ep, 120),
+        _src('1080线', ep, 300),
+      ];
+      final picked = SourcePicker.pickMain(sources, episodeName: ep);
+      expect(picked?.name, '720线');
+    });
+
+    test('resolution tie-breaks when latency is close', () {
+      final sources = [
+        _src('720线', ep, 100, probeWidth: 1280, probeHeight: 720),
+        _src('1080线', ep, 150),
       ];
       final picked = SourcePicker.pickMain(sources, episodeName: ep);
       expect(picked?.name, '1080线');
@@ -149,6 +169,17 @@ seg001.ts
       ];
       final picked = SourcePicker.pickMain(sources, episodeName: 'BD英语');
       expect(picked?.name, '高清线路3');
+    });
+
+    test('scopes CDN mirrors by shared source_name', () {
+      const epName = 'HD国语';
+      final sources = [
+        _src('高速蓝光', epName, 1200, weight: 'w-bluray'),
+        _src('SN线路', epName, 309, probeWidth: 1280, probeHeight: 720, weight: 'w-sn'),
+        _src('JS线路', epName, 365, weight: 'w-js'),
+      ];
+      final picked = SourcePicker.pickMain(sources, episodeName: epName);
+      expect(picked?.name, 'SN线路');
     });
 
     test('indexOfFastest within resolution returns lowest ms', () {

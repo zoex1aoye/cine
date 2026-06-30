@@ -468,7 +468,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String get _currentEpisodeName =>
       _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
-  /// 测速完成后按「延迟池 + 同档最低延迟」选定推荐源
+  /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源
   Future<void> _applyRecommendedSource({bool autoInit = false}) async {
     if (_sources.isEmpty) return;
     final episode = _currentEpisodeRef.isNotEmpty
@@ -561,18 +561,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   int _representativeIndexForLine(String lineName) {
-    final ref = _currentEpisodeRef.isNotEmpty
-        ? _currentEpisodeRef
-        : (_savedEpisodeName?.isNotEmpty == true
-            ? _savedEpisodeName!
-            : (_sources.isNotEmpty ? episodeRef(_sources.first) : ''));
-    if (ref.isNotEmpty) {
-      final episodeIdx = _sources.indexWhere(
-        (s) => s.name == lineName && matchesEpisode(s, ref),
-      );
-      if (episodeIdx != -1) return episodeIdx;
-    }
-    return _sources.indexWhere((s) => s.name == lineName);
+    final ref = _episodeScopeRef;
+    if (ref.isEmpty) return -1;
+    return _sources.indexWhere(
+      (s) => s.name == lineName && matchesEpisode(s, ref),
+    );
+  }
+
+  String get _episodeScopeRef {
+    if (_currentEpisodeRef.isNotEmpty) return _currentEpisodeRef;
+    if (_savedEpisodeName?.isNotEmpty == true) return _savedEpisodeName!;
+    if (_sources.isNotEmpty) return episodeRef(_sources.first);
+    return '';
   }
 
   void _applyProbeRecord(VideoSource target, SourceProbeRecord record) {
@@ -637,10 +637,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final indices = <int>[];
     for (var i = 0; i < _sources.length; i++) {
       final lineName = _sources[i].name;
-      if (!uniqueLines.contains(lineName)) {
-        uniqueLines.add(lineName);
-        indices.add(_representativeIndexForLine(lineName));
-      }
+      if (uniqueLines.contains(lineName)) continue;
+      final repIdx = _representativeIndexForLine(lineName);
+      if (repIdx < 0) continue;
+      uniqueLines.add(lineName);
+      indices.add(repIdx);
     }
 
     if (_savedLineName != null && _savedLineName!.isNotEmpty) {
@@ -680,9 +681,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     // 2. Champion 快启：缓存命中的推荐线路复测阶段 1+2
     if (!_playerInitialized) {
-      final episode = _savedEpisodeName?.isNotEmpty == true
-          ? _savedEpisodeName!
-          : (_sources.isNotEmpty ? episodeRef(_sources.first) : '');
+      final episode = _episodeScopeRef;
 
       int? championIdx;
       if (episode.isNotEmpty) {
@@ -929,18 +928,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           : null;
 
   VideoSource? _representativeForLine(String lineName) {
-    var idx = _sources.indexWhere(
-      (s) => s.name == lineName && matchesEpisode(s, _currentEpisodeRef),
+    final ref = _episodeScopeRef;
+    if (ref.isEmpty) return null;
+    final idx = _sources.indexWhere(
+      (s) => s.name == lineName && matchesEpisode(s, ref),
     );
-    if (idx == -1) {
-      idx = _sources.indexWhere((s) => s.name == lineName);
-    }
     return idx != -1 ? _sources[idx] : null;
   }
 
   String _lineQualityCaption(String lineName) {
     final s = _representativeForLine(lineName);
-    if (s == null) return lineName;
+    if (s == null) return '无当前集';
     if (s.playlistMs == null) return '检测中…';
     return SourceQuality.resolutionLabel(s) ?? lineName;
   }
@@ -958,28 +956,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   bool _isLineUsable(String lineName) {
     final s = _representativeForLine(lineName);
-    return s?.usable ?? true;
+    return s != null && s.usable;
   }
 
-  /// Sort by probe resolution ↓ → duration ↓ → bitrate → latency ↑.
+  /// Sort by startup latency ↑, then sharper probe resolution.
   int _compareLineForSelector(String a, String b) {
     final sA = _representativeForLine(a);
     final sB = _representativeForLine(b);
-    final rankA = sA != null ? SourceQuality.resolutionRank(sA) : 0;
-    final rankB = sB != null ? SourceQuality.resolutionRank(sB) : 0;
-    if (rankA != rankB) return rankB.compareTo(rankA);
-
-    final minA = sA?.durationMinute ?? 0;
-    final minB = sB?.durationMinute ?? 0;
-    if (minA != minB) return minB.compareTo(minA);
-
-    final brA = (sA?.probeBitrateKbps ?? 0) > 0;
-    final brB = (sB?.probeBitrateKbps ?? 0) > 0;
-    if (brA != brB) return brA ? -1 : 1;
-
     final latA = sA?.playlistMs ?? 999999;
     final latB = sB?.playlistMs ?? 999999;
-    return latA.compareTo(latB);
+    if (latA != latB) return latA.compareTo(latB);
+
+    final rankA = sA != null ? SourceQuality.resolutionRank(sA) : 0;
+    final rankB = sB != null ? SourceQuality.resolutionRank(sB) : 0;
+    return rankB.compareTo(rankA);
   }
 
   List<int> get _currentLineSourceIndices {

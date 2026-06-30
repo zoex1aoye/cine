@@ -2,12 +2,15 @@ import '../models/mubu_models.dart';
 import 'episode_utils.dart';
 import 'source_quality.dart';
 
-/// Picks playback sources: latency pool → highest probe resolution → duration ranking.
+/// Picks playback sources: latency-first within pools, resolution tie-break when close.
 ///
 /// Selection uses probe-derived labels (1080P, 720P, …), not API line names.
 abstract final class SourcePicker {
   static const latencyGood = 500;
   static const latencyAcceptable = 800;
+
+  /// When two lines are within this startup gap, prefer sharper probe resolution.
+  static const latencyTieBreakMs = 50;
 
   static int? pickMainIndex(
     List<VideoSource> sources, {
@@ -56,7 +59,7 @@ abstract final class SourcePicker {
     );
     if (ok != null) return ok;
 
-    return _bestByDurationThenLatency(candidates);
+    return _bestByLatencyThenResolution(candidates);
   }
 
   /// Low-resolution alternate line for scrub preview warm-up.
@@ -76,16 +79,11 @@ abstract final class SourcePicker {
     final lowRes =
         candidates.where((s) => SourceQuality.resolutionRank(s) <= 3).toList();
     if (lowRes.isNotEmpty) {
-      lowRes.sort((a, b) {
-        final rankCmp = SourceQuality.resolutionRank(a)
-            .compareTo(SourceQuality.resolutionRank(b));
-        if (rankCmp != 0) return rankCmp;
-        return _latency(a).compareTo(_latency(b));
-      });
+      lowRes.sort(_compareLatencyThenResolution);
       return lowRes.first;
     }
 
-    return _bestByDurationThenLatency(candidates);
+    return _bestByLatencyThenResolution(candidates);
   }
 
   /// Best usable source at [resolutionLabel] (e.g. 1080P), scoped to [episodeName]
@@ -109,7 +107,7 @@ abstract final class SourcePicker {
     }
 
     if (candidates.isEmpty) return null;
-    return _bestByDurationThenLatency(candidates);
+    return _bestByLatencyThenResolution(candidates);
   }
 
   /// Fastest source within [withinResolution] and same max-minute bucket.
@@ -186,48 +184,32 @@ abstract final class SourcePicker {
     if (pool.isEmpty) return null;
     final tested = pool.where((s) => _latency(s) <= maxMs).toList();
     if (tested.isEmpty) return null;
-    return _pickBestResolutionChampion(tested);
+    tested.sort(_compareLatencyThenResolution);
+    return tested.first;
   }
 
-  /// Per-resolution champion; pick the sharpest resolution bucket.
-  static VideoSource? _pickBestResolutionChampion(List<VideoSource> list) {
+  static VideoSource? _bestByLatencyThenResolution(List<VideoSource> list) {
     if (list.isEmpty) return null;
+    final ranked = List<VideoSource>.from(list)..sort(_compareLatencyThenResolution);
+    return ranked.first;
+  }
 
-    final champions = <String, VideoSource>{};
-    for (final s in list) {
-      final label = SourceQuality.resolutionLabel(s) ?? '_unknown';
-      final existing = champions[label];
-      if (existing == null || _compareDurationThenLatency(s, existing) < 0) {
-        champions[label] = s;
-      }
+  static int _compareLatencyThenResolution(VideoSource a, VideoSource b) {
+    final latA = _latency(a);
+    final latB = _latency(b);
+    final diff = latA - latB;
+    if (diff.abs() > latencyTieBreakMs) {
+      return latA.compareTo(latB);
     }
 
-    String? bestLabel;
-    var bestRank = -1;
-    for (final entry in champions.entries) {
-      final rank = entry.key == '_unknown'
-          ? 0
-          : SourceQuality.resolutionRank(entry.value);
-      if (rank > bestRank) {
-        bestRank = rank;
-        bestLabel = entry.key;
-      }
-    }
-    return bestLabel != null ? champions[bestLabel] : null;
+    final resCmp =
+        SourceQuality.resolutionRank(b).compareTo(SourceQuality.resolutionRank(a));
+    if (resCmp != 0) return resCmp;
+    if (diff != 0) return latA.compareTo(latB);
+    return _compareDurationThenBitrateThenOrder(a, b);
   }
 
-  static VideoSource? _bestByDurationThenLatency(List<VideoSource> list) {
-    if (list.isEmpty) return null;
-    list.sort((a, b) {
-      final resCmp =
-          SourceQuality.resolutionRank(b).compareTo(SourceQuality.resolutionRank(a));
-      if (resCmp != 0) return resCmp;
-      return _compareDurationThenLatency(a, b);
-    });
-    return list.first;
-  }
-
-  static int _compareDurationThenLatency(VideoSource a, VideoSource b) {
+  static int _compareDurationThenBitrateThenOrder(VideoSource a, VideoSource b) {
     final aHasBitrate = (a.probeBitrateKbps ?? 0) > 0;
     final bHasBitrate = (b.probeBitrateKbps ?? 0) > 0;
     if (aHasBitrate != bHasBitrate) return aHasBitrate ? -1 : 1;
