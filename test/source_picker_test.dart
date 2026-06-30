@@ -16,7 +16,7 @@ VideoSource _src(
       name: name,
       sourceName: ep,
       url: 'https://example.com/$name/$ep.m3u8',
-      speedMs: ms,
+      playlistMs: ms,
       usable: usable,
       probeWidth: probeWidth,
       probeHeight: probeHeight,

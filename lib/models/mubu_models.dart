@@ -101,7 +101,6 @@ class VideoSource {
   final String sourceName;
   final String url;
   final String sourceConfigName;
-  int? speedMs;
   bool usable;
   int? probeWidth;
   int? probeHeight;
@@ -131,7 +130,6 @@ class VideoSource {
     required this.sourceName,
     required this.url,
     this.sourceConfigName = '',
-    this.speedMs,
     this.usable = true,
     this.probeWidth,
     this.probeHeight,
@@ -146,8 +144,7 @@ class VideoSource {
 
   void applyProbeMetrics({
     required bool usable,
-    required int startupMs,
-    int? playlistMs,
+    required int playlistMs,
     int? probeWidth,
     int? probeHeight,
     int? probeBitrateKbps,
@@ -157,9 +154,8 @@ class VideoSource {
     bool? probeHasEndlist,
   }) {
     this.usable = usable;
-    speedMs = startupMs;
+    this.playlistMs = playlistMs;
     if (usable) {
-      this.playlistMs = playlistMs;
       this.probeWidth = probeWidth;
       this.probeHeight = probeHeight;
       this.probeBitrateKbps = probeBitrateKbps;
@@ -168,7 +164,6 @@ class VideoSource {
       this.probeDurationSec = probeDurationSec;
       this.probeHasEndlist = probeHasEndlist;
     } else {
-      this.playlistMs = null;
       this.probeWidth = null;
       this.probeHeight = null;
       this.probeBitrateKbps = null;
@@ -181,7 +176,6 @@ class VideoSource {
 
   void copyProbeFrom(VideoSource other) {
     usable = other.usable;
-    speedMs = other.speedMs;
     playlistMs = other.playlistMs;
     probeWidth = other.probeWidth;
     probeHeight = other.probeHeight;
@@ -198,7 +192,6 @@ class VideoSource {
         sourceName: json['source_name'] ?? '',
         url: json['url'] ?? '',
         sourceConfigName: json['source_config_name'] ?? json['sourceConfigName'] ?? '',
-        speedMs: json['speedMs'] != null ? json['speedMs'] as int : null,
         usable: json['usable'] ?? true,
         apiDurationSec: _parseIntField(json['total_duration']),
       );

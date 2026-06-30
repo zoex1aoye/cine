@@ -209,5 +209,5 @@ abstract final class SourcePicker {
     return _latency(a).compareTo(_latency(b));
   }
 
-  static int _latency(VideoSource s) => s.playlistMs ?? s.speedMs ?? 999999;
+  static int _latency(VideoSource s) => s.playlistMs ?? 999999;
 }

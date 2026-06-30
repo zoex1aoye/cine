@@ -455,7 +455,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     if (fallback != null) {
       final idx = _sources.indexOf(fallback);
-      debugPrint('PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.speedMs}ms)');
+      debugPrint('PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.playlistMs}ms)');
       _lastAutoSwitchMs = now;
       _switchSource(idx);
     }
@@ -490,7 +490,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (autoInit && !_playerInitialized) {
       _selectedSource = idx;
       _currentUrl = _sources[idx].url;
-      debugPrint('PLAYER: auto-pick ${resolution ?? _sources[idx].name} (${_sources[idx].playlistMs ?? _sources[idx].speedMs}ms) for $episode');
+      debugPrint('PLAYER: auto-pick ${resolution ?? _sources[idx].name} (${_sources[idx].playlistMs}ms) for $episode');
       if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
       await _initPlayer();
     } else if (shouldUpgrade) {
@@ -514,8 +514,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           s.sourceName == _savedEpisodeName &&
           s.name == _savedLineName &&
           s.usable &&
-          s.speedMs != null &&
-          s.speedMs! < 999999);
+          s.playlistMs != null &&
+          s.playlistMs! < 999999);
       if (exactIdx != -1) {
         _selectedSource = exactIdx;
         _currentUrl = _sources[exactIdx].url;
@@ -527,7 +527,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (!matched) {
       for (var i = 0; i < _sources.length; i++) {
         if (_sources[i].sourceName == _savedEpisodeName && _sources[i].usable &&
-            _sources[i].speedMs != null && _sources[i].speedMs! < 999999) {
+            _sources[i].playlistMs != null && _sources[i].playlistMs! < 999999) {
           _selectedSource = i;
           _currentUrl = _sources[i].url;
           matched = true;
@@ -575,25 +575,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       tier = QualityTier.values[record.effectiveTierIndex];
     }
 
-    // New caches store startupMs in latencyMs; legacy stored playlist-only.
-    var startupMs = record.latencyMs;
-    int? playlistMs;
-    if (record.usable && record.firstFrameMs > 0) {
-      if (record.latencyMs < record.firstFrameMs) {
-        startupMs = record.latencyMs + record.firstFrameMs;
-        playlistMs = record.latencyMs;
-      } else {
-        playlistMs = record.latencyMs - record.firstFrameMs;
-        if (playlistMs <= 0) playlistMs = null;
-      }
-    } else if (record.usable) {
-      playlistMs = record.latencyMs;
-    }
-
     target.applyProbeMetrics(
       usable: record.usable,
-      startupMs: startupMs,
-      playlistMs: playlistMs,
+      playlistMs: record.latencyMs,
       probeWidth: record.usable && record.width > 0 ? record.width : null,
       probeHeight: record.usable && record.height > 0 ? record.height : null,
       probeBitrateKbps:
@@ -623,7 +607,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       SourceProbeRecord(
         probeUrl: probeUrl,
         usable: src.usable,
-        latencyMs: src.speedMs ?? 999999,
+        latencyMs: src.playlistMs ?? 999999,
         width: src.probeWidth ?? 0,
         height: src.probeHeight ?? 0,
         bitrateKbps: src.probeBitrateKbps ?? 0,
@@ -696,8 +680,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (episode.isNotEmpty) {
         championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
         if (championIdx != null) {
-          final speed = _sources[championIdx].speedMs;
-          if (speed == null || speed >= SourcePicker.latencyGood) {
+          final latency = _sources[championIdx].playlistMs;
+          if (latency == null || latency >= SourcePicker.latencyGood) {
             championIdx = null;
           }
         }
@@ -709,13 +693,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         debugPrint(
           'PLAYER: Champion $lineName cached — re-testing rep idx $repIdx...',
         );
-        _sources[repIdx].speedMs = null;
+        _sources[repIdx].playlistMs = null;
         await _testLine(repIdx, _client!);
 
         if (!_disposed &&
             _sources[repIdx].usable &&
-            _sources[repIdx].speedMs != null &&
-            _sources[repIdx].speedMs! < SourcePicker.latencyGood) {
+            _sources[repIdx].playlistMs != null &&
+            _sources[repIdx].playlistMs! < SourcePicker.latencyGood) {
           final playIdx =
               SourcePicker.pickMainIndex(_sources, episodeName: episode) ??
                   championIdx;
@@ -723,7 +707,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           _currentUrl = _sources[playIdx].url;
           _recommendedLineName = _sources[playIdx].name;
           debugPrint(
-            'PLAYER: Champion re-test passed (${_sources[repIdx].speedMs}ms) — init',
+            'PLAYER: Champion re-test passed (${_sources[repIdx].playlistMs}ms) — init',
           );
           if (mounted) setState(() => _stage = LoadingStage.initPlayer);
           await _initPlayer();
@@ -736,7 +720,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     // 3. 剩余 distinct 线路并行两阶段检测
     final pending =
-        indices.where((idx) => idx >= 0 && _sources[idx].speedMs == null).toList();
+        indices.where((idx) => idx >= 0 && _sources[idx].playlistMs == null).toList();
     if (pending.isNotEmpty && !_disposed && !_abortSpeedTest) {
       await Future.wait(pending.map((idx) async {
         if (_disposed || _abortSpeedTest) return;
@@ -773,7 +757,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     await _applyRecommendedSource(autoInit: !_playerInitialized);
 
-    final usable = _sources.where((s) => s.usable && s.speedMs != null).length;
+    final usable = _sources.where((s) => s.usable && s.playlistMs != null).length;
     debugPrint(
       'SPEED: done | tested=$_testedCount usable=$usable recommended=$_recommendedLineName',
     );
@@ -791,7 +775,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     try {
       final available = await StreamProbe.checkAvailability(url, client);
       if (!available) {
-        src.applyProbeMetrics(usable: false, startupMs: 999999);
+        src.applyProbeMetrics(usable: false, playlistMs: 999999);
         _writeProbeCache(lineName, url, src);
         _propagateLineMetrics(lineName, src);
         debugPrint('SPEED: [$index] $lineName availability ❌');
@@ -802,8 +786,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (result.success) {
         src.applyProbeMetrics(
           usable: true,
-          startupMs: result.selectionMs,
-          playlistMs: result.playlistMs > 0 ? result.playlistMs : null,
+          playlistMs: result.playlistMs > 0 ? result.playlistMs : 999999,
           probeWidth: result.width > 0 ? result.width : null,
           probeHeight: result.height > 0 ? result.height : null,
           probeBitrateKbps:
@@ -814,17 +797,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           probeHasEndlist: result.hasEndlist,
         );
       } else {
-        src.applyProbeMetrics(usable: false, startupMs: 999999);
+        src.applyProbeMetrics(usable: false, playlistMs: 999999);
       }
       _writeProbeCache(lineName, url, src);
       _propagateLineMetrics(lineName, src);
       debugPrint(
-        'SPEED: [$index] $lineName 起播${src.speedMs}ms '
+        'SPEED: [$index] $lineName 清单${src.playlistMs}ms '
         '(清单${result.playlistMs}ms 首段${result.firstFrameMs}ms) '
         '${result.success ? "✅ ${src.probeWidth}x${src.probeHeight}" : "❌"}',
       );
     } catch (e) {
-      src.applyProbeMetrics(usable: false, startupMs: 999999);
+      src.applyProbeMetrics(usable: false, playlistMs: 999999);
       _writeProbeCache(lineName, url, src);
       _propagateLineMetrics(lineName, src);
       debugPrint('SPEED: [$index] $lineName ERROR: $e');
@@ -943,7 +926,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String _lineQualityCaption(String lineName) {
     final s = _representativeForLine(lineName);
     if (s == null) return lineName;
-    if (s.speedMs == null) return '检测中…';
+    if (s.playlistMs == null) return '检测中…';
     return SourceQuality.resolutionLabel(s) ?? lineName;
   }
 
@@ -955,7 +938,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   int? _lineSpeed(String lineName) {
     final s = _representativeForLine(lineName);
-    return s?.playlistMs ?? s?.speedMs;
+    return s?.playlistMs;
   }
 
   bool _isLineUsable(String lineName) {
@@ -979,8 +962,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final brB = (sB?.probeBitrateKbps ?? 0) > 0;
     if (brA != brB) return brA ? -1 : 1;
 
-    final latA = sA?.playlistMs ?? sA?.speedMs ?? 999999;
-    final latB = sB?.playlistMs ?? sB?.speedMs ?? 999999;
+    final latA = sA?.playlistMs ?? 999999;
+    final latB = sB?.playlistMs ?? 999999;
     return latA.compareTo(latB);
   }
 
@@ -1565,10 +1548,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          _speedDot(_sources.isNotEmpty ? _sources[_selectedSource].speedMs : null),
+                          _speedDot(_sources.isNotEmpty ? _sources[_selectedSource].playlistMs : null),
                           const SizedBox(width: 6),
                           Text(
-                            '${_selectedLineName.isNotEmpty ? _selectedLineName : '清晰度'} · ${_speedLabel(_sources[_selectedSource].speedMs)}',
+                            '${_selectedLineName.isNotEmpty ? _selectedLineName : '清晰度'} · ${_speedLabel(_sources[_selectedSource].playlistMs)}',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 10,
