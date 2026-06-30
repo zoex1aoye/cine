@@ -89,8 +89,8 @@ class JpApiClientImpl implements MubuApiClient {
                 titlesDurationSec: s.titlesDurationSec,
                 trailerDurationSec: s.trailerDurationSec,
                 listOrder: s.listOrder,
-                speedMs: s.speedMs,
                 usable: s.usable,
+                apiDurationSec: s.apiDurationSec,
               ))
           .toList(),
     );

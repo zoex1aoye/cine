@@ -2,20 +2,16 @@ import '../models/mubu_models.dart';
 import 'episode_utils.dart';
 import 'source_quality.dart';
 
-QualityTier _tier(VideoSource s) => SourceQuality.effectiveTierFor(
-      name: s.name,
-      sourceConfigName: s.sourceConfigName,
-      probedTier: s.probedTier,
-    );
-
-/// Picks playback sources: latency pool → highest tier → min latency within tier.
+/// Picks playback sources: latency pool → highest probe resolution → duration ranking.
+///
+/// Selection uses probe-derived labels (1080P, 720P, …), not API line names.
 abstract final class SourcePicker {
   static const latencyGood = 500;
   static const latencyAcceptable = 800;
 
   static int? pickMainIndex(
     List<VideoSource> sources, {
-    required String episodeName,
+    String? episodeName,
     String? excludeUrl,
     bool preferLowerTierOnWeakNet = false,
   }) {
@@ -31,25 +27,18 @@ abstract final class SourcePicker {
 
   static VideoSource? pickMain(
     List<VideoSource> sources, {
-    required String episodeName,
+    String? episodeName,
     String? excludeUrl,
     bool preferLowerTierOnWeakNet = false,
   }) {
-    var candidates = sources.where((s) {
-      if (!matchesEpisode(s, episodeName)) return false;
-      if (!s.usable) return false;
-      if (excludeUrl != null && s.url == excludeUrl) return false;
-      return true;
-    }).toList();
-
+    final candidates = _candidates(sources, episodeName: episodeName, excludeUrl: excludeUrl);
     if (candidates.isEmpty) return null;
 
     if (preferLowerTierOnWeakNet) {
       final low = _pickFromPool(
-        candidates.where((s) {
-          final t = _tier(s);
-          return t == QualityTier.smooth || t == QualityTier.sd;
-        }).toList(),
+        candidates
+            .where((s) => SourceQuality.resolutionRank(s) <= 3)
+            .toList(),
         latencyGood,
       );
       if (low != null) return low;
@@ -67,9 +56,10 @@ abstract final class SourcePicker {
     );
     if (ok != null) return ok;
 
-    return _bestByLatencyThenTier(candidates);
+    return _bestByDurationThenLatency(candidates);
   }
 
+  /// Low-resolution alternate line for scrub preview warm-up.
   static VideoSource? pickPreview(
     List<VideoSource> sources, {
     required String episodeName,
@@ -83,40 +73,85 @@ abstract final class SourcePicker {
         .toList();
     if (candidates.isEmpty) return null;
 
-    final lowTiers = candidates.where((s) {
-      final t = _tier(s);
-      return t == QualityTier.smooth || t == QualityTier.sd;
-    }).toList();
-
-    if (lowTiers.isNotEmpty) {
-      lowTiers.sort((a, b) {
-        final ta = _tier(a);
-        final tb = _tier(b);
-        if (ta == QualityTier.smooth && tb != QualityTier.smooth) return -1;
-        if (tb == QualityTier.smooth && ta != QualityTier.smooth) return 1;
+    final lowRes =
+        candidates.where((s) => SourceQuality.resolutionRank(s) <= 3).toList();
+    if (lowRes.isNotEmpty) {
+      lowRes.sort((a, b) {
+        final rankCmp = SourceQuality.resolutionRank(a)
+            .compareTo(SourceQuality.resolutionRank(b));
+        if (rankCmp != 0) return rankCmp;
         return _latency(a).compareTo(_latency(b));
       });
-      return lowTiers.first;
+      return lowRes.first;
     }
 
-    return _bestByLatencyThenTier(candidates);
+    return _bestByDurationThenLatency(candidates);
   }
 
-  /// Fastest source within [withinTier] (same episode); omit tier for global fastest.
+  /// Best usable source at [resolutionLabel] (e.g. 1080P), scoped to [episodeName]
+  /// when possible, otherwise any matching version group.
+  static VideoSource? pickForResolution(
+    List<VideoSource> sources, {
+    required String resolutionLabel,
+    String? episodeName,
+    String? excludeUrl,
+  }) {
+    var candidates = sources.where((s) {
+      if (!s.usable) return false;
+      if (excludeUrl != null && s.url == excludeUrl) return false;
+      return SourceQuality.resolutionLabel(s) == resolutionLabel;
+    }).toList();
+
+    if (episodeName != null && episodeName.isNotEmpty) {
+      final scoped =
+          candidates.where((s) => matchesEpisode(s, episodeName)).toList();
+      if (scoped.isNotEmpty) candidates = scoped;
+    }
+
+    if (candidates.isEmpty) return null;
+    return _bestByDurationThenLatency(candidates);
+  }
+
+  /// Fastest source within [withinResolution] and same max-minute bucket.
   static int? indexOfFastest(
     List<VideoSource> sources, {
     String? episodeName,
-    QualityTier? withinTier,
+    String? withinResolution,
   }) {
+    var maxMinute = 0;
+    for (final s in sources) {
+      if (episodeName != null &&
+          episodeName.isNotEmpty &&
+          !matchesEpisode(s, episodeName)) {
+        continue;
+      }
+      if (withinResolution != null &&
+          SourceQuality.resolutionLabel(s) != withinResolution) {
+        continue;
+      }
+      if (!s.usable) continue;
+      final ms = _latency(s);
+      if (ms >= 999999) continue;
+      if (s.durationMinute > maxMinute) maxMinute = s.durationMinute;
+    }
+
     int? bestIdx;
     var bestMs = 999999;
     for (var i = 0; i < sources.length; i++) {
       final s = sources[i];
-      if (episodeName != null && !matchesEpisode(s, episodeName)) continue;
-      if (withinTier != null && _tier(s) != withinTier) continue;
-      if (!s.usable || s.speedMs == null) continue;
-      final ms = s.speedMs!;
+      if (episodeName != null &&
+          episodeName.isNotEmpty &&
+          !matchesEpisode(s, episodeName)) {
+        continue;
+      }
+      if (withinResolution != null &&
+          SourceQuality.resolutionLabel(s) != withinResolution) {
+        continue;
+      }
+      if (!s.usable) continue;
+      final ms = _latency(s);
       if (ms >= 999999) continue;
+      if (s.durationMinute < maxMinute) continue;
       if (ms < bestMs) {
         bestMs = ms;
         bestIdx = i;
@@ -125,61 +160,86 @@ abstract final class SourcePicker {
     return bestIdx;
   }
 
+  /// Episode-scoped usable sources; falls back to all usable when the group is empty.
+  static List<VideoSource> _candidates(
+    List<VideoSource> sources, {
+    String? episodeName,
+    String? excludeUrl,
+  }) {
+    bool matches(VideoSource s) {
+      if (!s.usable) return false;
+      if (excludeUrl != null && s.url == excludeUrl) return false;
+      return true;
+    }
+
+    if (episodeName != null && episodeName.isNotEmpty) {
+      final scoped = sources
+          .where((s) => matchesEpisode(s, episodeName) && matches(s))
+          .toList();
+      if (scoped.isNotEmpty) return scoped;
+    }
+
+    return sources.where(matches).toList();
+  }
+
   static VideoSource? _pickFromPool(List<VideoSource> pool, int maxMs) {
     if (pool.isEmpty) return null;
-    final tested =
-        pool.where((s) => s.speedMs != null && s.speedMs! <= maxMs).toList();
+    final tested = pool.where((s) => _latency(s) <= maxMs).toList();
     if (tested.isEmpty) return null;
-    return _pickBestTierChampion(tested);
+    return _pickBestResolutionChampion(tested);
   }
 
-  /// Per-tier min latency champion, then highest-rank tier wins.
-  static VideoSource? _pickBestTierChampion(List<VideoSource> list) {
+  /// Per-resolution champion; pick the sharpest resolution bucket.
+  static VideoSource? _pickBestResolutionChampion(List<VideoSource> list) {
     if (list.isEmpty) return null;
 
-    final champions = <QualityTier, VideoSource>{};
+    final champions = <String, VideoSource>{};
     for (final s in list) {
-      final tier = _tier(s);
-      final existing = champions[tier];
-      if (existing == null ||
-          _latency(s) < _latency(existing) ||
-          (_latency(s) == _latency(existing) &&
-              s.listOrder < existing.listOrder)) {
-        champions[tier] = s;
+      final label = SourceQuality.resolutionLabel(s) ?? '_unknown';
+      final existing = champions[label];
+      if (existing == null || _compareDurationThenLatency(s, existing) < 0) {
+        champions[label] = s;
       }
     }
 
-    QualityTier? bestTier;
-    for (final tier in champions.keys) {
-      if (bestTier == null ||
-          SourceQuality.rank(tier) > SourceQuality.rank(bestTier)) {
-        bestTier = tier;
+    String? bestLabel;
+    var bestRank = -1;
+    for (final entry in champions.entries) {
+      final rank = entry.key == '_unknown'
+          ? 0
+          : SourceQuality.resolutionRank(entry.value);
+      if (rank > bestRank) {
+        bestRank = rank;
+        bestLabel = entry.key;
       }
     }
-    return bestTier != null ? champions[bestTier] : null;
+    return bestLabel != null ? champions[bestLabel] : null;
   }
 
-  static VideoSource? _bestByLatencyThenTier(List<VideoSource> list) {
+  static VideoSource? _bestByDurationThenLatency(List<VideoSource> list) {
     if (list.isEmpty) return null;
     list.sort((a, b) {
-      final lat = _latency(a).compareTo(_latency(b));
-      if (lat != 0) return lat;
-      final tier = SourceQuality.effectiveRankFor(
-        name: b.name,
-        sourceConfigName: b.sourceConfigName,
-        probedTier: b.probedTier,
-      ).compareTo(
-        SourceQuality.effectiveRankFor(
-          name: a.name,
-          sourceConfigName: a.sourceConfigName,
-          probedTier: a.probedTier,
-        ),
-      );
-      if (tier != 0) return tier;
-      return a.listOrder.compareTo(b.listOrder);
+      final resCmp =
+          SourceQuality.resolutionRank(b).compareTo(SourceQuality.resolutionRank(a));
+      if (resCmp != 0) return resCmp;
+      return _compareDurationThenLatency(a, b);
     });
     return list.first;
   }
 
-  static int _latency(VideoSource s) => s.speedMs ?? 999999;
+  static int _compareDurationThenLatency(VideoSource a, VideoSource b) {
+    final aHasBitrate = (a.probeBitrateKbps ?? 0) > 0;
+    final bHasBitrate = (b.probeBitrateKbps ?? 0) > 0;
+    if (aHasBitrate != bHasBitrate) return aHasBitrate ? -1 : 1;
+
+    final aMin = a.durationMinute;
+    final bMin = b.durationMinute;
+    if (aMin != bMin) return bMin.compareTo(aMin);
+
+    final lat = _latency(a).compareTo(_latency(b));
+    if (lat != 0) return lat;
+    return a.listOrder.compareTo(b.listOrder);
+  }
+
+  static int _latency(VideoSource s) => s.playlistMs ?? 999999;
 }

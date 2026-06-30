@@ -502,6 +502,8 @@ class VideoSource {
   int? speedMs;
   /// 线路可用状态标志。若握手或视频流校验失败会置为 false
   bool usable = true;
+  /// Duration in seconds from API time_data.total_duration (fallback).
+  int? apiDurationSec;
 
   VideoSource({
     required this.name,
@@ -513,6 +515,7 @@ class VideoSource {
     this.trailerDurationSec = 0,
     this.listOrder = 0,
     this.speedMs,
+    this.apiDurationSec,
     bool usable = true,
   }) : usable = usable;
 }
@@ -548,6 +551,7 @@ class VideoDetail {
             trailerDurationSec: f.trailerDurationSec,
             listOrder: f.listOrder,
             usable: f.usable,
+            apiDurationSec: f.apiDurationSec,
           ),
         )
         .toList();

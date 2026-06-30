@@ -48,6 +48,10 @@ class SourceProbeRecord {
   final int firstFrameMs;
   final int effectiveTierIndex;
   final int testedAtEpoch;
+  /// Total duration in seconds from #EXTINF summation; 0 if unknown.
+  final int durationSec;
+  /// Whether the playlist had #EXT-X-ENDLIST (VOD).
+  final bool hasEndlist;
 
   SourceProbeRecord({
     required this.probeUrl,
@@ -59,12 +63,14 @@ class SourceProbeRecord {
     this.firstFrameMs = 0,
     this.effectiveTierIndex = 0,
     required this.testedAtEpoch,
+    this.durationSec = 0,
+    this.hasEndlist = false,
   });
 }
 
 class SourceProbeRecordAdapter extends TypeAdapter<SourceProbeRecord> {
   @override
-  final int typeId = 3;
+  final int typeId = 4;
 
   @override
   SourceProbeRecord read(BinaryReader reader) {
@@ -78,6 +84,8 @@ class SourceProbeRecordAdapter extends TypeAdapter<SourceProbeRecord> {
       firstFrameMs: reader.readInt(),
       effectiveTierIndex: reader.readInt(),
       testedAtEpoch: reader.readInt(),
+      durationSec: reader.readInt(),
+      hasEndlist: reader.readBool(),
     );
   }
 
@@ -92,6 +100,8 @@ class SourceProbeRecordAdapter extends TypeAdapter<SourceProbeRecord> {
     writer.writeInt(obj.firstFrameMs);
     writer.writeInt(obj.effectiveTierIndex);
     writer.writeInt(obj.testedAtEpoch);
+    writer.writeInt(obj.durationSec);
+    writer.writeBool(obj.hasEndlist);
   }
 }
 

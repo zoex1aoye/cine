@@ -8,6 +8,7 @@ class DetailSourceFields {
   final int titlesDurationSec;
   final int trailerDurationSec;
   final int listOrder;
+  final int? apiDurationSec;
   final bool usable;
 
   const DetailSourceFields({
@@ -19,6 +20,7 @@ class DetailSourceFields {
     this.titlesDurationSec = 0,
     this.trailerDurationSec = 0,
     this.listOrder = 0,
+    this.apiDurationSec,
     this.usable = true,
   });
 }
@@ -28,6 +30,12 @@ List<DetailSourceFields> parseDetailSources(Map<String, dynamic> json) {
   final sources = <DetailSourceFields>[];
   final seenUrls = <String>{};
   var listOrder = 0;
+
+  final timeDataRaw = json['time_data'];
+  final timeData = timeDataRaw is Map ? timeDataRaw : null;
+  final videoDurationSec = timeData != null
+      ? int.tryParse(timeData['total_duration']?.toString() ?? '')
+      : null;
 
   void add({
     required String lineName,
@@ -39,6 +47,8 @@ List<DetailSourceFields> parseDetailSources(Map<String, dynamic> json) {
     final trailer = _trailerFrom(item);
     final sourceName = item['source_name']?.toString() ?? '';
     final configName = item['source_config_name']?.toString() ?? '';
+    final apiDurationSec =
+        int.tryParse(item['total_duration']?.toString() ?? '') ?? videoDurationSec;
 
     if (!url.startsWith('http')) {
       sources.add(DetailSourceFields(
@@ -50,6 +60,7 @@ List<DetailSourceFields> parseDetailSources(Map<String, dynamic> json) {
         titlesDurationSec: titles,
         trailerDurationSec: trailer,
         listOrder: listOrder++,
+        apiDurationSec: apiDurationSec,
         usable: false,
       ));
       return;
@@ -65,6 +76,7 @@ List<DetailSourceFields> parseDetailSources(Map<String, dynamic> json) {
       titlesDurationSec: titles,
       trailerDurationSec: trailer,
       listOrder: listOrder++,
+      apiDurationSec: apiDurationSec,
     ));
   }
 
