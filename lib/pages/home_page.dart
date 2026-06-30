@@ -1293,14 +1293,14 @@ class _TagSection extends StatefulWidget {
   final List<VideoItem>? initialVideos;
 
   const _TagSection({
-    Key? key,
+    super.key,
     required this.tag,
     required this.imgDomain,
     required this.onPlay,
     required this.onInfo,
     required this.onSeeAll,
     this.initialVideos,
-  }) : super(key: key);
+  });
 
   @override
   State<_TagSection> createState() => _TagSectionState();
@@ -1310,38 +1310,72 @@ class _TagSectionState extends State<_TagSection> {
   List<VideoItem> _videos = [];
   bool _loading = false;
   String? _error;
+  int _loadGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialVideos != null) {
-      _videos = widget.initialVideos!;
-    } else {
+    _applyInitialVideos(widget.initialVideos);
+    if (_videos.isEmpty) {
       _loadVideos();
     }
   }
 
+  @override
+  void didUpdateWidget(covariant _TagSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tag.id != widget.tag.id ||
+        oldWidget.tag.template != widget.tag.template) {
+      _applyInitialVideos(widget.initialVideos);
+      if (_videos.isEmpty) {
+        _loadVideos();
+      }
+      return;
+    }
+    if (widget.initialVideos != null &&
+        widget.initialVideos != oldWidget.initialVideos) {
+      _applyInitialVideos(widget.initialVideos);
+    }
+  }
+
+  void _applyInitialVideos(List<VideoItem>? videos) {
+    if (videos == null || videos.isEmpty) return;
+    _videos = videos;
+    _loading = false;
+    _error = null;
+  }
+
   Future<void> _loadVideos() async {
-    if (mounted) setState(() => _loading = true);
+    final tagId = widget.tag.id;
+    final tpl = widget.tag.template;
+    final generation = ++_loadGeneration;
+    if (mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final vids = await MubuApiClient.instance.getTagVideos(
-        widget.tag.id,
-        tpl: widget.tag.template,
+        tagId,
+        tpl: tpl,
         count: 12,
       );
-      if (mounted) {
-        setState(() {
-          _videos = vids;
-          _loading = false;
-        });
+      if (!mounted || generation != _loadGeneration || widget.tag.id != tagId) {
+        return;
       }
+      setState(() {
+        _videos = vids;
+        _loading = false;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = e.toString();
-          _loading = false;
-        });
+      if (!mounted || generation != _loadGeneration || widget.tag.id != tagId) {
+        return;
       }
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
     }
   }
 
@@ -1589,24 +1623,28 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
     try {
       final tags = await widget.api.getHomeTags(widget.category.id);
       if (!mounted || session != _currentLoadSession) return;
-      
+
+      final tagVideos = <int, List<VideoItem>>{};
+      if (tags.isNotEmpty) {
+        final entries = await Future.wait(
+          tags.map((tag) async {
+            final vids = await widget.api.getTagVideos(
+              tag.id,
+              tpl: tag.template,
+              count: 12,
+            );
+            return MapEntry(tag.id, vids);
+          }),
+        );
+        if (!mounted || session != _currentLoadSession) return;
+        tagVideos.addEntries(entries);
+      }
+
       setState(() {
         _tags = tags;
+        _tagVideos = tagVideos;
+        _loading = false;
       });
-      
-      if (tags.isNotEmpty) {
-        final firstTag = tags.first;
-        final firstVids = await widget.api.getTagVideos(firstTag.id, tpl: firstTag.template, count: 12);
-        if (!mounted || session != _currentLoadSession) return;
-        setState(() {
-          _tagVideos[firstTag.id] = firstVids;
-          _loading = false;
-        });
-      } else {
-        setState(() {
-          _loading = false;
-        });
-      }
     } catch (e) {
       if (!mounted || session != _currentLoadSession) return;
       setState(() {
@@ -1629,10 +1667,10 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
       });
     }
 
-    if (_loading && _tags.isEmpty) {
+    if (_loading) {
       return const Center(child: CircularProgressIndicator(color: kRed));
     }
-    
+
     if (_error != null && _tags.isEmpty) {
       return MubuErrorWidget(
         title: '加载失败',
@@ -1668,6 +1706,7 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
         for (final tag in _tags)
           SliverToBoxAdapter(
             child: _TagSection(
+              key: ValueKey('home-tag-${widget.category.id}-${tag.id}'),
               tag: tag,
               imgDomain: widget.api.imgDomain,
               onPlay: widget.onPlay,
