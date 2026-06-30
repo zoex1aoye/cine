@@ -28,12 +28,14 @@ Future<void> main() async {
   await Hive.initFlutter();
   Hive.registerAdapter(VideoItemAdapter());
   Hive.registerAdapter(NodeSpeedRecordAdapter());
+  Hive.registerAdapter(SourceProbeRecordAdapter());
 
   await Future.wait([
     Hive.openBox<VideoItem>('bookmarks'),
     Hive.openBox<VideoItem>('history'),
     Hive.openBox<String>('config'),
     Hive.openBox<NodeSpeedRecord>('node_speeds'),
+    Hive.openBox<SourceProbeRecord>('source_probes'),
   ]);
 
   // Initialize Mubu API client

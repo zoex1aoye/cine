@@ -37,6 +37,74 @@ class NodeSpeedRecordAdapter extends TypeAdapter<NodeSpeedRecord> {
   }
 }
 
+/// Per-line stream probe cache (video + line name).
+class SourceProbeRecord {
+  final String probeUrl;
+  final bool usable;
+  final int latencyMs;
+  final int width;
+  final int height;
+  final int bitrateKbps;
+  final int firstFrameMs;
+  final int effectiveTierIndex;
+  final int testedAtEpoch;
+  /// Total duration in seconds from #EXTINF summation; 0 if unknown.
+  final int durationSec;
+  /// Whether the playlist had #EXT-X-ENDLIST (VOD).
+  final bool hasEndlist;
+
+  SourceProbeRecord({
+    required this.probeUrl,
+    required this.usable,
+    required this.latencyMs,
+    this.width = 0,
+    this.height = 0,
+    this.bitrateKbps = 0,
+    this.firstFrameMs = 0,
+    this.effectiveTierIndex = 0,
+    required this.testedAtEpoch,
+    this.durationSec = 0,
+    this.hasEndlist = false,
+  });
+}
+
+class SourceProbeRecordAdapter extends TypeAdapter<SourceProbeRecord> {
+  @override
+  final int typeId = 4;
+
+  @override
+  SourceProbeRecord read(BinaryReader reader) {
+    return SourceProbeRecord(
+      probeUrl: reader.readString(),
+      usable: reader.readBool(),
+      latencyMs: reader.readInt(),
+      width: reader.readInt(),
+      height: reader.readInt(),
+      bitrateKbps: reader.readInt(),
+      firstFrameMs: reader.readInt(),
+      effectiveTierIndex: reader.readInt(),
+      testedAtEpoch: reader.readInt(),
+      durationSec: reader.readInt(),
+      hasEndlist: reader.readBool(),
+    );
+  }
+
+  @override
+  void write(BinaryWriter writer, SourceProbeRecord obj) {
+    writer.writeString(obj.probeUrl);
+    writer.writeBool(obj.usable);
+    writer.writeInt(obj.latencyMs);
+    writer.writeInt(obj.width);
+    writer.writeInt(obj.height);
+    writer.writeInt(obj.bitrateKbps);
+    writer.writeInt(obj.firstFrameMs);
+    writer.writeInt(obj.effectiveTierIndex);
+    writer.writeInt(obj.testedAtEpoch);
+    writer.writeInt(obj.durationSec);
+    writer.writeBool(obj.hasEndlist);
+  }
+}
+
 /// Adapter for VideoItem (typeId: 1)
 class VideoItemAdapter extends TypeAdapter<VideoItem> {
   @override

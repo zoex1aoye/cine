@@ -84,7 +84,7 @@ class JpApiClientImpl implements MubuApiClient {
                 name: s.name,
                 sourceName: s.sourceName,
                 url: s.url,
-                speedMs: s.speedMs,
+                sourceConfigName: s.sourceConfigName,
                 usable: s.usable,
               ))
           .toList(),

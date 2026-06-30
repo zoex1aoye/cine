@@ -408,6 +408,13 @@ class JpApi {
     return null;
   }
 
+  /// Full signed GET response (for tooling / fixture generation).
+  Future<Map<String, dynamic>?> getRawResponse(String path) async {
+    final resp = await _get(path);
+    if (resp is Map<String, dynamic>) return resp;
+    return null;
+  }
+
 
   /// 拉取高级分类筛选的可选项列表
   Future<List<FilterGroup>> getFilterOptions(int fcatePid) async {
@@ -474,18 +481,29 @@ class TagItem {
 
 /// 视频播放源信息模型
 class VideoSource {
-  /// 线路的主分类名称（例如：HN线路、LZ线路）
+  /// 线路/清晰度组名（例如：极速蓝光、高清线路1、LZ线路）
   final String name;
-  /// 本集名称或子集说明（例如：第01集、超清国语）
+  /// 本集名称或子集说明（例如：第01集、20220913）
   final String sourceName;
   /// 实际的 M3U8/HLS 播放地址
   final String url;
+  /// 项级配置名（source_config_name），与 name 不一致时更准确
+  final String sourceConfigName;
   /// 并发测试得出的延迟网速（毫秒），若超时通常置为 999999
   int? speedMs;
   /// 线路可用状态标志。若握手或视频流校验失败会置为 false
   bool usable = true;
+  /// Duration in seconds from API time_data.total_duration (fallback).
+  int? apiDurationSec;
 
-  VideoSource({required this.name, required this.sourceName, required this.url, this.speedMs});
+  VideoSource({
+    required this.name,
+    required this.sourceName,
+    required this.url,
+    this.sourceConfigName = '',
+    this.speedMs,
+    this.apiDurationSec,
+  });
 }
 
 /// 视频详情（含剧集与线路）数据模型
@@ -506,24 +524,41 @@ class VideoDetail {
     this.sources = const [],
   });
 
-  /// 解析普通视频的 source_list_source 数组或短剧的 playlist 列表，并组装为统一的线路播放源
+  /// 解析普通视频的 source_list_source / vip_source_list_source 数组或短剧的 playlist
   factory VideoDetail.fromJson(Map<String, dynamic> json) {
     final sources = <VideoSource>[];
-    
-    // 1. 普通影视：解析多条并发线路及剧集子表
-    final sourceList = json['source_list_source'] as List?;
-    if (sourceList != null) {
+
+    // Video-level duration fallback (time_data.total_duration).
+    // `time_data` may be absent, a String, or an object depending on the
+    // endpoint, so guard with `is Map` instead of an unconditional cast.
+    final timeDataRaw = json['time_data'];
+    final timeData = timeDataRaw is Map ? timeDataRaw : null;
+    final videoDurationSec =
+        timeData != null ? _parseInt(timeData['total_duration']) : null;
+
+    void appendSourceList(List? sourceList) {
+      if (sourceList == null) return;
       for (final src in sourceList) {
+        if (src is! Map) continue;
         final srcName = src['name']?.toString() ?? '';
         for (final item in (src['source_list'] as List? ?? [])) {
+          if (item is! Map) continue;
+          final url = item['url']?.toString() ?? '';
+          if (url.isEmpty) continue;
           sources.add(VideoSource(
             name: srcName,
             sourceName: item['source_name']?.toString() ?? '',
-            url: item['url']?.toString() ?? '',
+            url: url,
+            sourceConfigName: item['source_config_name']?.toString() ?? '',
+            apiDurationSec: _parseInt(item['total_duration']) ?? videoDurationSec,
           ));
         }
       }
     }
+
+    // VIP 清晰度组优先，再合并常规 source_list_source（含 CDN 线路与高清组）
+    appendSourceList(json['vip_source_list_source'] as List?);
+    appendSourceList(json['source_list_source'] as List?);
 
     // 2. 短剧分类：从 playlist 数据节点进行适配解析
     final playlist = json['playlist'] as List?;
@@ -536,6 +571,7 @@ class VideoDetail {
           name: lineName,
           sourceName: episodeTitle,
           url: playUrl,
+          apiDurationSec: _parseInt(item['total_duration']) ?? videoDurationSec,
         ));
       }
     }
@@ -550,9 +586,20 @@ class VideoDetail {
     );
   }
 
-  /// 获取当前线路集合中的首选/默认播放 URL
+  /// 获取当前线路集合中的首选/默认播放 URL（首集 + 质量/延迟策略需由 SourcePicker 在 UI 层应用）
   String? get bestUrl {
     if (sources.isEmpty) return null;
-    return sources.first.url;
+    final firstEpisode = sources.first.sourceName;
+    final sameEp = sources.where((s) => s.sourceName == firstEpisode && s.usable);
+    if (sameEp.isEmpty) return sources.first.url;
+    return sameEp.first.url;
   }
+}
+
+/// Safely parse an int from a dynamic value (handles String, num, null).
+int? _parseInt(dynamic v) {
+  if (v == null) return null;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v);
+  return null;
 }

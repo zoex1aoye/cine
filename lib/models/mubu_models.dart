@@ -1,5 +1,6 @@
 // lib/models/mubu_models.dart
 // Unified data models for Mubu client
+import '../utils/source_quality.dart';
 
 /// Video item model
 class VideoItem {
@@ -99,24 +100,108 @@ class VideoSource {
   final String name;
   final String sourceName;
   final String url;
-  int? speedMs;
+  final String sourceConfigName;
   bool usable;
+  int? probeWidth;
+  int? probeHeight;
+  int? probeBitrateKbps;
+  int? playlistMs;
+  int? firstFrameMs;
+  QualityTier? probedTier;
+  /// Total duration in seconds from M3U8 #EXTINF summation.
+  int? probeDurationSec;
+  /// Duration in seconds from API time_data.total_duration (fallback).
+  int? apiDurationSec;
+  /// Whether the M3U8 playlist contained #EXT-X-ENDLIST (VOD).
+  bool? probeHasEndlist;
+
+  /// Effective duration in minutes, preferring M3U8 data over API fallback.
+  /// Returns 0 if no duration info is available.
+  int get durationMinute {
+    final sec = probeDurationSec ?? apiDurationSec ?? 0;
+    return sec > 0 ? sec ~/ 60 : 0;
+  }
+
+  /// Whether this source is a live/ongoing stream (no EXT-X-ENDLIST).
+  bool get isLive => probeHasEndlist == false;
 
   VideoSource({
     required this.name,
     required this.sourceName,
     required this.url,
-    this.speedMs,
+    this.sourceConfigName = '',
     this.usable = true,
+    this.probeWidth,
+    this.probeHeight,
+    this.probeBitrateKbps,
+    this.playlistMs,
+    this.firstFrameMs,
+    this.probedTier,
+    this.probeDurationSec,
+    this.apiDurationSec,
+    this.probeHasEndlist,
   });
+
+  void applyProbeMetrics({
+    required bool usable,
+    required int playlistMs,
+    int? probeWidth,
+    int? probeHeight,
+    int? probeBitrateKbps,
+    int? firstFrameMs,
+    QualityTier? probedTier,
+    int? probeDurationSec,
+    bool? probeHasEndlist,
+  }) {
+    this.usable = usable;
+    this.playlistMs = playlistMs;
+    if (usable) {
+      this.probeWidth = probeWidth;
+      this.probeHeight = probeHeight;
+      this.probeBitrateKbps = probeBitrateKbps;
+      this.firstFrameMs = firstFrameMs;
+      this.probedTier = probedTier;
+      this.probeDurationSec = probeDurationSec;
+      this.probeHasEndlist = probeHasEndlist;
+    } else {
+      this.probeWidth = null;
+      this.probeHeight = null;
+      this.probeBitrateKbps = null;
+      this.firstFrameMs = null;
+      this.probedTier = null;
+      this.probeDurationSec = null;
+      this.probeHasEndlist = null;
+    }
+  }
+
+  void copyProbeFrom(VideoSource other) {
+    usable = other.usable;
+    playlistMs = other.playlistMs;
+    probeWidth = other.probeWidth;
+    probeHeight = other.probeHeight;
+    probeBitrateKbps = other.probeBitrateKbps;
+    firstFrameMs = other.firstFrameMs;
+    probedTier = other.probedTier;
+    probeDurationSec = other.probeDurationSec;
+    apiDurationSec = other.apiDurationSec;
+    probeHasEndlist = other.probeHasEndlist;
+  }
 
   factory VideoSource.fromJson(Map<String, dynamic> json) => VideoSource(
         name: json['name'] ?? '',
         sourceName: json['source_name'] ?? '',
         url: json['url'] ?? '',
-        speedMs: json['speedMs'] != null ? json['speedMs'] as int : null,
+        sourceConfigName: json['source_config_name'] ?? json['sourceConfigName'] ?? '',
         usable: json['usable'] ?? true,
+        apiDurationSec: _parseIntField(json['total_duration']),
       );
+}
+
+/// Safely parse an int from a dynamic JSON value (handles String, num, null).
+int? _parseIntField(dynamic v) {
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v);
+  return null;
 }
 
 /// Category item model
@@ -228,6 +313,7 @@ class VideoDetail {
                       name: src['name'] ?? '',
                       sourceName: item['source_name'] ?? '',
                       url: item['url'] ?? '',
+                      sourceConfigName: item['source_config_name']?.toString() ?? '',
                     )))
             .toList(),
       );
