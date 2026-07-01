@@ -1371,13 +1371,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     curve: Curves.easeOutCubic,
                     width: innerSize.width,
                     height: innerSize.height,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: _player!.buildVideoWidget(
-                        context,
-                        title: widget.video.title,
-                        onBack: () => Navigator.of(context).pop(),
-                      ),
+                    child: _player!.buildVideoWidget(
+                      context,
+                      title: widget.video.title,
+                      onBack: () => Navigator.of(context).pop(),
                     ),
                   ),
                 ),
@@ -1391,14 +1388,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       duration: const Duration(milliseconds: 600),
                       opacity: showForegroundOverlay ? 1.0 : 0.0,
                       curve: Curves.easeOutCubic,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
-                        child: CachedNetworkImage(
-                          imageUrl: coverUrl,
-                          fit: BoxFit.cover,
-                          errorWidget: (_, __, ___) =>
-                              const SizedBox.shrink(),
-                        ),
+                      child: CachedNetworkImage(
+                        imageUrl: coverUrl,
+                        fit: BoxFit.cover,
+                        errorWidget: (_, __, ___) => const SizedBox.shrink(),
                       ),
                     ),
                   ),
@@ -1411,13 +1404,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     duration: const Duration(milliseconds: 600),
                     opacity: showForegroundOverlay ? 1.0 : 0.0,
                     curve: Curves.easeOutCubic,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(16),
-                      child: BackdropFilter(
-                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                        child: Container(
-                          color: const Color(0xFF070708).withOpacity(0.45),
-                        ),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                      child: Container(
+                        color: const Color(0xFF070708).withOpacity(0.45),
                       ),
                     ),
                   ),
