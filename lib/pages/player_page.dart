@@ -21,6 +21,7 @@ import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
 import '../widgets/hover_close_button.dart';
+import '../widgets/player_slot_layout.dart';
 
 enum LoadingStage { fetchingDetail, testingSpeed, initPlayer, ready, error }
 
@@ -69,10 +70,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _expanded = false;
   final LayerLink _lineLink = LayerLink();
 
-  // 视频宽高比（默认 16:9，加载后动态调整）
-  double _videoAspectRatio = 16 / 9;
+  // Inner video viewport aspect (outer slot height is fixed separately).
+  double _innerAspectRatio = 16 / 9;
   VoidCallback? _widthListener;
   VoidCallback? _heightListener;
+
+  bool get _isShortDramaPage => widget.video.isShortDrama;
 
   // Progress save timer
   Timer? _progressTimer;
@@ -97,15 +100,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   // 防止并行测速期间多次并发 init；切后台后用于判断是否可重试
   Future<void>? _initPlayerFuture;
 
-  // Sticky player for portrait videos
-  final ScrollController _scrollController = ScrollController();
-  double _scrollOffset = 0.0;
-
   @override
   void initState() {
     super.initState();
+    _innerAspectRatio =
+        PlayerSlotLayout.defaultInnerAspectRatio(isShortDrama: _isShortDramaPage);
     WidgetsBinding.instance.addObserver(this);
-    _scrollController.addListener(_onScroll);
     _checkBookmarkStatus();
     _loadAndPrepare();
   }
@@ -319,8 +319,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (_bufferingListener != null) {
       _player?.isBufferingNotifier.removeListener(_bufferingListener!);
     }
-    _scrollController.removeListener(_onScroll);
-    _scrollController.dispose();
     if (_widthListener != null) _player?.videoWidthNotifier.removeListener(_widthListener!);
     if (_heightListener != null) _player?.videoHeightNotifier.removeListener(_heightListener!);
     // Save final playback position
@@ -331,52 +329,58 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  /// 根据视频原始宽高更新播放器宽高比，限制在合理范围内
+  /// Update inner viewport from decoded stream dimensions (silent, slot unchanged).
   void _updateAspectRatio(MediaKitPlayerImpl player) {
     final w = player.videoWidthNotifier.value;
     final h = player.videoHeightNotifier.value;
-    if (w != null && h != null && w > 0 && h > 0) {
-      double ratio = w / h;
-      // 限制最大宽高比防止超宽银幕变形，竖屏视频（如短剧）不限制
-      if (ratio > 2.39) ratio = 2.39;
-      if (ratio != _videoAspectRatio && mounted) {
-        setState(() {
-          _videoAspectRatio = ratio;
-        });
-      }
+    if (w == null || h == null || w <= 0 || h <= 0) return;
+    _setInnerAspectRatio(w / h);
+  }
+
+  void _syncInnerRatioFromSource(VideoSource source) {
+    _setInnerAspectRatio(
+      PlayerSlotLayout.aspectRatioFromProbe(
+        source.probeWidth,
+        source.probeHeight,
+        isShortDrama: _isShortDramaPage,
+      ),
+    );
+  }
+
+  void _setInnerAspectRatio(double ratio) {
+    final next =
+        PlayerSlotLayout.normalizeAspectRatio(ratio);
+    if (!PlayerSlotLayout.shouldReplaceInnerRatio(
+      _innerAspectRatio,
+      next,
+      isShortDrama: _isShortDramaPage,
+    )) {
+      return;
+    }
+    if (mounted) {
+      setState(() => _innerAspectRatio = next);
     }
   }
 
-  /// 是否为竖屏视频（高度 > 宽度）
-  bool get _isPortraitVideo => _videoAspectRatio < 1.0;
-
-  /// 计算视频区域的实际高度
-  double _calculateVideoHeight(double screenHeight) {
-    if (!_isPortraitVideo) {
-      // 横屏视频：使用 AspectRatio，不限制
-      return screenHeight * 0.5;
-    }
-
-    // 竖屏视频：根据滚动位置动态调整
-    final fullHeight = screenHeight * 0.65;
-    final minHeight = screenHeight * 0.40;
-
-    // 向上滚动 80px 内完成过渡
-    final scrollProgress = (_scrollOffset / 80.0).clamp(0.0, 1.0);
-
-    return fullHeight - (fullHeight - minHeight) * scrollProgress;
+  double _slotHeightForWidth(double width) {
+    return PlayerSlotLayout.slotHeight(
+      width: width,
+      isShortDrama: _isShortDramaPage,
+      screenHeight: MediaQuery.of(context).size.height,
+    );
   }
 
-  /// 滚动监听回调
-  void _onScroll() {
-    if (_scrollController.hasClients) {
-      final double offset = _scrollController.offset;
-      _scrollOffset = offset;
-      // 只在过渡区间 (0-80px) 内触发重绘以更新视频高度，其余位置直接跳过
-      if (offset <= 80.0 && mounted) {
-        setState(() {});
-      }
-    }
+  Widget _buildFixedPlayerSlot({required Widget child}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final slotH = _slotHeightForWidth(constraints.maxWidth);
+        return SizedBox(
+          width: constraints.maxWidth,
+          height: slotH,
+          child: child,
+        );
+      },
+    );
   }
 
   /// Save current playback position to history (no-op if position hasn't changed or is zero)
@@ -507,6 +511,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _currentUrl = _sources[idx].url;
     }
 
+    _syncInnerRatioFromSource(_sources[_selectedSource]);
+
     if (mounted) setState(() {});
   }
 
@@ -557,6 +563,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _currentUrl = _sources[_fastestIndex!].url;
       }
       debugPrint('PLAYER: fallback to fastest — $fastestLineName');
+    }
+    if (_sources.isNotEmpty) {
+      _syncInnerRatioFromSource(_sources[_selectedSource]);
     }
   }
 
@@ -832,7 +841,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final src = _sources[index];
     _selectedSource = index;
     _currentUrl = src.url;
-    
+    _syncInnerRatioFromSource(src);
+
     final shouldAutoPlay = _startPlayRequested && (_player?.isPlayingNotifier.value == true);
     _player?.setSource(_currentUrl, autoPlay: shouldAutoPlay);
     setState(() {});
@@ -1110,8 +1120,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                 // Left video panel — always 16:9
                                 Expanded(
                                   flex: isWide ? 65 : 66,
-                                  child: AspectRatio(
-                                    aspectRatio: _videoAspectRatio,
+                                  child: _buildFixedPlayerSlot(
                                     child: _buildVideoPlayerContainer(),
                                   ),
                                 ),
@@ -1127,25 +1136,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                               ],
                             ),
                           )
-                        : _isPortraitVideo
-                            ? _buildPortraitLayout()
-                            : Column(
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                                    child: AspectRatio(
-                                      aspectRatio: _videoAspectRatio,
-                                      child: _buildVideoPlayerContainer(),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: SingleChildScrollView(
-                                      physics: const BouncingScrollPhysics(),
-                                      child: _buildMovieInfoAndEpisodes(false),
-                                    ),
-                                  ),
-                                ],
+                        : Column(
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                                child: _buildFixedPlayerSlot(
+                                  child: _buildVideoPlayerContainer(),
+                                ),
                               ),
+                              Expanded(
+                                child: SingleChildScrollView(
+                                  physics: const BouncingScrollPhysics(),
+                                  child: _buildMovieInfoAndEpisodes(false),
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                 ],
               ),
@@ -1302,181 +1308,191 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return null;
   }
 
-  Widget _buildVideoPlayerContainer() {
-    final imgDomain = MubuApiClient.instance.imgDomain;
-    final coverUrl = widget.video.coverUrl(imgDomain);
-    final showOverlay = _stage == LoadingStage.ready && !_startPlayRequested;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.02),
-        borderRadius: BorderRadius.circular(16),
-        // Sharp border is layered on top of the Stack children to avoid being blurred by BackdropFilter
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          // 1. Video Widget
-          if (_stage == LoadingStage.ready && _playerInitialized && _player != null && _startPlayRequested)
-            Positioned.fill(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: _player!.buildVideoWidget(
-                  context,
-                  title: widget.video.title,
-                  onBack: () => Navigator.of(context).pop(),
-                ),
-              ),
-            ),
-
-          // 2. 播放器封面海报图 (当播放开始后淡出，并使用 IgnorePointer 避免遮挡鼠标/触控事件)
-          if (coverUrl.isNotEmpty)
-            Positioned.fill(
-              child: IgnorePointer(
-                ignoring: !showOverlay, // 播放时忽略事件拦截，使得手势能穿透到下层播放器
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 600),
-                  opacity: showOverlay ? 1.0 : 0.0,
-                  curve: Curves.easeOutCubic,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(16),
-                    child: CachedNetworkImage(
-                      imageUrl: coverUrl,
-                      fit: BoxFit.cover,
-                      errorWidget: (_, __, ___) => const SizedBox.shrink(),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // 3. 磨砂玻璃模糊层 (当播放开始后淡出，同样使用 IgnorePointer 避免遮挡手势事件)
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: !showOverlay, // 播放时忽略事件拦截，使得手势能穿透到下层播放器
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 600),
-                opacity: showOverlay ? 1.0 : 0.0,
-                curve: Curves.easeOutCubic,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Container(
-                      color: const Color(0xFF070708).withOpacity(0.45),
-                    ),
-                  ),
-                ),
-              ),
+  Widget _buildBlurredPosterBase(String coverUrl) {
+    if (coverUrl.isEmpty) {
+      return const ColoredBox(color: Color(0xFF070708));
+    }
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CachedNetworkImage(
+          imageUrl: coverUrl,
+          fit: BoxFit.cover,
+          errorWidget: (_, __, ___) => const ColoredBox(color: Color(0xFF070708)),
+        ),
+        ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            child: Container(
+              color: const Color(0xFF070708).withOpacity(0.55),
             ),
           ),
-
-          // 4. Overlays: Error view — removed, now at page level
-
-          // 5. Overlays: ConcentricHud (only visible while loading, hidden on error)
-          if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
-            Center(
-              child: ConcentricHud(
-                progress: _loadingProgress,
-                sources: _sources,
-                indicesToTest: _indicesToTest,
-              ),
-            ),
-
-          // 6. Overlays: Breathing play button (fades in/out and ignores taps when hidden)
-          Positioned.fill(
-            child: IgnorePointer(
-              ignoring: !showOverlay,
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 600),
-                opacity: showOverlay ? 1.0 : 0.0,
-                curve: Curves.easeOutCubic,
-                child: Center(
-                  child: BreathingPlayPulse(
-                      onTap: () {
-                        setState(() {
-                          _startPlayRequested = true;
-                        });
-                        _abortBackgroundSpeedTest();
-                        _player?.play().then((_) {
-                          final episodeName = _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
-                          final lineName = _sources.isNotEmpty ? _sources[_selectedSource].name : null;
-                          MubuStorage.recordWatch(
-                            widget.video,
-                            positionMs: _savedPositionMs,
-                            durationMs: _savedDurationMs,
-                            episodeName: episodeName,
-                            lineName: lineName,
-                          );
-                          final startMs = _playbackStartPositionMs();
-                          if (startMs != null) {
-                            _player?.seek(Duration(milliseconds: startMs));
-                          }
-                          // 启动弱网看门狗（播放开始后才激活，避免加载阶段误触发）
-                          _startBufferingWatchdog();
-                        }).catchError((e) {
-                        debugPrint('PLAYER: play() failed: $e');
-                      });
-                      // Start periodic progress save every 10 seconds
-                      _progressTimer?.cancel();
-                      _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-                        _saveProgress();
-                      });
-                    },
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          // 7. Sharp Border Overlay (layered last to ensure clean, crisp corners)
-          Positioned.fill(
-            child: IgnorePointer(
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white.withOpacity(0.08)),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
-  /// 竖屏视频布局（支持 sticky player）
-  Widget _buildPortraitLayout() {
+  Widget _buildVideoPlayerContainer() {
+    final imgDomain = MubuApiClient.instance.imgDomain;
+    final coverUrl = widget.video.coverUrl(imgDomain);
+    final showForegroundOverlay =
+        _stage == LoadingStage.ready && !_startPlayRequested;
+    final showVideo = _stage == LoadingStage.ready &&
+        _playerInitialized &&
+        _player != null &&
+        _startPlayRequested;
+
     return LayoutBuilder(
       builder: (context, constraints) {
-        final videoHeight = _calculateVideoHeight(constraints.maxHeight);
-        return Stack(
-          children: [
-            // 视频区域（sticky，固定在顶部）
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: videoHeight,
-              child: Container(
-                color: Colors.black,
-                child: _buildVideoPlayerContainer(),
-              ),
-            ),
+        final slotW = constraints.maxWidth;
+        final slotH = constraints.maxHeight;
+        final innerSize = PlayerSlotLayout.innerVideoSize(
+          slotW,
+          slotH,
+          _innerAspectRatio,
+        );
 
-            // 内容区域（从视频下方开始滚动）
-            Positioned(
-              top: videoHeight,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: SingleChildScrollView(
-                controller: _scrollController,
-                physics: const BouncingScrollPhysics(),
-                child: _buildMovieInfoAndEpisodes(false),
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Stack(
+            alignment: Alignment.center,
+            fit: StackFit.expand,
+            children: [
+              // B2: persistent blurred poster fills letterbox/pillarbox areas
+              _buildBlurredPosterBase(coverUrl),
+
+              // Inner video viewport (contain, silent 200ms resize)
+              if (showVideo)
+                Center(
+                  child: AnimatedContainer(
+                    duration: const Duration(
+                      milliseconds: PlayerSlotLayout.innerRatioAnimMs,
+                    ),
+                    curve: Curves.easeOutCubic,
+                    width: innerSize.width,
+                    height: innerSize.height,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: _player!.buildVideoWidget(
+                        context,
+                        title: widget.video.title,
+                        onBack: () => Navigator.of(context).pop(),
+                      ),
+                    ),
+                  ),
+                ),
+
+              // L3: sharp cover + frost overlay (fades when playback starts)
+              if (coverUrl.isNotEmpty)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    ignoring: !showForegroundOverlay,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 600),
+                      opacity: showForegroundOverlay ? 1.0 : 0.0,
+                      curve: Curves.easeOutCubic,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: CachedNetworkImage(
+                          imageUrl: coverUrl,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, __, ___) =>
+                              const SizedBox.shrink(),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+              Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: !showForegroundOverlay,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 600),
+                    opacity: showForegroundOverlay ? 1.0 : 0.0,
+                    curve: Curves.easeOutCubic,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                        child: Container(
+                          color: const Color(0xFF070708).withOpacity(0.45),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ],
+
+              if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
+                Center(
+                  child: ConcentricHud(
+                    progress: _loadingProgress,
+                    sources: _sources,
+                    indicesToTest: _indicesToTest,
+                  ),
+                ),
+
+              Positioned.fill(
+                child: IgnorePointer(
+                  ignoring: !showForegroundOverlay,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 600),
+                    opacity: showForegroundOverlay ? 1.0 : 0.0,
+                    curve: Curves.easeOutCubic,
+                    child: Center(
+                      child: BreathingPlayPulse(
+                        onTap: () {
+                          setState(() {
+                            _startPlayRequested = true;
+                          });
+                          _abortBackgroundSpeedTest();
+                          _player?.play().then((_) {
+                            final episodeName = _sources.isNotEmpty
+                                ? _sources[_selectedSource].sourceName
+                                : null;
+                            final lineName = _sources.isNotEmpty
+                                ? _sources[_selectedSource].name
+                                : null;
+                            MubuStorage.recordWatch(
+                              widget.video,
+                              positionMs: _savedPositionMs,
+                              durationMs: _savedDurationMs,
+                              episodeName: episodeName,
+                              lineName: lineName,
+                            );
+                            final startMs = _playbackStartPositionMs();
+                            if (startMs != null) {
+                              _player?.seek(Duration(milliseconds: startMs));
+                            }
+                            _startBufferingWatchdog();
+                          }).catchError((e) {
+                            debugPrint('PLAYER: play() failed: $e');
+                          });
+                          _progressTimer?.cancel();
+                          _progressTimer = Timer.periodic(
+                            const Duration(seconds: 10),
+                            (_) => _saveProgress(),
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white.withOpacity(0.08)),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         );
       },
     );
@@ -1649,7 +1665,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             Text(
               _description,
               style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 13, height: 1.5),
-              maxLines: _isPortraitVideo ? 2 : 4,
+              maxLines: _isShortDramaPage ? 2 : 4,
               overflow: TextOverflow.ellipsis,
             ),
           ],
@@ -1659,7 +1675,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           const SizedBox(height: 16),
 
           // 移动竖屏短剧下显示专用的弹窗触发器按钮，从而节省首屏空间
-          if (!isWide && _isPortraitVideo) ...[
+          if (_isShortDramaPage && !isWide) ...[
             SizedBox(
               width: double.infinity,
               height: 48,
