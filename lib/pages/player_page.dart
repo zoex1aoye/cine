@@ -22,6 +22,7 @@ import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
 import '../widgets/hover_close_button.dart';
 import '../widgets/episode_grid_layout.dart';
+import '../widgets/player_overlay_metrics.dart';
 import '../widgets/player_slot_layout.dart';
 
 enum LoadingStage { fetchingDetail, testingSpeed, initPlayer, ready, error }
@@ -2083,65 +2084,68 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isMobile = screenWidth < 600;
-    // 移动端 64px, 桌面 80px
-    final coreSize = isMobile ? 64.0 : 80.0;
-    final iconSize = isMobile ? 36.0 : 46.0;
-    final pulseRange = isMobile ? 32.0 : 40.0;
-    final pulseRange2 = isMobile ? 16.0 : 20.0;
+    final screenWidth = MediaQuery.sizeOf(context).width;
 
-    return GestureDetector(
-      onTap: widget.onTap,
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, child) {
-          return Stack(
-            alignment: Alignment.center,
-            children: [
-              // Outer pulse ring 2 (subtle)
-              Container(
-                width: coreSize + pulseRange * _controller.value,
-                height: coreSize + pulseRange * _controller.value,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0xFFE50914).withOpacity(0.10 * (1.0 - _controller.value)),
-                ),
-              ),
-              // Outer pulse ring 1 (subtle)
-              Container(
-                width: coreSize + pulseRange2 * _controller.value,
-                height: coreSize + pulseRange2 * _controller.value,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0xFFE50914).withOpacity(0.18 * (1.0 - _controller.value)),
-                ),
-              ),
-              // Core Play Button
-              Container(
-                width: coreSize,
-                height: coreSize,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0xFFE50914),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFFE50914).withOpacity(0.35),
-                      blurRadius: 12,
-                      spreadRadius: 1,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final m = PlayerOverlayMetrics.playButton(
+          slotWidth: constraints.maxWidth,
+          slotHeight: constraints.maxHeight,
+          screenWidth: screenWidth,
+        );
+
+        return GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, child) {
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: m.coreSize + m.pulseRange * _controller.value,
+                    height: m.coreSize + m.pulseRange * _controller.value,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFE50914)
+                          .withOpacity(0.10 * (1.0 - _controller.value)),
                     ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.play_arrow_rounded,
-                  color: Colors.white,
-                  size: iconSize,
-                ),
-              ),
-            ],
-          );
-        },
-      ),
+                  ),
+                  Container(
+                    width: m.coreSize + m.pulseRange2 * _controller.value,
+                    height: m.coreSize + m.pulseRange2 * _controller.value,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFE50914)
+                          .withOpacity(0.18 * (1.0 - _controller.value)),
+                    ),
+                  ),
+                  Container(
+                    width: m.coreSize,
+                    height: m.coreSize,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFE50914),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFE50914).withOpacity(0.35),
+                          blurRadius: m.coreSize * 0.18,
+                          spreadRadius: 1,
+                        ),
+                      ],
+                    ),
+                    child: Icon(
+                      Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: m.iconSize,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }

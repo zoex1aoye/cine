@@ -1,11 +1,11 @@
 // lib/widgets/concentric_hud.dart
 import 'package:flutter/material.dart';
 import '../models/mubu_models.dart';
+import 'player_overlay_metrics.dart';
 
 /// 轻量化加载指示器 (ConcentricHud)
 ///
-/// 展示播放源测速的进度百分比 + 简洁的进度环。
-/// 移动端自适应：窄屏下缩小尺寸，移除冗余视觉元素。
+/// 尺寸按播放器槽位短边 + 屏幕档位缩放，横屏手机不再误用桌面大号 HUD。
 class ConcentricHud extends StatefulWidget {
   /// 当前整体测速进度 (0.0 - 1.0)
   final double progress;
@@ -15,17 +15,18 @@ class ConcentricHud extends StatefulWidget {
   final List<int> indicesToTest;
 
   const ConcentricHud({
-    Key? key,
+    super.key,
     required this.progress,
     required this.sources,
     required this.indicesToTest,
-  }) : super(key: key);
+  });
 
   @override
   State<ConcentricHud> createState() => _ConcentricHudState();
 }
 
-class _ConcentricHudState extends State<ConcentricHud> with SingleTickerProviderStateMixin {
+class _ConcentricHudState extends State<ConcentricHud>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -45,39 +46,37 @@ class _ConcentricHudState extends State<ConcentricHud> with SingleTickerProvider
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isMobile = screenWidth < 600;
-    // 移动端 ~120px, 桌面 ~180px
-    final baseSize = isMobile ? 120.0 : 180.0;
-    final ringSize = isMobile ? 80.0 : 130.0;
-    final strokeW = isMobile ? 3.0 : 4.0;
-    final fontSize = isMobile ? 22.0 : 32.0;
+    final screenWidth = MediaQuery.sizeOf(context).width;
 
-    final displayPercent = (widget.progress * 100).toInt();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final m = PlayerOverlayMetrics.loadingHud(
+          slotWidth: constraints.maxWidth,
+          slotHeight: constraints.maxHeight,
+          screenWidth: screenWidth,
+        );
+        final displayPercent = (widget.progress * 100).toInt();
 
-    return Center(
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, child) {
-          final val = _controller.value;
+        return Center(
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, child) {
+              final val = _controller.value;
 
-          return SizedBox(
-            width: baseSize,
-            height: baseSize,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                // 主容器：暗色圆底 + 微弱呼吸光晕
-                Container(
-                  width: baseSize,
-                  height: baseSize,
+              return SizedBox(
+                width: m.outerDiameter,
+                height: m.outerDiameter,
+                child: Container(
+                  width: m.outerDiameter,
+                  height: m.outerDiameter,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: const Color(0xFF0C0C0E).withAlpha(140),
                     boxShadow: [
                       BoxShadow(
-                        color: const Color(0xFFE50914).withOpacity(0.08 + 0.06 * val),
-                        blurRadius: 16,
+                        color: Color(0xFFE50914)
+                            .withOpacity(0.08 + 0.06 * val),
+                        blurRadius: m.glowBlur,
                         spreadRadius: 1,
                       ),
                     ],
@@ -85,25 +84,25 @@ class _ConcentricHudState extends State<ConcentricHud> with SingleTickerProvider
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      // 进度环
                       SizedBox(
-                        width: ringSize,
-                        height: ringSize,
+                        width: m.ringDiameter,
+                        height: m.ringDiameter,
                         child: CircularProgressIndicator(
                           value: widget.progress,
-                          strokeWidth: strokeW,
+                          strokeWidth: m.strokeWidth,
                           backgroundColor: Colors.white.withAlpha(8),
-                          valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFE50914)),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            Color(0xFFE50914),
+                          ),
                         ),
                       ),
-                      // 百分比文字
                       Text(
                         '$displayPercent%',
                         style: TextStyle(
                           color: Colors.white,
-                          fontSize: fontSize,
+                          fontSize: m.fontSize,
                           fontWeight: FontWeight.w700,
-                          letterSpacing: -1,
+                          letterSpacing: -0.5,
                           shadows: const [
                             Shadow(
                               color: Colors.black45,
@@ -116,11 +115,11 @@ class _ConcentricHudState extends State<ConcentricHud> with SingleTickerProvider
                     ],
                   ),
                 ),
-              ],
-            ),
-          );
-        },
-      ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
