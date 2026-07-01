@@ -21,6 +21,7 @@ import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
 import '../widgets/hover_close_button.dart';
+import '../widgets/episode_grid_layout.dart';
 import '../widgets/player_slot_layout.dart';
 
 enum LoadingStage { fetchingDetail, testingSpeed, initPlayer, ready, error }
@@ -993,28 +994,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return indices;
   }
 
-  /// Grid metrics: equal-width cells; fewer/wider columns when labels are long.
-  (int crossAxisCount, double childAspectRatio) _episodeGridMetrics(
-    double width,
-    List<int> epIndices,
-  ) {
-    if (epIndices.isEmpty) {
-      final fallback = (width / 80).floor().clamp(3, 8);
-      return (fallback, 2.0);
-    }
-
-    final hasLongLabel = epIndices.any((i) => _sources[i].sourceName.length > 4);
-    final compact = hasLongLabel || epIndices.length <= 8;
-
-    if (compact) {
-      final cross = width >= 360 ? 3 : 2;
-      return (cross, hasLongLabel ? 2.0 : 2.15);
-    }
-
-    final cross = (width / 72).floor().clamp(4, 10);
-    return (cross, 2.35);
-  }
-
   /// Episode grid with equal-width cells (no variable-width wrap).
   Widget _buildEpisodeGrid(
     List<int> epIndices, {
@@ -1025,19 +1004,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (closeOnTap) Navigator.pop(context);
     }
 
+    final hasLongLabel =
+        epIndices.any((i) => _sources[i].sourceName.length > 4);
+
     return LayoutBuilder(
       builder: (context, constraints) {
-        final (crossAxisCount, aspectRatio) =
-            _episodeGridMetrics(constraints.maxWidth, epIndices);
+        final screenWidth = MediaQuery.sizeOf(context).width;
+        final metrics = EpisodeGridLayout.metrics(
+          panelWidth: constraints.maxWidth,
+          screenWidth: screenWidth,
+          itemCount: epIndices.length,
+          hasLongLabel: hasLongLabel,
+        );
 
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            childAspectRatio: aspectRatio,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
+            crossAxisCount: metrics.crossAxisCount,
+            childAspectRatio: metrics.childAspectRatio,
+            crossAxisSpacing: metrics.spacing,
+            mainAxisSpacing: metrics.spacing,
           ),
           itemCount: epIndices.length,
           itemBuilder: (context, index) {
@@ -1707,20 +1694,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 加载中显示的剧集骨架屏
   Widget _buildEpisodeSkeleton() {
     final epIndices = _currentLineSourceIndices;
+    final hasLongLabel =
+        epIndices.any((i) => _sources[i].sourceName.length > 4);
     return LayoutBuilder(
       builder: (context, constraints) {
-        final (crossAxisCount, aspectRatio) =
-            _episodeGridMetrics(constraints.maxWidth, epIndices);
+        final screenWidth = MediaQuery.sizeOf(context).width;
+        final metrics = EpisodeGridLayout.metrics(
+          panelWidth: constraints.maxWidth,
+          screenWidth: screenWidth,
+          itemCount: epIndices.isEmpty ? 6 : epIndices.length,
+          hasLongLabel: hasLongLabel,
+        );
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            childAspectRatio: aspectRatio,
-            crossAxisSpacing: 8,
-            mainAxisSpacing: 8,
+            crossAxisCount: metrics.crossAxisCount,
+            childAspectRatio: metrics.childAspectRatio,
+            crossAxisSpacing: metrics.spacing,
+            mainAxisSpacing: metrics.spacing,
           ),
-          itemCount: crossAxisCount * 2,
+          itemCount: metrics.crossAxisCount * 2,
           itemBuilder: (context, index) => const _EpisodeSkeletonCell(),
         );
       },
@@ -2176,6 +2170,12 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
   Widget build(BuildContext context) {
     final active = widget.active;
     const primaryRed = Color(0xFFE50914);
+    final hPad = UIAdapt.px(context, 8);
+    final vPad = UIAdapt.px(context, 6);
+    final radius = UIAdapt.px(context, 10);
+    final labelSize = UIAdapt.fontSize(context, 12);
+    final durationSize = UIAdapt.fontSize(context, 10);
+    final gap = UIAdapt.px(context, 4);
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
@@ -2186,7 +2186,7 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
           transform: _hovered
               ? (Matrix4.identity()..scale(1.02))
               : Matrix4.identity(),
@@ -2197,7 +2197,7 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                 : (_hovered
                     ? Colors.white.withOpacity(0.1)
                     : Colors.white.withOpacity(0.05)),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(radius),
             border: Border.all(
               color: active
                   ? primaryRed
@@ -2228,22 +2228,25 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                   color: active
                       ? Colors.white
                       : (_hovered ? Colors.white : Colors.white60),
-                  fontSize: 12,
+                  fontSize: labelSize,
                   height: 1.25,
                   fontWeight: active ? FontWeight.bold : FontWeight.w500,
                 ),
               ),
               if (widget.duration != null) ...[
-                const SizedBox(height: 4),
+                SizedBox(height: gap),
                 Center(
                   child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: UIAdapt.px(context, 6),
+                      vertical: UIAdapt.px(context, 2),
+                    ),
                     decoration: BoxDecoration(
                       color: active
                           ? Colors.white.withOpacity(0.18)
                           : Colors.white.withOpacity(0.06),
-                      borderRadius: BorderRadius.circular(4),
+                      borderRadius:
+                          BorderRadius.circular(UIAdapt.px(context, 4)),
                     ),
                     child: Text(
                       widget.duration!,
@@ -2255,7 +2258,7 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                             : (_hovered
                                 ? Colors.white54
                                 : Colors.white38),
-                        fontSize: 10,
+                        fontSize: durationSize,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0.2,
                       ),
@@ -2300,6 +2303,7 @@ class _EpisodeSkeletonCellState extends State<_EpisodeSkeletonCell>
 
   @override
   Widget build(BuildContext context) {
+    final radius = UIAdapt.px(context, 10);
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, child) {
@@ -2308,7 +2312,7 @@ class _EpisodeSkeletonCellState extends State<_EpisodeSkeletonCell>
           child: Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(radius),
             ),
           ),
         );
