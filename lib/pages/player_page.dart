@@ -1000,19 +1000,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   ) {
     if (epIndices.isEmpty) {
       final fallback = (width / 80).floor().clamp(3, 8);
-      return (fallback, 1.6);
+      return (fallback, 2.0);
     }
 
     final hasLongLabel = epIndices.any((i) => _sources[i].sourceName.length > 4);
     final compact = hasLongLabel || epIndices.length <= 8;
 
     if (compact) {
-      final cross = width >= 900 ? 3 : 2;
-      return (cross, hasLongLabel ? 1.42 : 1.55);
+      final cross = width >= 360 ? 3 : 2;
+      return (cross, hasLongLabel ? 2.0 : 2.15);
     }
 
     final cross = (width / 72).floor().clamp(4, 10);
-    return (cross, 1.6);
+    return (cross, 2.35);
   }
 
   /// Episode grid with equal-width cells (no variable-width wrap).
@@ -2186,7 +2186,7 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
-          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           transform: _hovered
               ? (Matrix4.identity()..scale(1.02))
               : Matrix4.identity(),
@@ -2216,28 +2216,25 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                 : null,
           ),
           child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Expanded(
-                child: Center(
-                  child: Text(
-                    widget.label,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: active
-                          ? Colors.white
-                          : (_hovered ? Colors.white : Colors.white60),
-                      fontSize: 12,
-                      height: 1.3,
-                      fontWeight: active ? FontWeight.bold : FontWeight.w500,
-                    ),
-                  ),
+              Text(
+                widget.label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: active
+                      ? Colors.white
+                      : (_hovered ? Colors.white : Colors.white60),
+                  fontSize: 12,
+                  height: 1.25,
+                  fontWeight: active ? FontWeight.bold : FontWeight.w500,
                 ),
               ),
               if (widget.duration != null) ...[
-                const SizedBox(height: 6),
+                const SizedBox(height: 4),
                 Center(
                   child: Container(
                     padding:
