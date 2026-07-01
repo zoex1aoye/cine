@@ -45,6 +45,15 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   double _brightness = 0.5;
   double _volume = 100.0;
 
+  /// Only the outer [fraction] of screen width accepts brightness/volume drags.
+  static const double _kEdgeGestureWidthFraction = 0.2;
+
+  /// Ignore small vertical movement so taps / scrolls do not adjust levels.
+  static const double _kVerticalGestureThresholdPx = 24.0;
+
+  _VerticalGestureKind _activeVerticalGesture = _VerticalGestureKind.none;
+  double _verticalDragDistancePx = 0.0;
+
   // Indicator State
   String _indicatorText = '';
   IconData? _indicatorIcon;
@@ -279,32 +288,58 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     }
   }
 
+  void _onVerticalDragStart(DragStartDetails details, double screenWidth) {
+    if (!widget.state.isFullscreen()) return;
+    _verticalDragDistancePx = 0.0;
+    _activeVerticalGesture =
+        _verticalGestureKindForX(details.globalPosition.dx, screenWidth);
+  }
+
   void _onVerticalDragUpdate(DragUpdateDetails details, double screenWidth) {
     if (!widget.state.isFullscreen()) return;
+    if (_activeVerticalGesture == _VerticalGestureKind.none) return;
+
+    _verticalDragDistancePx += details.delta.dy.abs();
+    if (_verticalDragDistancePx < _kVerticalGestureThresholdPx) return;
 
     _startHideTimer();
     final dy = details.delta.dy;
-    if (details.globalPosition.dx < screenWidth / 2) {
-      setState(() {
-        _brightness -= dy * 0.005;
-        _brightness = _brightness.clamp(0.0, 1.0);
-      });
-      ScreenBrightness().setScreenBrightness(_brightness);
-      _showActionIndicator(
-        Icons.brightness_medium,
-        '${(_brightness * 100).round()}%',
-      );
-    } else {
-      setState(() {
-        _volume -= dy * 0.5;
-        _volume = _volume.clamp(0.0, 100.0);
-      });
-      player.setVolume(_volume);
-      _showActionIndicator(
-        _volume == 0 ? Icons.volume_off : Icons.volume_up,
-        '${_volume.round()}%',
-      );
+    switch (_activeVerticalGesture) {
+      case _VerticalGestureKind.brightness:
+        setState(() {
+          _brightness -= dy * 0.005;
+          _brightness = _brightness.clamp(0.0, 1.0);
+        });
+        ScreenBrightness().setScreenBrightness(_brightness);
+        _showActionIndicator(
+          Icons.brightness_medium,
+          '${(_brightness * 100).round()}%',
+        );
+      case _VerticalGestureKind.volume:
+        setState(() {
+          _volume -= dy * 0.5;
+          _volume = _volume.clamp(0.0, 100.0);
+        });
+        player.setVolume(_volume);
+        _showActionIndicator(
+          _volume == 0 ? Icons.volume_off : Icons.volume_up,
+          '${_volume.round()}%',
+        );
+      case _VerticalGestureKind.none:
+        break;
     }
+  }
+
+  void _onVerticalDragEnd(DragEndDetails details) {
+    _activeVerticalGesture = _VerticalGestureKind.none;
+    _verticalDragDistancePx = 0.0;
+  }
+
+  _VerticalGestureKind _verticalGestureKindForX(double dx, double screenWidth) {
+    final edge = screenWidth * _kEdgeGestureWidthFraction;
+    if (dx <= edge) return _VerticalGestureKind.brightness;
+    if (dx >= screenWidth - edge) return _VerticalGestureKind.volume;
+    return _VerticalGestureKind.none;
   }
 
   void _onDoubleTapDown(TapDownDetails details, double screenWidth) {
@@ -350,8 +385,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
           child: GestureDetector(
             onTap: _toggleControls,
             onDoubleTapDown: (details) => _onDoubleTapDown(details, screenWidth),
+            onVerticalDragStart: (details) =>
+                _onVerticalDragStart(details, screenWidth),
             onVerticalDragUpdate: (details) =>
                 _onVerticalDragUpdate(details, screenWidth),
+            onVerticalDragEnd: _onVerticalDragEnd,
             behavior: HitTestBehavior.opaque,
           ),
         ),
@@ -691,3 +729,5 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     );
   }
 }
+
+enum _VerticalGestureKind { none, brightness, volume }
