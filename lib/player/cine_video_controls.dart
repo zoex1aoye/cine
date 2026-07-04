@@ -30,6 +30,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   Duration? _anchorPosition;
   bool? _anchorWasPlaying;
   Duration _scrubTarget = Duration.zero;
+  /// Holds slider at scrub target until player position catches up after release.
+  Duration? _pendingSeekTarget;
   bool _showReturnTip = false;
   Timer? _returnTipTimer;
   Timer? _seekDebounceTimer;
@@ -78,6 +80,20 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
   bool get _hasAnchorSession => _anchorPosition != null;
 
+  Duration get _displayPosition {
+    if (_isScrubbing) return _scrubTarget;
+    if (_pendingSeekTarget != null) return _pendingSeekTarget!;
+    return _position;
+  }
+
+  static bool _positionMatchesTarget(
+    Duration position,
+    Duration target, {
+    Duration tolerance = const Duration(milliseconds: 1500),
+  }) {
+    return (position - target).abs() <= tolerance;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -94,10 +110,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       if (mounted) setState(() => _playing = event);
     });
     _positionSub = player.stream.position.listen((event) {
-      if (mounted && !_isScrubbing) {
-        _position = event;
-        if (_showControls) setState(() {});
+      if (!mounted || _isScrubbing) return;
+      _position = event;
+      if (_pendingSeekTarget != null &&
+          _positionMatchesTarget(event, _pendingSeekTarget!)) {
+        _pendingSeekTarget = null;
       }
+      if (_showControls) setState(() {});
     });
     _durationSub = player.stream.duration.listen((event) {
       if (mounted) setState(() => _duration = event);
@@ -226,6 +245,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
     setState(() {
       _isScrubbing = true;
+      _pendingSeekTarget = null;
       _scrubTarget = target;
       if (_showReturnTip) {
         _showReturnTip = false;
@@ -263,7 +283,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
   void _onScrubEnd() {
     _seekDebounceTimer?.cancel();
-    setState(() => _isScrubbing = false);
+    final target = _scrubTarget;
+    setState(() {
+      _isScrubbing = false;
+      _pendingSeekTarget = target;
+    });
+    _seekMain(target);
     _scheduleReturnTip();
     _startHideTimer();
   }
@@ -283,6 +308,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     if (mounted) {
       setState(() {
         _position = anchor;
+        _pendingSeekTarget = null;
         _clearAnchorSession();
       });
     }
@@ -369,9 +395,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   Widget build(BuildContext context) {
     final primaryColor = Theme.of(context).colorScheme.primary;
     final screenWidth = MediaQuery.of(context).size.width;
-    final sliderValue = (_isScrubbing
-            ? _scrubTarget.inMilliseconds.toDouble()
-            : _position.inMilliseconds.toDouble())
+    final sliderValue = _displayPosition.inMilliseconds
+        .toDouble()
         .clamp(
           0.0,
           _duration.inMilliseconds.toDouble() > 0
@@ -620,7 +645,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                     child: Row(
                       children: [
                         Text(
-                          _formatDuration(_position),
+                          _formatDuration(_displayPosition),
                           style: const TextStyle(color: Colors.white),
                         ),
                         const SizedBox(width: 16),
