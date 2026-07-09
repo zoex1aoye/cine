@@ -32,9 +32,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   Duration _scrubTarget = Duration.zero;
   /// Holds slider at scrub target until player position catches up after release.
   Duration? _pendingSeekTarget;
+  /// Player position when pending seek was armed (detects keyframe land).
+  Duration? _positionAtPendingStart;
   bool _showReturnTip = false;
   Timer? _returnTipTimer;
   Timer? _seekDebounceTimer;
+  Timer? _pendingSeekTimeoutTimer;
 
   static const _returnTipDuration = Duration(seconds: 30);
   static const _returnTipMinOffset = Duration(seconds: 5);
@@ -42,6 +45,15 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   // 进度条拖动死区（迟滞）半径，单位：物理像素。
   static const double _kSliderDeadbandPx = 10.0;
   static const double _kSliderDeadbandFloorMs = 1200.0;
+
+  /// Clear pending scrub UI once player position is this close to the target.
+  static const _kPendingSeekMatchTolerance = Duration(milliseconds: 1500);
+
+  /// Fallback: drop pending UI even if seek never matches (failed / keyframe).
+  static const _kPendingSeekTimeout = Duration(seconds: 4);
+
+  /// After scrub release the player is paused; a jump this large means seek landed.
+  static const _kPendingSeekLandedMinJump = Duration(milliseconds: 500);
 
   // Gestures
   double _brightness = 0.5;
@@ -89,9 +101,59 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   static bool _positionMatchesTarget(
     Duration position,
     Duration target, {
-    Duration tolerance = const Duration(milliseconds: 1500),
+    Duration tolerance = _kPendingSeekMatchTolerance,
   }) {
     return (position - target).abs() <= tolerance;
+  }
+
+  void _armPendingSeek(Duration target) {
+    _pendingSeekTimeoutTimer?.cancel();
+    _pendingSeekTarget = target;
+    _positionAtPendingStart = _position;
+    _pendingSeekTimeoutTimer = Timer(_kPendingSeekTimeout, () {
+      if (!mounted || _pendingSeekTarget == null) return;
+      setState(_clearPendingSeek);
+    });
+  }
+
+  void _clearPendingSeek() {
+    _pendingSeekTimeoutTimer?.cancel();
+    _pendingSeekTimeoutTimer = null;
+    _pendingSeekTarget = null;
+    _positionAtPendingStart = null;
+  }
+
+  void _maybeClearPendingSeek(Duration event) {
+    final pending = _pendingSeekTarget;
+    if (pending == null) return;
+
+    if (_positionMatchesTarget(event, pending)) {
+      _clearPendingSeek();
+      return;
+    }
+
+    // Seek often lands on a keyframe away from the exact scrub target.
+    // Only trust a position jump while paused — during playback the clock
+    // advances naturally and would falsely clear pending (±10s seeks).
+    if (_playing) return;
+    final start = _positionAtPendingStart;
+    if (start != null &&
+        (event - start).abs() >= _kPendingSeekLandedMinJump) {
+      _clearPendingSeek();
+    }
+  }
+
+  Duration _clampPosition(Duration value) {
+    if (value < Duration.zero) return Duration.zero;
+    if (_duration > Duration.zero && value > _duration) return _duration;
+    return value;
+  }
+
+  void _seekRelative(Duration offset) {
+    _seekDebounceTimer?.cancel();
+    final target = _clampPosition(_displayPosition + offset);
+    setState(() => _armPendingSeek(target));
+    player.seek(target);
   }
 
   @override
@@ -112,10 +174,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     _positionSub = player.stream.position.listen((event) {
       if (!mounted || _isScrubbing) return;
       _position = event;
-      if (_pendingSeekTarget != null &&
-          _positionMatchesTarget(event, _pendingSeekTarget!)) {
-        _pendingSeekTarget = null;
-      }
+      _maybeClearPendingSeek(event);
       if (_showControls) setState(() {});
     });
     _durationSub = player.stream.duration.listen((event) {
@@ -147,6 +206,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   void dispose() {
     _returnTipTimer?.cancel();
     _seekDebounceTimer?.cancel();
+    _pendingSeekTimeoutTimer?.cancel();
     ScreenBrightness().resetScreenBrightness();
     _hideTimer?.cancel();
     _indicatorTimer?.cancel();
@@ -245,7 +305,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
     setState(() {
       _isScrubbing = true;
-      _pendingSeekTarget = null;
+      _clearPendingSeek();
       _scrubTarget = target;
       if (_showReturnTip) {
         _showReturnTip = false;
@@ -282,13 +342,17 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   void _onScrubEnd() {
+    final hadPendingDebounce = _seekDebounceTimer?.isActive ?? false;
     _seekDebounceTimer?.cancel();
     final target = _scrubTarget;
     setState(() {
       _isScrubbing = false;
-      _pendingSeekTarget = target;
+      _armPendingSeek(target);
     });
-    _seekMain(target);
+    // Flush only when the debounce timer was cancelled before firing.
+    if (hadPendingDebounce) {
+      _seekMain(target);
+    }
     _scheduleReturnTip();
     _startHideTimer();
   }
@@ -308,7 +372,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     if (mounted) {
       setState(() {
         _position = anchor;
-        _pendingSeekTarget = null;
+        _clearPendingSeek();
         _clearAnchorSession();
       });
     }
@@ -374,12 +438,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     if (_hasAnchorSession) _clearAnchorSession();
 
     if (details.globalPosition.dx < screenWidth / 2) {
-      final target = _position - const Duration(seconds: 10);
-      player.seek(target < Duration.zero ? Duration.zero : target);
+      _seekRelative(const Duration(seconds: -10));
       _showActionIndicator(Icons.replay_10, '-10s');
     } else {
-      final target = _position + const Duration(seconds: 10);
-      player.seek(target > _duration ? _duration : target);
+      _seekRelative(const Duration(seconds: 10));
       _showActionIndicator(Icons.forward_10, '+10s');
     }
   }
@@ -575,11 +637,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                               color: Colors.white, size: 48),
                           onPressed: () {
                             _startHideTimer();
-                            final target =
-                                _position - const Duration(seconds: 10);
-                            player.seek(
-                              target < Duration.zero ? Duration.zero : target,
-                            );
+                            _seekRelative(const Duration(seconds: -10));
                           },
                         ),
                         const SizedBox(width: 40),
@@ -609,11 +667,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                               color: Colors.white, size: 48),
                           onPressed: () {
                             _startHideTimer();
-                            final target =
-                                _position + const Duration(seconds: 10);
-                            player.seek(
-                              target > _duration ? _duration : target,
-                            );
+                            _seekRelative(const Duration(seconds: 10));
                           },
                         ),
                       ],
