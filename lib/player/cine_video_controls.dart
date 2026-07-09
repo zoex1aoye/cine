@@ -49,8 +49,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   /// Clear pending scrub UI once player position is this close to the target.
   static const _kPendingSeekMatchTolerance = Duration(milliseconds: 1500);
 
-  /// Fallback: drop pending UI even if seek never matches (failed / keyframe).
-  static const _kPendingSeekTimeout = Duration(seconds: 4);
+  /// Last-resort: drop pending UI if seek never settles (slow HLS can take 10s+).
+  static const _kPendingSeekTimeout = Duration(seconds: 30);
 
   /// After scrub release the player is paused; a jump this large means seek landed.
   static const _kPendingSeekLandedMinJump = Duration(milliseconds: 500);
@@ -98,6 +98,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     return _position;
   }
 
+  bool get _isSeekSettling => _pendingSeekTarget != null;
+
   static bool _positionMatchesTarget(
     Duration position,
     Duration target, {
@@ -119,6 +121,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         _position = player.state.position;
         _clearPendingSeek();
       });
+      _startHideTimer();
     });
   }
 
@@ -141,7 +144,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     // Seek often lands on a keyframe away from the exact scrub target.
     // Only trust a position jump while paused — during playback the clock
     // advances naturally and would falsely clear pending (±10s seeks).
-    if (_playing) return;
+    // While still buffering, keep the target UI so the user sees where
+    // they asked to go during a long HLS seek.
+    if (_playing || _isBuffering) return;
     final start = _positionAtPendingStart;
     if (start != null &&
         (event - start).abs() >= _kPendingSeekLandedMinJump) {
@@ -184,7 +189,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       // arm/timeout never falls back to a stale pre-scrub position.
       _position = event;
       if (_isScrubbing) return;
+      final wasSettling = _isSeekSettling;
       _maybeClearPendingSeek(event);
+      if (wasSettling && !_isSeekSettling) {
+        setState(() {});
+        _startHideTimer();
+        return;
+      }
       if (_showControls) setState(() {});
     });
     _durationSub = player.stream.duration.listen((event) {
@@ -195,6 +206,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     });
     _bufferingSub = player.stream.buffering.listen((event) {
       if (!mounted) return;
+      final wasBuffering = _isBuffering;
       setState(() => _isBuffering = event);
       if (event) {
         _bufferingStartTime ??= DateTime.now();
@@ -208,6 +220,16 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         _bufferingUiTimer?.cancel();
         _bufferingUiTimer = null;
         if (_showWeakNetHint) setState(() => _showWeakNetHint = false);
+        // After a long seek, buffering often ends before a near-target
+        // position event arrives — re-check with the live clock now that
+        // we are no longer buffering (jump heuristic is allowed again).
+        if (wasBuffering && _isSeekSettling) {
+          setState(() {
+            _position = player.state.position;
+            _maybeClearPendingSeek(_position);
+          });
+          if (!_isSeekSettling) _startHideTimer();
+        }
       }
     });
   }
@@ -241,8 +263,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
   void _startHideTimer() {
     _hideTimer?.cancel();
+    // Keep chrome visible while a long seek is still settling.
+    if (_isSeekSettling) return;
     _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted && _playing && !_isScrubbing) {
+      if (mounted && _playing && !_isScrubbing && !_isSeekSettling) {
         setState(() => _showControls = false);
       }
     });
@@ -360,13 +384,21 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     _armPendingSeek(target);
     // Seek may already have landed while the finger was down.
     _maybeClearPendingSeek(_position);
-    setState(() => _isScrubbing = false);
+    setState(() {
+      _isScrubbing = false;
+      _showControls = true;
+    });
     // Flush only when the debounce timer was cancelled before firing.
     if (hadPendingDebounce) {
       _seekMain(target);
     }
     _scheduleReturnTip();
-    _startHideTimer();
+    // Do not auto-hide while seek is still settling (can take 10s+ on HLS).
+    if (!_isSeekSettling) {
+      _startHideTimer();
+    } else {
+      _hideTimer?.cancel();
+    }
   }
 
   Future<void> _returnToAnchor() async {
@@ -520,7 +552,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             ),
           ),
 
-        if (_isScrubbing)
+        if (_isScrubbing || _isSeekSettling)
           Center(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
@@ -528,19 +560,46 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                 color: Colors.black.withOpacity(0.75),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Text(
-                _formatDuration(_scrubTarget),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.0,
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _formatDuration(
+                      _isScrubbing ? _scrubTarget : _pendingSeekTarget!,
+                    ),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.0,
+                    ),
+                  ),
+                  if (_isSeekSettling && !_isScrubbing) ...[
+                    const SizedBox(height: 10),
+                    const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Colors.white70),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _isBuffering ? '正在跳转…' : '准备播放…',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
           ),
 
-        if (_isBuffering && !_isScrubbing)
+        if (_isBuffering && !_isScrubbing && !_isSeekSettling)
           Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
