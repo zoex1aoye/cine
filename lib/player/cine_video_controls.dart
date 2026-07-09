@@ -112,7 +112,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     _positionAtPendingStart = _position;
     _pendingSeekTimeoutTimer = Timer(_kPendingSeekTimeout, () {
       if (!mounted || _pendingSeekTarget == null) return;
-      setState(_clearPendingSeek);
+      // Stream may be silent after a seek that finished during scrub;
+      // sync from the player so clearing pending does not snap to a stale
+      // pre-scrub _position.
+      setState(() {
+        _position = player.state.position;
+        _clearPendingSeek();
+      });
     });
   }
 
@@ -152,7 +158,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   void _seekRelative(Duration offset) {
     _seekDebounceTimer?.cancel();
     final target = _clampPosition(_displayPosition + offset);
-    setState(() => _armPendingSeek(target));
+    _armPendingSeek(target);
+    setState(() {});
     player.seek(target);
   }
 
@@ -172,8 +179,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       if (mounted) setState(() => _playing = event);
     });
     _positionSub = player.stream.position.listen((event) {
-      if (!mounted || _isScrubbing) return;
+      if (!mounted) return;
+      // Always keep bookkeeping in sync — even while scrubbing — so pending
+      // arm/timeout never falls back to a stale pre-scrub position.
       _position = event;
+      if (_isScrubbing) return;
       _maybeClearPendingSeek(event);
       if (_showControls) setState(() {});
     });
@@ -303,9 +313,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       milliseconds: ms.clamp(0.0, _duration.inMilliseconds.toDouble()).toInt(),
     );
 
+    _clearPendingSeek();
     setState(() {
       _isScrubbing = true;
-      _clearPendingSeek();
       _scrubTarget = target;
       if (_showReturnTip) {
         _showReturnTip = false;
@@ -345,10 +355,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     final hadPendingDebounce = _seekDebounceTimer?.isActive ?? false;
     _seekDebounceTimer?.cancel();
     final target = _scrubTarget;
-    setState(() {
-      _isScrubbing = false;
-      _armPendingSeek(target);
-    });
+    // Prefer the live player clock when available (updated during scrub).
+    _position = player.state.position;
+    _armPendingSeek(target);
+    // Seek may already have landed while the finger was down.
+    _maybeClearPendingSeek(_position);
+    setState(() => _isScrubbing = false);
     // Flush only when the debounce timer was cancelled before firing.
     if (hadPendingDebounce) {
       _seekMain(target);
@@ -370,9 +382,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     }
 
     if (mounted) {
+      _clearPendingSeek();
       setState(() {
         _position = anchor;
-        _clearPendingSeek();
         _clearAnchorSession();
       });
     }
