@@ -4,6 +4,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
+import '../utils/platform_utils.dart';
+
 class CineVideoControls extends StatefulWidget {
   final VideoState state;
   final String? title;
@@ -146,6 +148,29 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     } else {
       _hideTimer?.cancel();
     }
+  }
+
+  /// Desktop: pointer enter / move shows chrome and (re)starts idle hide.
+  void _showControlsTransiently() {
+    if (!_showControls) {
+      setState(() => _showControls = true);
+    }
+    _startHideTimer();
+  }
+
+  void _hideControlsImmediate() {
+    _hideTimer?.cancel();
+    if (_showControls && mounted) {
+      setState(() => _showControls = false);
+    }
+  }
+
+  void _onSurfaceTap() {
+    if (isDesktopPlatform) {
+      player.playOrPause();
+      return;
+    }
+    _toggleControls();
   }
 
   void _startHideTimer() {
@@ -377,20 +402,25 @@ class _CineVideoControlsState extends State<CineVideoControls> {
               : 1.0,
         );
 
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: GestureDetector(
-            onTap: _toggleControls,
-            onDoubleTapDown: (details) => _onDoubleTapDown(details, screenWidth),
-            onVerticalDragStart: (details) =>
-                _onVerticalDragStart(details, screenWidth),
-            onVerticalDragUpdate: (details) =>
-                _onVerticalDragUpdate(details, screenWidth),
-            onVerticalDragEnd: _onVerticalDragEnd,
-            behavior: HitTestBehavior.opaque,
+    return MouseRegion(
+      onEnter: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
+      onHover: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
+      onExit: isDesktopPlatform ? (_) => _hideControlsImmediate() : null,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: _onSurfaceTap,
+              onDoubleTapDown: (details) =>
+                  _onDoubleTapDown(details, screenWidth),
+              onVerticalDragStart: (details) =>
+                  _onVerticalDragStart(details, screenWidth),
+              onVerticalDragUpdate: (details) =>
+                  _onVerticalDragUpdate(details, screenWidth),
+              onVerticalDragEnd: _onVerticalDragEnd,
+              behavior: HitTestBehavior.opaque,
+            ),
           ),
-        ),
 
         if (_showIndicator)
           Center(
@@ -727,7 +757,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
               ),
             ),
           ),
-      ],
+        ],
+      ),
     );
   }
 }
