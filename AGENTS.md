@@ -21,6 +21,7 @@
 | 改规范 / 规则 / 技能 | `.cursor/skills/agents-md-authoring` / `rules-authoring` / `skill-authoring` |
 | 会话收尾 / 文档对账 | `.cursor/skills/neat-freak` |
 | Cursor Cloud Linux VM 环境 | `docs/cloud-vm.md` |
+| Hook（开工注入 / 飞轮提示） | `.cursor/hooks.json` + `.cursor/hooks/` |
 
 ## 三、红线（违反 = 立即停止并报告）
 

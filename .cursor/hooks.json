@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "bash .cursor/hooks/agents-md-check.sh",
+        "timeout": 10
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "bash .cursor/hooks/flywheel-reminder.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}

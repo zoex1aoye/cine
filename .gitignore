@@ -11,6 +11,7 @@
 android/build/
 /.dart_tool/
 .pub-cache/
+/coverage/
 
 # Flutter 自动生成
 .flutter-plugins
@@ -20,10 +21,13 @@ android/build/
 # Dart 工具缓存
 .pub/
 
-# IDE 配置
+# IDE / 编辑器
 .idea/
 *.iml
 *.iws
+.vscode/
+*.swp
+*~
 
 # 运行时生成物
 /error.html
@@ -37,7 +41,10 @@ android/build/
 # 个人开发笔记与规划文档
 /devnotes.md
 /mubu_refactor_plan.md
-/CLAUDE.md
+
+# 本机 AI / 工具链（不入库）
+.claude/
+.fvm/
 
 # 临时调试脚本与测试数据
 test/scratch_*
@@ -57,7 +64,6 @@ print_*.dart
 /ios/Flutter/Generated.xcconfig
 /ios/Flutter/flutter_export_environment.sh
 
-# 环境变量与编辑器配置
+# 环境变量
 .env
 *.env
-.vscode/

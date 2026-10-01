@@ -12,3 +12,5 @@ alwaysApply: true
 3. 一次性任务要求忽略本提醒
 
 禁止把一次性偏好写成 alwaysApply 规则。
+
+配套 hook：`.cursor/hooks/flywheel-reminder.sh` 在 `beforeSubmitPrompt` 命中信号词时提示用户（不阻断）；**Agent 侧以本规则为准**（Cursor 该事件无法注入 agent 上下文）。
