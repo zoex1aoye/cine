@@ -1,9 +1,9 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
+import 'failover_cover_image.dart';
 import 'mubu_button.dart';
 
 class MovieCard extends StatefulWidget {
@@ -112,11 +112,12 @@ class _MovieCardState extends State<MovieCard> {
                                 ),
                               ),
                             )
-                          : CachedNetworkImage(
-                              imageUrl: widget.video.coverUrl(widget.imgDomain),
+                          : FailoverCoverImage(
+                              coverPath: widget.video.coverPath,
+                              imgDomain: widget.imgDomain,
                               fit: BoxFit.cover,
                               filterQuality: FilterQuality.high,
-                              placeholder: (_, __) => Container(
+                              placeholderBuilder: (_) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: const Center(
                                   child: SizedBox(
@@ -129,7 +130,7 @@ class _MovieCardState extends State<MovieCard> {
                                   ),
                                 ),
                               ),
-                              errorWidget: (_, url, error) => Container(
+                              errorBuilder: (_) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: Icon(
                                   Icons.movie,

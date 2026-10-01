@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
@@ -16,6 +15,7 @@ import '../utils/source_picker.dart';
 import '../utils/source_quality.dart';
 import '../utils/stream_probe.dart';
 import '../widgets/mubu_dialog.dart';
+import '../widgets/failover_cover_image.dart';
 import 'package:hive/hive.dart';
 import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
@@ -888,8 +888,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
 
     final imgDomain = MubuApiClient.instance.imgDomain;
-    final coverUrl = widget.video.coverUrl(imgDomain);
-    if (coverUrl.isEmpty) {
+    if (widget.video.coverPath.isEmpty || imgDomain.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -904,10 +903,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             duration: const Duration(milliseconds: 600),
             opacity: imgOpacity,
             curve: Curves.easeOutCubic,
-            child: CachedNetworkImage(
-              imageUrl: coverUrl,
+            child: FailoverCoverImage(
+              coverPath: widget.video.coverPath,
+              imgDomain: imgDomain,
               fit: BoxFit.cover,
-              errorWidget: (_, __, ___) => const SizedBox.shrink(),
+              errorBuilder: (_) => const SizedBox.shrink(),
+              placeholderBuilder: (_) => const SizedBox.shrink(),
             ),
           ),
           ClipRect(
@@ -1296,17 +1297,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return null;
   }
 
-  Widget _buildBlurredPosterBase(String coverUrl) {
-    if (coverUrl.isEmpty) {
+  Widget _buildBlurredPosterBase(String coverPath, String imgDomain) {
+    if (coverPath.isEmpty) {
       return const ColoredBox(color: Color(0xFF070708));
     }
     return Stack(
       fit: StackFit.expand,
       children: [
-        CachedNetworkImage(
-          imageUrl: coverUrl,
+        FailoverCoverImage(
+          coverPath: coverPath,
+          imgDomain: imgDomain,
           fit: BoxFit.cover,
-          errorWidget: (_, __, ___) => const ColoredBox(color: Color(0xFF070708)),
+          errorBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
+          placeholderBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
         ),
         ClipRect(
           child: BackdropFilter(
@@ -1322,7 +1325,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Widget _buildVideoPlayerContainer() {
     final imgDomain = MubuApiClient.instance.imgDomain;
-    final coverUrl = widget.video.coverUrl(imgDomain);
+    final hasCover = widget.video.coverPath.isNotEmpty && imgDomain.isNotEmpty;
     final showForegroundOverlay =
         _stage == LoadingStage.ready && !_startPlayRequested;
     final showVideo = _stage == LoadingStage.ready &&
@@ -1347,7 +1350,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             fit: StackFit.expand,
             children: [
               // B2: persistent blurred poster fills letterbox/pillarbox areas
-              _buildBlurredPosterBase(coverUrl),
+              _buildBlurredPosterBase(widget.video.coverPath, imgDomain),
 
               // Inner video viewport (contain, silent 200ms resize)
               if (showVideo)
@@ -1369,7 +1372,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ),
 
               // L3: sharp cover + frost overlay (fades when playback starts)
-              if (coverUrl.isNotEmpty)
+              if (hasCover)
                 Positioned.fill(
                   child: IgnorePointer(
                     ignoring: !showForegroundOverlay,
@@ -1377,10 +1380,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       duration: const Duration(milliseconds: 600),
                       opacity: showForegroundOverlay ? 1.0 : 0.0,
                       curve: Curves.easeOutCubic,
-                      child: CachedNetworkImage(
-                        imageUrl: coverUrl,
+                      child: FailoverCoverImage(
+                        coverPath: widget.video.coverPath,
+                        imgDomain: imgDomain,
                         fit: BoxFit.cover,
-                        errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                        errorBuilder: (_) => const SizedBox.shrink(),
+                        placeholderBuilder: (_) => const SizedBox.shrink(),
                       ),
                     ),
                   ),

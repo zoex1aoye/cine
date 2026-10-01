@@ -1,10 +1,10 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_ui_adapt.dart';
+import 'failover_cover_image.dart';
 import 'mubu_button.dart';
 import 'mubu_dialog.dart';
 import 'mubu_skeleton.dart';
@@ -115,10 +115,9 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
     final isWide = width >= 650;
-    final coverUrl = widget.video.coverUrl(widget.imgDomain);
     
     Widget posterWidget() {
-      if (coverUrl.isEmpty) {
+      if (widget.video.coverPath.isEmpty) {
         return Container(
           color: const Color(0xFF1A1A1E),
           child: Center(
@@ -126,11 +125,12 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
           ),
         );
       }
-      return CachedNetworkImage(
-        imageUrl: coverUrl,
+      return FailoverCoverImage(
+        coverPath: widget.video.coverPath,
+        imgDomain: widget.imgDomain,
         fit: BoxFit.cover,
-        placeholder: (_, __) => Container(color: const Color(0xFF1A1A1E)),
-        errorWidget: (_, __, ___) => Container(
+        placeholderBuilder: (_) => Container(color: const Color(0xFF1A1A1E)),
+        errorBuilder: (_) => Container(
           color: const Color(0xFF1A1A1E),
           child: Icon(Icons.movie, color: Colors.white24, size: UIAdapt.px(context, 40)),
         ),

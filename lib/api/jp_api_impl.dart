@@ -18,6 +18,9 @@ class JpApiClientImpl implements MubuApiClient {
   String get imgDomain => _jpApi.imgDomain;
 
   @override
+  List<String> get imgDomainCandidates => _jpApi.imgDomainCandidates;
+
+  @override
   Future<void> init() async {
     // 转发系统级初始化流程
     await _jpApi.init();

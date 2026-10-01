@@ -7,6 +7,7 @@ import 'package:hive/hive.dart';
 import '../models/jp_models.dart';
 import '../models/mubu_hive.dart';
 import '../utils/detail_source_parse.dart';
+import '../utils/cover_cdn.dart';
 import 'jp_domain_discovery.dart';
 import 'jp_log.dart';
 
@@ -19,6 +20,7 @@ class JpApi {
   String _apiRoot = JpDomainDiscovery.fallbackRoot;
   String _baseUrl = 'https://${JpDomainDiscovery.fallbackRoot}/api';
   String _imgDomain = '';
+  List<String> _imgDomainCandidates = List<String>.from(kHardcodedImgDomainBackups);
   String _secret = '';
   bool _initialized = false;
   Future<void>? _initFuture;
@@ -48,6 +50,10 @@ class JpApi {
 
   /// 获取当前解析成功、可用的活跃图片/封面 CDN 域名
   String get imgDomain => _imgDomain;
+
+  /// 封面失败换域候选（主域置首）
+  List<String> get imgDomainCandidates =>
+      List<String>.unmodifiable(_imgDomainCandidates);
 
   /// 客户端 API 初始化入口
   ///
@@ -83,6 +89,7 @@ class JpApi {
         } else {
           _imgDomain = 'static2.gutaike.com';
         }
+        _imgDomainCandidates = mergeImgDomainCandidates(primary: _imgDomain);
         _initialized = true;
         unawaited(_backgroundRefresh(isFirstInit: false));
         return;
@@ -367,6 +374,7 @@ class JpApi {
   /// 
   /// 若默认图片域名无法连通，将从服务器拉取备用域名列表并进行并发测速，
   /// 若均不可用，会自动降级使用内置硬编码的 CDN 域名（如 static2.gutaike.com）。
+  /// 无论默认域是否可用，都会合并 package + 硬编码为 [_imgDomainCandidates]（主域置首）。
   Future<void> _loadConfig() async {
     try {
       final authResp = await _get('/v2/settings/appAuthConfig');
@@ -381,28 +389,29 @@ class JpApi {
         testPath = '/upload/video/2023/12/09/0cff0e65030b486db58408abeeefd85b.jpg';
       }
 
+      // 始终拉取备用域列表，供封面失败换域（不改变单测速图选主逻辑）
+      final fallbackResp = await _get('/v2/settings/packageDomainConfig');
+      List<String> packageDomains = [];
+      if (fallbackResp != null && fallbackResp['data'] != null) {
+        final domainsStr = fallbackResp['data']['imgDomain'] as String? ?? '';
+        packageDomains = domainsStr
+            .split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+      }
+      jpLog('CDN', 'Package img domains: $packageDomains');
+
       // 验证默认图片域名是否可以连通
       final defaultOk = await _testImgDomain(_imgDomain, testPath);
       jpLog('CDN', 'Default domain check: $_imgDomain is working: $defaultOk');
 
       if (!defaultOk) {
-        jpLog('CDN', 'Default domain failed. Fetching backup domains...');
-        // 从云端拉取多组备选图片域名
-        final fallbackResp = await _get('/v2/settings/packageDomainConfig');
-        List<String> backupDomains = [];
-        if (fallbackResp != null && fallbackResp['data'] != null) {
-          final domainsStr = fallbackResp['data']['imgDomain'] as String? ?? '';
-          backupDomains = domainsStr.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-        }
-        jpLog('CDN', 'Backup domains list: $backupDomains');
-        
-        // 压入硬编码的安全备用图片域名
-        const hardcodedBackups = ['static2.gutaike.com', 'static.shaxyt.com'];
-        for (final fallback in hardcodedBackups) {
-          if (!backupDomains.contains(fallback)) {
-            backupDomains.add(fallback);
-          }
-        }
+        jpLog('CDN', 'Default domain failed. Racing backup domains...');
+        final backupDomains = mergeImgDomainCandidates(
+          primary: '',
+          fromPackage: packageDomains,
+        );
         jpLog('CDN', 'Final testing list (including hardcoded fallback): $backupDomains');
 
         // 并发进行备选域名测速 (竞速模式)
@@ -417,7 +426,13 @@ class JpApi {
         }
       }
 
+      _imgDomainCandidates = mergeImgDomainCandidates(
+        primary: _imgDomain,
+        fromPackage: packageDomains,
+      );
+
       jpLog('CDN', 'Final active imgDomain resolved to: $_imgDomain');
+      jpLog('CDN', 'imgDomainCandidates: $_imgDomainCandidates');
       
       final configBox = Hive.box<String>('config');
       await configBox.put('last_img_domain', _imgDomain);
@@ -430,6 +445,7 @@ class JpApi {
       }
     } catch (e, s) {
       jpLog('CDN', 'Error in _loadConfig: $e\n$s');
+      _imgDomainCandidates = mergeImgDomainCandidates(primary: _imgDomain);
     }
   }
 

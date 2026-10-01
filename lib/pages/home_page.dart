@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:ui';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
@@ -10,6 +9,7 @@ import '../widgets/movie_sliver_grid.dart';
 import '../widgets/mubu_error_widget.dart';
 import '../widgets/mubu_dialog.dart';
 import '../widgets/mubu_button.dart';
+import '../widgets/failover_cover_image.dart';
 import 'player_page.dart';
 import 'category_filter_page.dart';
 import 'search_page.dart';
@@ -1094,13 +1094,14 @@ class _HeroBannerState extends State<_HeroBanner> {
               top: 0,
               bottom: 0,
               width: MediaQuery.of(context).size.width * 0.6,
-              child: CachedNetworkImage(
-                imageUrl: widget.video.coverUrl(widget.imgDomain),
+              child: FailoverCoverImage(
+                coverPath: widget.video.coverPath,
+                imgDomain: widget.imgDomain,
                 fit: BoxFit.cover,
                 color: Colors.white.withOpacity(0.5),
                 colorBlendMode: BlendMode.modulate,
-                placeholder: (_, __) => Container(color: Colors.black38),
-                errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                placeholderBuilder: (_) => Container(color: Colors.black38),
+                errorBuilder: (_) => const SizedBox.shrink(),
               ),
             ),
           // 1. Left-to-right fade for text readability

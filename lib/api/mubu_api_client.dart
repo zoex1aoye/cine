@@ -9,6 +9,9 @@ abstract class MubuApiClient {
   String get baseUrl;
   String get imgDomain;
 
+  /// 封面换域候选（主域置首，含 package + 硬编码备份）。
+  List<String> get imgDomainCandidates;
+
   Future<void> init();
   Future<List<CategoryItem>> getHomeCategorys();
   Future<List<TagItem>> getHomeTags(int categoryId);
