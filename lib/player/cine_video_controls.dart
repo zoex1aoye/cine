@@ -7,13 +7,11 @@ import 'package:screen_brightness/screen_brightness.dart';
 class CineVideoControls extends StatefulWidget {
   final VideoState state;
   final String? title;
-  final VoidCallback? onBack;
 
   const CineVideoControls(
     this.state, {
     super.key,
     this.title,
-    this.onBack,
   });
 
   @override
@@ -514,12 +512,16 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                       ),
                       child: Row(
                         children: [
-                          if (widget.onBack != null)
-                            IconButton(
-                              icon: const Icon(Icons.arrow_back_ios_new,
-                                  color: Colors.white),
-                              onPressed: widget.onBack,
-                            ),
+                          // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
+                          // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back_ios_new,
+                                color: Colors.white),
+                            onPressed: () {
+                              _startHideTimer();
+                              widget.state.exitFullscreen();
+                            },
+                          ),
                           if (widget.title != null) ...[
                             const SizedBox(width: 8),
                             Expanded(

@@ -21,5 +21,5 @@ abstract class JpPlayer {
   ValueNotifier<int?> get videoHeightNotifier;
 
   // Build the video rendering widget
-  Widget buildVideoWidget(BuildContext context, {String? title, VoidCallback? onBack});
+  Widget buildVideoWidget(BuildContext context, {String? title});
 }

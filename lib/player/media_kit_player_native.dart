@@ -295,14 +295,14 @@ class MediaKitPlayerImpl implements JpPlayer {
   }
 
   @override
-  Widget buildVideoWidget(BuildContext context, {String? title, VoidCallback? onBack}) {
+  Widget buildVideoWidget(BuildContext context, {String? title}) {
     final videoWidget = Video(
       controller: _controller,
       fit: BoxFit.contain,
       subtitleViewConfiguration: const SubtitleViewConfiguration(
         padding: EdgeInsets.fromLTRB(24, 16, 24, 48),
       ),
-      controls: isShort ? AdaptiveVideoControls : (state) => CineVideoControls(state, title: title, onBack: onBack),
+      controls: isShort ? AdaptiveVideoControls : (state) => CineVideoControls(state, title: title),
       onEnterFullscreen: isShort
           ? () async {
               try {

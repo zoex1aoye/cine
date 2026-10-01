@@ -1362,7 +1362,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     child: _player!.buildVideoWidget(
                       context,
                       title: widget.video.title,
-                      onBack: () => Navigator.of(context).pop(),
+                      // 全屏叠层返回由 CineVideoControls 调 exitFullscreen；
+                      // 勿在此传 Navigator.pop，否则二次 pop 会离页。
                     ),
                   ),
                 ),
