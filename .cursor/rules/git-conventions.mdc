@@ -1,0 +1,50 @@
+---
+description: Git 分支命名、提交信息与历史整洁手法
+alwaysApply: true
+---
+
+# Git 分支与提交规范
+
+## 长青分支
+
+| 分支 | 用途 |
+|---|---|
+| `main` | 稳定可发布主干 |
+
+禁止直接在 `main` 上开发；先切特性分支。
+
+## 特性分支命名
+
+格式：`<type>/<YY/MM>/<kebab-case描述>`
+
+| type | 用途 |
+|---|---|
+| `feature` | 功能（勿用 `feat/` 作分支前缀） |
+| `bugfix` | 缺陷 |
+| `hotfix` | 线上紧急 |
+| `chore` | 规范/基建/依赖 |
+
+示例：`feature/26/10/seek-preview-fix`、`bugfix/26/10/tab-race`
+
+## 提交信息
+
+```
+<type>(<scope>): <中文描述>
+```
+
+- type：`feat` / `fix` / `chore` / `refactor` / `docs` / `test`
+- scope 可选：`player` / `api` / `ui` / `hive` 等
+- 有任务单时追加：`[#specs/tickets/<feature>/<NN>]`
+
+示例：`fix(player): 修复内部全屏下 seek-preview 不显示`
+
+## 历史整洁
+
+| 场景 | 手法 |
+|---|---|
+| 同步上游到未共享私有分支 | `fetch` + `rebase` |
+| 吸收 WIP | `merge --squash` + 一条语义提交 |
+| 里程碑合入 | `merge --no-ff` + `merge(<scope>): 中文说明` |
+| 从远端同步 | `git pull --rebase`，禁止裸 `git pull` |
+
+已 push 共享的分支禁止擅自改写历史。

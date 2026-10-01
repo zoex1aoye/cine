@@ -1,0 +1,29 @@
+---
+description: 播放器与平台条件编译红线（改 player / 平台 utils 时生效）
+globs: lib/player/**/*.dart,lib/utils/platform_utils*.dart
+alwaysApply: false
+---
+
+# 播放器纪律
+
+## 条件编译铁律
+
+- 平台相关实现必须 `*_native.dart` + `*_stub.dart` 成对
+- 入口用 `export '…_native.dart' if (dart.library.html) '…_stub.dart'`
+- 改 native API 签名 → 同步改 stub，保证 web 分析不炸
+
+## 全屏语义
+
+- **内部全屏** = `VideoState.isFullscreen()`（media_kit / 控件状态）
+- **窗口全屏** ≠ 内部全屏；seek-preview（红框缩略图）**仅**在内部全屏渲染
+- 改全屏切换逻辑前先读 `cine_video_controls.dart` 现有分支
+
+## 硬解与 locale
+
+- 硬解参数按 OS 分支（见 `media_kit_player_native.dart`）；禁止把某一端的 mpv 参数套到全平台
+- `setNumericLocaleToC()` 等 locale fix 仅 native 有意义；stub 保持 no-op
+
+## 验证
+
+- 改动后至少：选一端桌面或真机播一条 HLS/M3U8；确认控件唤出、快进、切线、进出内部全屏
+- Linux Cloud：无声卡/软渲染噪音可忽略，但播放画面与控件必须可用

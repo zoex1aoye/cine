@@ -1,0 +1,38 @@
+---
+description: 七步精简流水线站序、档位伸缩与闸门——单一真相源
+alwaysApply: true
+---
+
+# 流水线执行纪律（七站 · 精简版）
+
+一切任务走七步流水线。进步骤须出示上一步产出物编号；点名某技能 ≠ 授权跳过上游；**无快速通道（除非用户明示跳过）**。
+
+## 站序与产出物
+
+| 步骤 | 技能 | 产出物 | 栈位装载 | 闸门 |
+|---|---|---|---|---|
+| 1 开场 | `opening-protocol` | 任务简报（档位/栈位） | 记栈位：player/api/ui/全栈/非代码 | — |
+| 2 需求规格 | `to-prd` | `specs/prd/PRD-*.md` | 实现约束引用 rules，禁抄正文 | — |
+| 3 拆票 | `to-tickets` | `specs/tickets/<slug>/NN-*.md` | 票面标注须装载技能 | 拒收无 PRD 编号 |
+| 4 实现 | `implement` ⊕ `cine-flutter-dev` | 代码 | paths 规则随文件触发 | 拒收无任务单号的实现 |
+| 5 审查+验证 | `code-review` | 双轴报告 + analyze/test | Standards→flutter/player rules | analyze 有 error=停；P0 未修=停 |
+| 6 归档 | 直接写 changelog | `specs/changelog/` 条目 | — | — |
+| 7 收尾 | `neat-freak` | 文档/规范对账 | 踩坑→写回 rules/skills | — |
+
+大型且碰架构时：步骤 2 与 3 之间可增补 `specs/design/` 设计短文（用户点名或档位=大型时）；小修/中型设计并入 PRD。
+
+## 档位伸缩（每步最小合格产出）
+
+档位 = 体量（小修/中型/大型）× 影响（常规/碰播放器·API·共享组件/跨平台）。客观信号升档：涉及文件数、跨 `lib/` 子树、碰 `player`/`api`——**不许自降档**。
+
+| 档位 | 步骤 1 | 步骤 2 | 步骤 3 |
+|---|---|---|---|
+| 小修 | 简报 3 行 | 用户故事+验收各 1 条 | 1 票 |
+| 中型 | 标准简报 | 完整轻 PRD | 按 DAG 拆 |
+| 大型 | 简报+风险 | 完整 PRD + 可选 design | DAG+依赖标注 |
+
+## 贯穿纪律
+
+- **grill-me / steelman**：开场与规格阶段的决策工具，不单独立站
+- **飞轮**：同一坑 2 次 → 写回 `.cursor/rules` / skills / AGENTS（用户确认）
+- **验证底线**：`flutter analyze`（无 error）；相关测试 `flutter test`；播放器改动须冒烟一条流

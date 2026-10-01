@@ -1,0 +1,30 @@
+---
+description: Flutter 分层与目录纪律（改 lib 时生效）
+globs: lib/**/*.dart
+alwaysApply: false
+---
+
+# Flutter 结构纪律
+
+## 分层职责
+
+| 目录 | 职责 | 禁止 |
+|---|---|---|
+| `lib/api/` | 远端请求、签名、域名发现、Hive 门面 | UI Widget、播放器控制 |
+| `lib/models/` | DTO、Hive TypeAdapter | 网络调用、BuildContext |
+| `lib/pages/` | 路由级页面编排 | 直接 HttpClient；复杂播放逻辑下沉 player |
+| `lib/player/` | media_kit 封装、控件、平台硬解 | 业务列表/筛选 UI |
+| `lib/widgets/` | 跨页可复用 UI | 藏业务 API 调用（展示组件除外） |
+| `lib/utils/` | 纯函数/测速/选源/平台探测 | 持有全局可变单例状态（除非已有模式） |
+
+## 必检
+
+- 改功能前先搜索同目录已有类似实现，复用模式
+- 新公共组件进 `widgets/` 前确认 ≥2 页复用；否则留 page 私有
+- 颜色/主题优先沿用 `MubuApp` 已有常量（`kPrimaryRed` 等），禁止另起一套无文档色板
+- `MubuApiClient.instance` 为 `late`：任何测试入口必须先赋值实现类
+
+## 竞态与异步
+
+- Tab/列表切换：请求完成回调必须校验「仍是当前焦点」再 setState（首页 Tab 竞态自愈模式）
+- `init()` / 测速 Future：用已有缓存+超时模式，禁止无限阻塞 `runApp`
