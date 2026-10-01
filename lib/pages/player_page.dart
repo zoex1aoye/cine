@@ -201,7 +201,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           _stage = LoadingStage.testingSpeed;
         });
       }
-      if (_sources.length > 1) {
+      if (_sources.isNotEmpty) {
         await _runSpeedTest();
       }
       if (_disposed) return;
@@ -448,14 +448,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastAutoSwitchMs < 30000) return;
 
-    // 寻找当前集数中质量+延迟最优的备用线路（弱网允许低档）
+    // 寻找当前集数中质量+延迟最优的备用线路（弱网允许低档；电影全局）
     if (_sources.isEmpty) return;
-    final currentEpisode = _currentEpisodeRef;
+    final currentEpisode = pickScopeEpisodeName(_sources, _currentEpisodeRef);
     final currentUrl = _sources[_selectedSource].url;
 
     final fallback = SourcePicker.pickMain(
       _sources,
-      episodeName: currentEpisode,
+      episodeName: currentEpisode.isEmpty ? null : currentEpisode,
       excludeUrl: currentUrl,
       preferLowerTierOnWeakNet: true,
     );
@@ -474,25 +474,30 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String get _currentEpisodeName =>
       _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
-  /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源
+  /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源。
+  /// 电影（无「第N集」式标签）忽略集名，在全部 usable 源里全局选。
   Future<void> _applyRecommendedSource({bool autoInit = false}) async {
     if (_sources.isEmpty) return;
-    final episode = _currentEpisodeRef.isNotEmpty
+    final rawEpisode = _currentEpisodeRef.isNotEmpty
         ? _currentEpisodeRef
         : _sources.first.sourceName.isNotEmpty
             ? episodeRef(_sources.first)
             : '';
+    final episode = pickScopeEpisodeName(_sources, rawEpisode);
+    final episodeArg = episode.isEmpty ? null : episode;
 
-    final idx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
+    final idx = SourcePicker.pickMainIndex(_sources, episodeName: episodeArg);
     if (idx == null) return;
 
     final picked = _sources[idx];
     final resolution = SourceQuality.resolutionLabel(picked);
     _recommendedLineName = picked.name;
+    final film = isFilmStyleSources(_sources);
     _fastestIndex = SourcePicker.indexOfFastest(
       _sources,
-      episodeName: episode,
-      withinResolution: resolution,
+      episodeName: episodeArg,
+      // 电影：全局最快；剧集：同分辨率桶内最快
+      withinResolution: film ? null : resolution,
     );
 
     final shouldUpgrade = _playerInitialized &&
@@ -502,7 +507,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (autoInit && !_playerInitialized) {
       _selectedSource = idx;
       _currentUrl = _sources[idx].url;
-      debugPrint('PLAYER: auto-pick ${resolution ?? _sources[idx].name} (${_sources[idx].playlistMs}ms) for $episode');
+      debugPrint(
+        'PLAYER: auto-pick ${resolution ?? _sources[idx].name} '
+        '(${_sources[idx].playlistMs}ms) scope=${film ? "film-global" : episode}',
+      );
       if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
       await _initPlayer();
     } else if (shouldUpgrade) {
@@ -572,10 +580,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   int _representativeIndexForLine(String lineName) {
-    final ref = _episodeScopeRef;
-    if (ref.isEmpty) return -1;
-    return _sources.indexWhere(
-      (s) => s.name == lineName && matchesEpisode(s, ref),
+    return representativeIndexForLine(
+      _sources,
+      lineName,
+      episodeRef: _episodeScopeRef,
     );
   }
 
@@ -692,16 +700,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     // 2. Champion 快启：缓存命中的推荐线路复测阶段 1+2
     if (!_playerInitialized) {
-      final episode = _episodeScopeRef;
+      final rawEpisode = _episodeScopeRef;
+      final episode = pickScopeEpisodeName(_sources, rawEpisode);
+      final episodeArg = episode.isEmpty ? null : episode;
 
       int? championIdx;
-      if (episode.isNotEmpty) {
-        championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
-        if (championIdx != null) {
-          final latency = _sources[championIdx].playlistMs;
-          if (latency == null || latency >= SourcePicker.latencyGood) {
-            championIdx = null;
-          }
+      championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episodeArg);
+      if (championIdx != null) {
+        final latency = _sources[championIdx].playlistMs;
+        if (latency == null || latency >= SourcePicker.latencyGood) {
+          championIdx = null;
         }
       }
 
@@ -719,7 +727,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             _sources[repIdx].playlistMs != null &&
             _sources[repIdx].playlistMs! < SourcePicker.latencyGood) {
           final playIdx =
-              SourcePicker.pickMainIndex(_sources, episodeName: episode) ??
+              SourcePicker.pickMainIndex(_sources, episodeName: episodeArg) ??
                   championIdx;
           _selectedSource = playIdx;
           _currentUrl = _sources[playIdx].url;
@@ -758,6 +766,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _client?.close();
     _client = null;
     if (_disposed) return;
+
+    // Finalize any line left without metrics (abort / skipped mid-flight).
+    for (final idx in indices) {
+      if (idx < 0 || idx >= _sources.length) continue;
+      final src = _sources[idx];
+      if (src.playlistMs != null) continue;
+      src.applyProbeMetrics(usable: false, playlistMs: 999999);
+      _writeProbeCache(src.name, src.url, src);
+      _propagateLineMetrics(src.name, src);
+      debugPrint('SPEED: [$idx] ${src.name} finalized as timeout (was null)');
+    }
 
     // 4. 传播 distinct 线路结果到本剧所有同 name 源
     final lineTemplates = <String, VideoSource>{};
@@ -941,12 +960,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           : null;
 
   VideoSource? _representativeForLine(String lineName) {
-    final ref = _episodeScopeRef;
-    if (ref.isEmpty) return null;
-    final idx = _sources.indexWhere(
-      (s) => s.name == lineName && matchesEpisode(s, ref),
-    );
-    return idx != -1 ? _sources[idx] : null;
+    final idx = _representativeIndexForLine(lineName);
+    if (idx < 0 || idx >= _sources.length) return null;
+    return _sources[idx];
   }
 
   String _lineQualityCaption(String lineName) {
