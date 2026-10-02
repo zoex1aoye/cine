@@ -16,6 +16,7 @@ abstract class MubuApiClient {
   Future<List<CategoryItem>> getHomeCategorys();
   Future<List<TagItem>> getHomeTags(int categoryId);
   Future<List<VideoItem>> getTagVideos(int tagId, {int tpl = 1, int page = 1, int count = 30});
+  Future<Map<int, List<VideoItem>>> getHomeHandData(int categoryId);
   Future<({List<VideoItem> videos, int total})> search(String keyword, {int page = 1});
   Future<VideoDetail?> getVideoDetail(int id, {bool isShort = false});
   Future<List<FilterGroup>> getFilterOptions(int fcatePid);

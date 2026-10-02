@@ -744,23 +744,69 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     }
 
-    // 3. 剩余 distinct 线路并行两阶段检测
-    final pending =
-        indices.where((idx) => idx >= 0 && _sources[idx].playlistMs == null).toList();
-    if (pending.isNotEmpty && !_disposed && !_abortSpeedTest) {
-      await Future.wait(pending.map((idx) async {
-        if (_disposed || _abortSpeedTest) return;
-        final localClient = http.Client();
-        try {
-          await _testLine(idx, localClient);
-        } finally {
-          localClient.close();
+    // 3. 本轮新测（无 playlistMs）分批：先并行前 3 条早开播，其余后台续测可升级。
+    // 缓存命中已有指标，不算进「前 3」。
+    const earlyBatchSize = 3;
+    final pending = indices
+        .where((idx) => idx >= 0 && _sources[idx].playlistMs == null)
+        .toList();
+
+    Future<void> testOne(int idx) async {
+      if (_disposed || _abortSpeedTest) return;
+      final localClient = http.Client();
+      try {
+        await _testLine(idx, localClient);
+      } finally {
+        localClient.close();
+      }
+      if (_disposed || _abortSpeedTest) return;
+      if (mounted) setState(() => _testedCount++);
+    }
+
+    if (pending.isEmpty) {
+      if (mounted) setState(() => _testedCount = indices.length);
+    } else if (!_disposed && !_abortSpeedTest) {
+      final firstBatch = pending.take(earlyBatchSize).toList();
+      final rest = pending.skip(earlyBatchSize).toList();
+
+      debugPrint(
+        'SPEED: early-batch size=${firstBatch.length} rest=${rest.length}',
+      );
+      await Future.wait(firstBatch.map(testOne));
+      if (_disposed) return;
+
+      // 前 3（或不足 3 的全部）测完 → SourcePicker 选优早 init
+      if (!_abortSpeedTest) {
+        await _applyRecommendedSource(autoInit: !_playerInitialized);
+      }
+
+      if (rest.isNotEmpty && !_disposed && !_abortSpeedTest) {
+        if (!_playerInitialized) {
+          // 首批无可用：逐条续测，一有可用立刻 init；init 后剩余改并行。
+          final still = List<int>.from(rest);
+          while (still.isNotEmpty &&
+              !_playerInitialized &&
+              !_disposed &&
+              !_abortSpeedTest) {
+            final idx = still.removeAt(0);
+            await testOne(idx);
+            if (_disposed || _abortSpeedTest) break;
+            await _applyRecommendedSource(autoInit: true);
+          }
+          if (still.isNotEmpty && !_disposed && !_abortSpeedTest) {
+            await Future.wait(still.map(testOne));
+            if (!_disposed && !_abortSpeedTest && !_startPlayRequested) {
+              await _applyRecommendedSource(autoInit: !_playerInitialized);
+            }
+          }
+        } else {
+          // 已早开播：其余并行测完，未点播放则 upgrade
+          await Future.wait(rest.map(testOne));
+          if (!_disposed && !_abortSpeedTest && !_startPlayRequested) {
+            await _applyRecommendedSource(autoInit: false);
+          }
         }
-        if (_disposed || _abortSpeedTest) return;
-        if (mounted) setState(() => _testedCount++);
-      }));
-    } else if (mounted) {
-      setState(() => _testedCount = indices.length);
+      }
     }
 
     _client?.close();
@@ -792,6 +838,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     }
 
+    // 收尾：仍未 init 则再试；已 init 且未点播放则最终 upgrade
     await _applyRecommendedSource(autoInit: !_playerInitialized);
 
     final usable = _sources.where((s) => s.usable && s.playlistMs != null).length;

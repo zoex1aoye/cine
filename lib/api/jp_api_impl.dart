@@ -1,5 +1,6 @@
 // lib/api/jp_api_impl.dart
 import '../models/mubu_models.dart';
+import '../models/jp_models.dart' as jp;
 import '../api/mubu_api_client.dart' show MubuApiClient;
 import 'jp_api.dart' show JpApi;
 
@@ -45,17 +46,25 @@ class JpApiClientImpl implements MubuApiClient {
   @override
   Future<List<VideoItem>> getTagVideos(int tagId, {int tpl = 1, int page = 1, int count = 30}) async {
     final list = await _jpApi.getTagVideos(tagId, tpl: tpl, page: page, count: count);
-    return list
-        .map((v) => VideoItem(
-              id: v.id,
-              title: v.title,
-              coverPath: v.coverPath,
-              year: v.year,
-              score: v.score,
-              category: v.category,
-            ))
-        .toList();
+    return list.map(_toMubuVideo).toList();
   }
+
+  @override
+  Future<Map<int, List<VideoItem>>> getHomeHandData(int categoryId) async {
+    final raw = await _jpApi.getHomeHandData(categoryId);
+    return {
+      for (final e in raw.entries) e.key: e.value.map(_toMubuVideo).toList(),
+    };
+  }
+
+  VideoItem _toMubuVideo(jp.VideoItem v) => VideoItem(
+        id: v.id,
+        title: v.title,
+        coverPath: v.coverPath,
+        year: v.year,
+        score: v.score,
+        category: v.category,
+      );
 
   @override
   Future<({List<VideoItem> videos, int total})> search(String keyword, {int page = 1}) async {

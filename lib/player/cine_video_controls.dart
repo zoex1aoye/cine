@@ -72,9 +72,15 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   Duration _duration = Duration.zero;
   bool _isBuffering = false;
 
-  DateTime? _bufferingStartTime;
-  Timer? _bufferingUiTimer;
-  bool _showWeakNetHint = false;
+  /// 缓冲满此时长后再显示速度行，避免短缓冲闪一下。
+  static const _bufferSpeedRevealDelay = Duration(milliseconds: 800);
+  static const _cacheSpeedPollInterval = Duration(milliseconds: 500);
+
+  Timer? _bufferSpeedRevealTimer;
+  Timer? _cacheSpeedPollTimer;
+  bool _showBufferSpeed = false;
+  /// 已格式化的速率（如 `1.2 MB/s`）；`null` 表示显示 —。
+  String? _cacheSpeedText;
 
   bool get _hasAnchorSession => _anchorPosition != null;
 
@@ -109,17 +115,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       if (!mounted) return;
       setState(() => _isBuffering = event);
       if (event) {
-        _bufferingStartTime ??= DateTime.now();
-        _bufferingUiTimer ??= Timer(const Duration(seconds: 5), () {
-          if (mounted && _isBuffering) {
-            setState(() => _showWeakNetHint = true);
-          }
-        });
+        _armBufferSpeedHud();
       } else {
-        _bufferingStartTime = null;
-        _bufferingUiTimer?.cancel();
-        _bufferingUiTimer = null;
-        if (_showWeakNetHint) setState(() => _showWeakNetHint = false);
+        _clearBufferSpeedHud();
       }
     });
   }
@@ -131,13 +129,74 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     ScreenBrightness().resetScreenBrightness();
     _hideTimer?.cancel();
     _indicatorTimer?.cancel();
-    _bufferingUiTimer?.cancel();
+    _bufferSpeedRevealTimer?.cancel();
+    _cacheSpeedPollTimer?.cancel();
     _playingSub.cancel();
     _positionSub.cancel();
     _durationSub.cancel();
     _volumeSub.cancel();
     _bufferingSub.cancel();
     super.dispose();
+  }
+
+  void _armBufferSpeedHud() {
+    _bufferSpeedRevealTimer ??= Timer(_bufferSpeedRevealDelay, () {
+      if (!mounted || !_isBuffering) return;
+      setState(() => _showBufferSpeed = true);
+      _startCacheSpeedPoll();
+    });
+  }
+
+  void _clearBufferSpeedHud() {
+    _bufferSpeedRevealTimer?.cancel();
+    _bufferSpeedRevealTimer = null;
+    _cacheSpeedPollTimer?.cancel();
+    _cacheSpeedPollTimer = null;
+    if (_showBufferSpeed || _cacheSpeedText != null) {
+      setState(() {
+        _showBufferSpeed = false;
+        _cacheSpeedText = null;
+      });
+    }
+  }
+
+  void _startCacheSpeedPoll() {
+    _cacheSpeedPollTimer?.cancel();
+    _pollCacheSpeed();
+    _cacheSpeedPollTimer = Timer.periodic(_cacheSpeedPollInterval, (_) {
+      _pollCacheSpeed();
+    });
+  }
+
+  Future<void> _pollCacheSpeed() async {
+    if (!mounted || !_isBuffering || !_showBufferSpeed) return;
+    String? formatted;
+    try {
+      final platform = player.platform;
+      if (platform is NativePlayer) {
+        final raw = await platform.getProperty('cache-speed');
+        final bytesPerSec = double.tryParse(raw.trim());
+        if (bytesPerSec != null && bytesPerSec > 0) {
+          formatted = _formatBytesPerSec(bytesPerSec);
+        }
+      }
+    } catch (_) {
+      formatted = null;
+    }
+    if (!mounted || !_isBuffering || !_showBufferSpeed) return;
+    if (_cacheSpeedText != formatted) {
+      setState(() => _cacheSpeedText = formatted);
+    }
+  }
+
+  String _formatBytesPerSec(double bytesPerSec) {
+    if (bytesPerSec < 1024) {
+      return '${bytesPerSec.toStringAsFixed(0)} B/s';
+    }
+    if (bytesPerSec < 1024 * 1024) {
+      return '${(bytesPerSec / 1024).toStringAsFixed(0)} KB/s';
+    }
+    return '${(bytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
   }
 
   void _toggleControls() {
@@ -286,7 +345,14 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
   void _onScrubEnd() {
     _seekDebounceTimer?.cancel();
-    setState(() => _isScrubbing = false);
+    // 钉住放开位置：先发最终 seek，并乐观同步 _position，避免结束 scrub
+    // 后滑块立刻切回旧 position 造成「回弹再跳转」。
+    final target = _scrubTarget;
+    _seekMain(target);
+    setState(() {
+      _position = target;
+      _isScrubbing = false;
+    });
     _scheduleReturnTip();
     _startHideTimer();
   }
@@ -469,8 +535,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             ),
           ),
 
+        // 偏下避开中心播控；控件显示时转圈+速度不再压在播放按钮上。
         if (_isBuffering && !_isScrubbing)
-          Center(
+          Align(
+            alignment: const Alignment(0, 0.42),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -482,7 +550,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                     valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
                   ),
                 ),
-                if (_showWeakNetHint) ...[
+                if (_showBufferSpeed) ...[
                   const SizedBox(height: 12),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -493,17 +561,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                       color: Colors.black.withOpacity(0.65),
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.wifi_off_rounded,
-                            color: Colors.white54, size: 14),
-                        SizedBox(width: 6),
-                        Text(
-                          '网络较弱，缓冲中…',
-                          style: TextStyle(color: Colors.white70, fontSize: 13),
-                        ),
-                      ],
+                    child: Text(
+                      '加载中 ${_cacheSpeedText ?? '—'}',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
                     ),
                   ),
                 ],
@@ -518,60 +581,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             ignoring: !_showControls,
             child: Stack(
               children: [
-                if (widget.state.isFullscreen())
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      padding: EdgeInsets.only(
-                        top: MediaQuery.of(context).padding.top + 4,
-                        bottom: 8,
-                        left: 16,
-                        right: 16,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.7),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
-                          // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
-                          IconButton(
-                            icon: const Icon(Icons.arrow_back_ios_new,
-                                color: Colors.white),
-                            onPressed: () {
-                              _startHideTimer();
-                              widget.state.exitFullscreen();
-                            },
-                          ),
-                          if (widget.title != null) ...[
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                widget.title!,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-
+                // 中间播控在下层；全屏顶栏必须更高 z-order，否则安卓上返回键点击被吞。
                 Center(
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -708,6 +718,70 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                     ),
                   ),
                 ),
+
+                if (widget.state.isFullscreen())
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: Container(
+                      padding: EdgeInsets.only(
+                        top: MediaQuery.of(context).padding.top + 4,
+                        bottom: 8,
+                        left: 8,
+                        right: 16,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black.withOpacity(0.7),
+                            Colors.transparent,
+                          ],
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
+                          // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
+                          // opaque 热区避免点在图标边缘时被渐变条吞掉且无回调。
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () {
+                              _startHideTimer();
+                              if (widget.state.isFullscreen()) {
+                                widget.state.exitFullscreen();
+                              }
+                            },
+                            child: const SizedBox(
+                              width: 48,
+                              height: 48,
+                              child: Icon(
+                                Icons.arrow_back_ios_new,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          if (widget.title != null) ...[
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                widget.title!,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

@@ -532,6 +532,29 @@ class JpApi {
     return [];
   }
 
+  /// 运营手推片：`data` 为 tagId → 视频列表。失败返回空 map。
+  Future<Map<int, List<VideoItem>>> getHomeHandData(int categoryId) async {
+    try {
+      final resp = await _get('/dyTag/hand_data?category_id=$categoryId');
+      final raw = resp?['data'];
+      if (raw is! Map) return {};
+      final out = <int, List<VideoItem>>{};
+      for (final entry in raw.entries) {
+        final tagId = int.tryParse(entry.key.toString());
+        final list = entry.value;
+        if (tagId == null || list is! List) continue;
+        out[tagId] = list
+            .whereType<Map>()
+            .map((j) => VideoItem.fromTagJson(Map<String, dynamic>.from(j)))
+            .toList();
+      }
+      return out;
+    } catch (e) {
+      jpLog('API', 'getHomeHandData($categoryId) failed: $e');
+      return {};
+    }
+  }
+
   /// 全局视频搜索接口
   ///
   /// 关键词已进行 URL 安全编码。返回列表按：精确 title → title/original_name 包含 → 其余（稳定排序）。
