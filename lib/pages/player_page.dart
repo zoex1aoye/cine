@@ -88,6 +88,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   int? _savedDurationMs;
   String? _savedEpisodeName;
   String? _savedLineName;
+  /// User tapped an episode in the grid — stop preferring saved episode scope.
+  bool _userPickedEpisode = false;
 
   // 弱网自动切换：持续缓冲超时后的看门狗
   Timer? _bufferingWatchdog;
@@ -202,11 +204,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         });
       }
       if (_sources.isNotEmpty) {
+        // Soft-lock history episode before speed test so reps/Champion scope correctly.
+        _applySavedEpisodeSelection(requireProbed: false);
         await _runSpeedTest();
       }
       if (_disposed) return;
 
       if (_playerInitialized) {
+        // Early-play may have init'd on the wrong episode before soft lock took effect
+        // on a later path; hard-match and switch before the user taps play.
+        if (!_userPickedEpisode &&
+            _savedEpisodeName != null &&
+            _savedEpisodeName!.isNotEmpty &&
+            !_startPlayRequested &&
+            _sources.isNotEmpty &&
+            !matchesEpisode(
+              _sources[_selectedSource],
+              _savedEpisodeName!,
+            )) {
+          _applySavedEpisodeSelection(requireProbed: true, switchIfInit: true);
+        }
         if (mounted && _stage != LoadingStage.ready) {
           setState(() => _stage = LoadingStage.ready);
         }
@@ -478,11 +495,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 电影（无「第N集」式标签）忽略集名，在全部 usable 源里全局选。
   Future<void> _applyRecommendedSource({bool autoInit = false}) async {
     if (_sources.isEmpty) return;
-    final rawEpisode = _currentEpisodeRef.isNotEmpty
-        ? _currentEpisodeRef
-        : _sources.first.sourceName.isNotEmpty
-            ? episodeRef(_sources.first)
-            : '';
+    final rawEpisode = _episodeScopeRef;
     final episode = pickScopeEpisodeName(_sources, rawEpisode);
     final episodeArg = episode.isEmpty ? null : episode;
 
@@ -526,57 +539,41 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
-  /// Re-enter 时根据保存的集数名 + 线路名选择播放源（三级优先级）
-  void _applySavedEpisodeSelection() {
+  /// Re-enter 时根据保存的集数名 + 线路名选择播放源。
+  ///
+  /// [requireProbed] false = 测速前软锁（不要求 usable/playlistMs）；
+  /// true = 测速后硬匹配（三级 probed）。
+  /// [switchIfInit] true 且播放器已 init 时用 [_switchSource] 切集。
+  void _applySavedEpisodeSelection({
+    bool requireProbed = true,
+    bool switchIfInit = false,
+  }) {
     if (_savedEpisodeName == null || _savedEpisodeName!.isEmpty) return;
-    final savedRef = _savedEpisodeName!;
-    var matched = false;
-    if (_savedLineName != null && _savedLineName!.isNotEmpty) {
-      final exactIdx = _sources.indexWhere((s) =>
-          matchesEpisode(s, savedRef) &&
-          s.name == _savedLineName &&
-          s.usable &&
-          s.playlistMs != null &&
-          s.playlistMs! < 999999);
-      if (exactIdx != -1) {
-        _selectedSource = exactIdx;
-        _currentUrl = _sources[exactIdx].url;
-        matched = true;
-        debugPrint('PLAYER: exact match — ${_sources[exactIdx].name} / $_savedEpisodeName');
-      }
+    final idx = findSavedEpisodeSourceIndex(
+      _sources,
+      savedEpisodeName: _savedEpisodeName!,
+      preferredLineName: _savedLineName,
+      fastestIndex: requireProbed ? _fastestIndex : null,
+      requireProbed: requireProbed,
+    );
+    if (idx == null) return;
+
+    final mode = requireProbed ? 'hard' : 'soft';
+    debugPrint(
+      'PLAYER: saved-episode $mode — ${_sources[idx].name} / $_savedEpisodeName',
+    );
+
+    if (switchIfInit &&
+        _playerInitialized &&
+        idx != _selectedSource &&
+        !_startPlayRequested) {
+      _switchSource(idx);
+      return;
     }
-    // 优先级2: 集数名匹配（任意线路）
-    if (!matched) {
-      for (var i = 0; i < _sources.length; i++) {
-        if (matchesEpisode(_sources[i], savedRef) &&
-            _sources[i].usable &&
-            _sources[i].playlistMs != null &&
-            _sources[i].playlistMs! < 999999) {
-          _selectedSource = i;
-          _currentUrl = _sources[i].url;
-          matched = true;
-          debugPrint('PLAYER: episode match (any line) — ${_sources[i].name} / $_savedEpisodeName');
-          break;
-        }
-      }
-    }
-    // 优先级3: 保存线路不可用，用最快线路匹配同名集数
-    if (!matched && _fastestIndex != null) {
-      final fastestLineName = _sources[_fastestIndex!].name;
-      final matchIdx = _sources.indexWhere((s) =>
-          s.name == fastestLineName && matchesEpisode(s, savedRef) && s.usable);
-      if (matchIdx != -1) {
-        _selectedSource = matchIdx;
-        _currentUrl = _sources[matchIdx].url;
-      } else {
-        _selectedSource = _fastestIndex!;
-        _currentUrl = _sources[_fastestIndex!].url;
-      }
-      debugPrint('PLAYER: fallback to fastest — $fastestLineName');
-    }
-    if (_sources.isNotEmpty) {
-      _syncInnerRatioFromSource(_sources[_selectedSource]);
-    }
+
+    _selectedSource = idx;
+    _currentUrl = _sources[idx].url;
+    _syncInnerRatioFromSource(_sources[idx]);
   }
 
   int _representativeIndexForLine(String lineName) {
@@ -588,10 +585,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   String get _episodeScopeRef {
-    if (_currentEpisodeRef.isNotEmpty) return _currentEpisodeRef;
-    if (_savedEpisodeName?.isNotEmpty == true) return _savedEpisodeName!;
-    if (_sources.isNotEmpty) return episodeRef(_sources.first);
-    return '';
+    final firstRef =
+        _sources.isNotEmpty ? episodeRef(_sources.first) : '';
+    return resolveEpisodeScopeRef(
+      currentEpisodeRef: _currentEpisodeRef,
+      savedEpisodeName: _savedEpisodeName,
+      userPickedEpisode: _userPickedEpisode,
+      fallbackFirstRef: firstRef,
+    );
   }
 
   void _applyProbeRecord(VideoSource target, SourceProbeRecord record) {
@@ -1065,6 +1066,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     bool closeOnTap = false,
   }) {
     void onTap(int sourceIdx) {
+      _userPickedEpisode = true;
       _switchSource(sourceIdx);
       if (closeOnTap) Navigator.pop(context);
     }

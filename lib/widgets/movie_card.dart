@@ -273,12 +273,16 @@ class _MovieCardState extends State<MovieCard> {
                   builder: (context) {
                     // 动态合成副标题：若包含年份或类型则用中间点拼接；若均为空则返回空字符串
                     final showSubtitle = widget.showSubtitle ?? (widget.onDelete == null);
-                    final subtitle = showSubtitle
-                        ? [
-                            if (widget.video.year.isNotEmpty) widget.video.year,
-                            if (widget.video.category.isNotEmpty) widget.video.category
-                          ].join(' • ')
-                        : '';
+                    final lastEp = widget.video.lastEpisodeName?.trim() ?? '';
+                    final subtitle = !showSubtitle
+                        ? ''
+                        : lastEp.isNotEmpty
+                            ? lastEp
+                            : [
+                                if (widget.video.year.isNotEmpty) widget.video.year,
+                                if (widget.video.category.isNotEmpty)
+                                  widget.video.category
+                              ].join(' • ');
                     final hasSubtitle = subtitle.isNotEmpty;
                     return SizedBox(
                       height: hasSubtitle ? 52 : 40, // 无副标题时压缩底部高度

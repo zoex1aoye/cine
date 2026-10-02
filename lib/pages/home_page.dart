@@ -563,7 +563,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               await MubuStorage.deleteHistoryItem(video.id);
               await _loadBookmarksAndHistory();
             },
-            showSubtitle: false,
+            showSubtitle: true,
           ),
         ),
         if (_historyLoadingMore)

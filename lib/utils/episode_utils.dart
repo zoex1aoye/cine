@@ -74,3 +74,84 @@ String pickScopeEpisodeName(
   if (isFilmStyleSources(sources)) return '';
   return currentEpisodeRef;
 }
+
+/// Resolve which episode ref should scope speed-test / auto-pick.
+///
+/// Until the user manually picks an episode, prefer [savedEpisodeName] so
+/// early-play does not lock to source index 0 (often episode 1).
+String resolveEpisodeScopeRef({
+  required String currentEpisodeRef,
+  String? savedEpisodeName,
+  required bool userPickedEpisode,
+  String fallbackFirstRef = '',
+}) {
+  if (userPickedEpisode && currentEpisodeRef.isNotEmpty) {
+    return currentEpisodeRef;
+  }
+  if (savedEpisodeName != null && savedEpisodeName.isNotEmpty) {
+    return savedEpisodeName;
+  }
+  if (currentEpisodeRef.isNotEmpty) return currentEpisodeRef;
+  return fallbackFirstRef;
+}
+
+bool _probedUsable(VideoSource s) =>
+    s.usable && s.playlistMs != null && s.playlistMs! < 999999;
+
+/// Find a source for [savedEpisodeName].
+///
+/// Soft (`requireProbed: false`): match episode + prefer [preferredLineName],
+/// no playlistMs/usable required — for pre-speed-test lock.
+/// Hard (`requireProbed: true`): existing three-tier probed match, then
+/// [fastestIndex] fallback.
+int? findSavedEpisodeSourceIndex(
+  List<VideoSource> sources, {
+  required String savedEpisodeName,
+  String? preferredLineName,
+  int? fastestIndex,
+  bool requireProbed = true,
+}) {
+  if (savedEpisodeName.isEmpty || sources.isEmpty) return null;
+
+  if (!requireProbed) {
+    if (preferredLineName != null && preferredLineName.isNotEmpty) {
+      final exact = sources.indexWhere(
+        (s) =>
+            matchesEpisode(s, savedEpisodeName) && s.name == preferredLineName,
+      );
+      if (exact != -1) return exact;
+    }
+    final any = sources.indexWhere((s) => matchesEpisode(s, savedEpisodeName));
+    return any == -1 ? null : any;
+  }
+
+  if (preferredLineName != null && preferredLineName.isNotEmpty) {
+    final exact = sources.indexWhere(
+      (s) =>
+          matchesEpisode(s, savedEpisodeName) &&
+          s.name == preferredLineName &&
+          _probedUsable(s),
+    );
+    if (exact != -1) return exact;
+  }
+
+  final anyProbed = sources.indexWhere(
+    (s) => matchesEpisode(s, savedEpisodeName) && _probedUsable(s),
+  );
+  if (anyProbed != -1) return anyProbed;
+
+  if (fastestIndex != null &&
+      fastestIndex >= 0 &&
+      fastestIndex < sources.length) {
+    final fastestLineName = sources[fastestIndex].name;
+    final matchIdx = sources.indexWhere(
+      (s) =>
+          s.name == fastestLineName &&
+          matchesEpisode(s, savedEpisodeName) &&
+          s.usable,
+    );
+    if (matchIdx != -1) return matchIdx;
+    return fastestIndex;
+  }
+  return null;
+}

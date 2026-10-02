@@ -112,4 +112,106 @@ void main() {
       expect(pickScopeEpisodeName(sources, '第01集'), '第01集');
     });
   });
+
+  group('resolveEpisodeScopeRef', () {
+    test('prefers saved until user picks episode', () {
+      expect(
+        resolveEpisodeScopeRef(
+          currentEpisodeRef: '第01集',
+          savedEpisodeName: '第05集',
+          userPickedEpisode: false,
+          fallbackFirstRef: '第01集',
+        ),
+        '第05集',
+      );
+    });
+
+    test('follows current after user picks episode', () {
+      expect(
+        resolveEpisodeScopeRef(
+          currentEpisodeRef: '第03集',
+          savedEpisodeName: '第05集',
+          userPickedEpisode: true,
+          fallbackFirstRef: '第01集',
+        ),
+        '第03集',
+      );
+    });
+
+    test('falls back to current then first when no saved', () {
+      expect(
+        resolveEpisodeScopeRef(
+          currentEpisodeRef: '第02集',
+          savedEpisodeName: null,
+          userPickedEpisode: false,
+          fallbackFirstRef: '第01集',
+        ),
+        '第02集',
+      );
+      expect(
+        resolveEpisodeScopeRef(
+          currentEpisodeRef: '',
+          savedEpisodeName: '',
+          userPickedEpisode: false,
+          fallbackFirstRef: '第01集',
+        ),
+        '第01集',
+      );
+    });
+  });
+
+  group('findSavedEpisodeSourceIndex', () {
+    test('soft match prefers last line without probe metrics', () {
+      final sources = [
+        _src('LZ线路', '第01集'),
+        _src('SN线路', '第01集'),
+        _src('LZ线路', '第05集'),
+        _src('SN线路', '第05集'),
+      ];
+      expect(
+        findSavedEpisodeSourceIndex(
+          sources,
+          savedEpisodeName: '第05集',
+          preferredLineName: 'SN线路',
+          requireProbed: false,
+        ),
+        3,
+      );
+    });
+
+    test('soft match any line on episode when preferred missing', () {
+      final sources = [
+        _src('LZ线路', '第01集'),
+        _src('LZ线路', '第05集'),
+        _src('SN线路', '第05集'),
+      ];
+      expect(
+        findSavedEpisodeSourceIndex(
+          sources,
+          savedEpisodeName: '第05集',
+          preferredLineName: '不存在',
+          requireProbed: false,
+        ),
+        1,
+      );
+    });
+
+    test('hard match requires probed usable', () {
+      final sources = [
+        _src('LZ线路', '第01集')..applyProbeMetrics(usable: true, playlistMs: 100),
+        _src('LZ线路', '第05集'), // unprobed
+        _src('SN线路', '第05集')
+          ..applyProbeMetrics(usable: true, playlistMs: 200),
+      ];
+      expect(
+        findSavedEpisodeSourceIndex(
+          sources,
+          savedEpisodeName: '第05集',
+          preferredLineName: 'LZ线路',
+          requireProbed: true,
+        ),
+        2, // preferred line unprobed → any probed on episode
+      );
+    });
+  });
 }
