@@ -9,17 +9,31 @@ import 'models/mubu_models.dart';
 import 'models/mubu_hive.dart';
 import 'api/mubu_api_client.dart';
 import 'api/jp_api_impl.dart';
+import 'api/doh_dns.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
   HttpClient createHttpClient(SecurityContext? context) {
-    return super.createHttpClient(context)
-      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+    final client = super.createHttpClient(context)
+      ..badCertificateCallback =
+          (X509Certificate cert, String host, int port) => true;
+    // C1: 全局 DoH 引导建连，缓解 Clash TUN 下系统 DNS 失败
+    DohDns.instance.attachTo(client);
+    return client;
   }
 }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // DoH 引导客户端必须在 HttpOverrides 之前创建，避免 connectionFactory 递归
+  DohDns.install(
+    DohDns(
+      bootstrapClient: HttpClient()
+        ..connectionTimeout = const Duration(seconds: 5)
+        ..badCertificateCallback =
+            (X509Certificate cert, String host, int port) => true,
+    ),
+  );
   HttpOverrides.global = MyHttpOverrides();
   setNumericLocaleToC();
   MediaKit.ensureInitialized();

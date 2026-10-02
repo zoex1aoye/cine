@@ -1,5 +1,6 @@
 // lib/models/mubu_models.dart
 // Unified data models for Mubu client
+import '../utils/cover_cdn.dart';
 import '../utils/detail_source_parse.dart';
 import '../utils/source_quality.dart';
 
@@ -66,15 +67,7 @@ class VideoItem {
       };
 
   /// Build full cover URL based on image domain
-  String coverUrl(String imgDomain) {
-    if (coverPath.isEmpty) return '';
-    var domain = imgDomain;
-    if (domain == 'bqxqqqnf.top') domain = 'static2.gutaike.com';
-    if (coverPath.startsWith('http')) {
-      return coverPath.replaceAll('bqxqqqnf.top', 'static2.gutaike.com');
-    }
-    return 'https://$domain$coverPath';
-  }
+  String coverUrl(String imgDomain) => buildCoverUrl(coverPath, imgDomain);
 
   bool get hasCover => coverPath.isNotEmpty;
 

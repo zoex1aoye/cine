@@ -64,7 +64,7 @@ class MediaKitPlayerImpl implements JpPlayer {
   }
 
   @override
-  Widget buildVideoWidget(BuildContext context, {String? title, VoidCallback? onBack}) {
+  Widget buildVideoWidget(BuildContext context, {String? title}) {
     return const Center(child: Text('Video playback not supported on this platform.'));
   }
 }

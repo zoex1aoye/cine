@@ -7,26 +7,36 @@ import 'package:hive/hive.dart';
 import '../models/jp_models.dart';
 import '../models/mubu_hive.dart';
 import '../utils/detail_source_parse.dart';
+import '../utils/cover_cdn.dart';
+import 'jp_domain_discovery.dart';
 import 'jp_log.dart';
 
 /// 荐片 API 服务核心类 (单例)
-/// 
-/// 负责 API 域名的连通性测试、动态 CDN 图片域名的选择、动态安全签名计算以及业务接口调用。
+///
+/// 负责 API 根域发现、动态 CDN 图片域名、签名计算以及业务接口调用。
 class JpApi {
-  // 固定备选 API 域名列表，在启动时进行动态测速，选择首个可连通的域名
-  static const List<String> _fixedDomains = [
-    'japi.zxfmj.com',
-    'api.ipixiv.com',
-    'release.ipixiv.com',
-  ];
+  static const String _apiVersion = '504';
 
-  String _baseUrl = 'https://japi.zxfmj.com/api';
+  String _apiRoot = JpDomainDiscovery.fallbackRoot;
+  String _baseUrl = 'https://${JpDomainDiscovery.fallbackRoot}/api';
   String _imgDomain = '';
+  List<String> _imgDomainCandidates = List<String>.from(kHardcodedImgDomainBackups);
   String _secret = '';
   bool _initialized = false;
   Future<void>? _initFuture;
 
-  static final HttpClient _sharedHttpClient = HttpClient()..connectionTimeout = const Duration(seconds: 2);
+  final JpDomainDiscovery _domainDiscovery = JpDomainDiscovery();
+
+  /// 本会话内 DNS/解析失败过的根域，发现时跳过。
+  final Set<String> _dnsFailedRoots = {};
+
+  /// 防止并发请求同时触发多次换域。
+  Future<bool>? _failoverInFlight;
+
+  /// 必须 lazy：若 static 字段在 main 设 HttpOverrides 之前初始化，会漏掉 DoH factory。
+  static HttpClient? _sharedHttpClient;
+  static HttpClient get _cdnHttpClient =>
+      _sharedHttpClient ??= HttpClient()..connectionTimeout = const Duration(seconds: 2);
 
   static final JpApi _instance = JpApi._();
   factory JpApi() => _instance;
@@ -35,13 +45,20 @@ class JpApi {
   /// 获取当前活跃的 API 基础 URL
   String get baseUrl => _baseUrl;
 
+  /// 当前 API 根域（不含随机子域前缀时的逻辑根）
+  String get apiRoot => _apiRoot;
+
   /// 获取当前解析成功、可用的活跃图片/封面 CDN 域名
   String get imgDomain => _imgDomain;
 
+  /// 封面失败换域候选（主域置首）
+  List<String> get imgDomainCandidates =>
+      List<String>.unmodifiable(_imgDomainCandidates);
+
   /// 客户端 API 初始化入口
-  /// 
-  /// 优先加载本地持久化缓存。若存在缓存立即返回成功，并在后台静默刷新验证。
-  /// 若无缓存，则并发测试可用域名并初始化配置。
+  ///
+  /// 优先加载合法根域缓存。若存在则立即可用，并在后台静默刷新。
+  /// 若无缓存，则阻塞跑完整域名发现。
   Future<void> init() async {
     if (_initialized) return;
     _initFuture ??= _doInit();
@@ -51,52 +68,110 @@ class JpApi {
   Future<void> _doInit() async {
     try {
       final configBox = Hive.box<String>('config');
-      final cached = configBox.get('last_api_domain');
+      await _migrateAndSanitizeApiRootCache(configBox);
+
+      final cachedRoot = configBox.get(JpDomainDiscovery.lastApiRootKey);
       final cachedSecret = configBox.get('secret');
       final cachedImgDomain = configBox.get('last_img_domain');
 
-      final hasValidCache = cached != null && cachedSecret != null && cachedSecret.isNotEmpty;
+      final hasValidCache = cachedRoot != null &&
+          cachedRoot.isNotEmpty &&
+          !JpDomainDiscovery.isBadRoot(cachedRoot) &&
+          cachedSecret != null &&
+          cachedSecret.isNotEmpty;
 
       if (hasValidCache) {
-        _baseUrl = cached;
+        _apiRoot = cachedRoot;
+        _baseUrl = _domainDiscovery.buildApiBaseUrl(_apiRoot);
         _secret = cachedSecret;
         if (cachedImgDomain != null && cachedImgDomain.isNotEmpty) {
           _imgDomain = cachedImgDomain;
         } else {
           _imgDomain = 'static2.gutaike.com';
         }
+        _imgDomainCandidates = mergeImgDomainCandidates(primary: _imgDomain);
         _initialized = true;
-        // 懒加载：立即返回成功并让 UI 渲染，同时在后台静默测速刷新
         unawaited(_backgroundRefresh(isFirstInit: false));
         return;
       }
 
-      // 无缓存，必须全量阻塞测速
       await _backgroundRefresh(isFirstInit: true);
       _initialized = true;
     } catch (e) {
-      _initFuture = null; // 允许失败重试
+      _initFuture = null;
       rethrow;
+    }
+  }
+
+  /// 迁移旧 `last_api_domain` 全 URL → `last_api_root`，并清除劣质域。
+  Future<void> _migrateAndSanitizeApiRootCache(Box<String> configBox) async {
+    var root = configBox.get(JpDomainDiscovery.lastApiRootKey);
+    final legacy = configBox.get(JpDomainDiscovery.legacyLastApiDomainKey);
+
+    if ((root == null || root.isEmpty) && legacy != null && legacy.isNotEmpty) {
+      root = JpDomainDiscovery.rootFromLegacyBaseUrl(legacy);
+      if (root != null && root.isNotEmpty) {
+        await configBox.put(JpDomainDiscovery.lastApiRootKey, root);
+        jpLog('API', 'Migrated legacy last_api_domain → root=$root');
+      }
+    }
+
+    if (root != null && JpDomainDiscovery.isBadRoot(root)) {
+      jpLog('API', 'Purging bad API root cache: $root');
+      await configBox.delete(JpDomainDiscovery.lastApiRootKey);
+      root = null;
+    }
+
+    if (legacy != null) {
+      final legacyRoot = JpDomainDiscovery.rootFromLegacyBaseUrl(legacy);
+      if (legacyRoot != null && JpDomainDiscovery.isBadRoot(legacyRoot)) {
+        await configBox.delete(JpDomainDiscovery.legacyLastApiDomainKey);
+      }
+    }
+
+    // 清理缓存的域名列表中的劣质项
+    final rawList = configBox.get(JpDomainDiscovery.apiDomainsKey);
+    if (rawList != null && rawList.isNotEmpty) {
+      try {
+        final decoded = json.decode(rawList);
+        if (decoded is List) {
+          final cleaned = decoded
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty && !JpDomainDiscovery.isBadRoot(e))
+              .toList();
+          await configBox.put(JpDomainDiscovery.apiDomainsKey, json.encode(cleaned));
+        }
+      } catch (_) {
+        await configBox.delete(JpDomainDiscovery.apiDomainsKey);
+      }
     }
   }
 
   Future<void> _backgroundRefresh({required bool isFirstInit}) async {
     try {
       final configBox = Hive.box<String>('config');
-      String? bestApiUrl;
 
       if (isFirstInit) {
-        bestApiUrl = await _raceApiDomains(_fixedDomains);
-        if (bestApiUrl == null) throw Exception('无法连接到荐片服务器');
-        _baseUrl = bestApiUrl;
-        await configBox.put('last_api_domain', _baseUrl);
+        final root = await _discoverRoot(configBox);
+        if (root == null) throw Exception('无法连接到荐片服务器');
+        _applyApiRoot(root);
+        await configBox.put(JpDomainDiscovery.lastApiRootKey, root);
+        await configBox.put(JpDomainDiscovery.legacyLastApiDomainKey, _baseUrl);
       } else {
-        bool currentOk = await _testDomain(_baseUrl);
-        if (!currentOk) {
-          bestApiUrl = await _raceApiDomains(_fixedDomains);
-          if (bestApiUrl != null) {
-            _baseUrl = bestApiUrl;
-            await configBox.put('last_api_domain', _baseUrl);
+        // 静默全量发现（p7）；成功则切换根域并换新随机会话 URL
+        final root = await _discoverRoot(configBox);
+        if (root != null) {
+          _applyApiRoot(root);
+          await configBox.put(JpDomainDiscovery.lastApiRootKey, root);
+          await configBox.put(JpDomainDiscovery.legacyLastApiDomainKey, _baseUrl);
+        } else {
+          // 发现失败则尝试当前根域换新随机子域
+          final sessionBase = _domainDiscovery.buildApiBaseUrl(_apiRoot);
+          if (await _domainDiscovery.probeApiBase(sessionBase)) {
+            _baseUrl = sessionBase;
+            await configBox.put(JpDomainDiscovery.legacyLastApiDomainKey, _baseUrl);
+          } else {
+            jpLog('API', 'Background rediscover failed; keeping $_baseUrl');
           }
         }
       }
@@ -104,68 +179,126 @@ class JpApi {
       await _loadConfig();
     } catch (e, s) {
       jpLog('API', 'Background refresh failed: $e\n$s');
+      if (isFirstInit) rethrow;
     }
   }
 
-  Future<String?> _raceApiDomains(List<String> domains) async {
-    if (domains.isEmpty) return null;
-    final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final ttlMs = 24 * 60 * 60 * 1000; // 24 hours
-
-    String? bestCachedDomain;
-    int bestCachedLatency = 999999;
-    for (final domain in domains) {
-      final record = nodeBox.get(domain);
-      if (record != null && (now - record.testedAtEpoch) < ttlMs) {
-        if (record.latencyMs < 500 && record.latencyMs < bestCachedLatency) {
-          bestCachedLatency = record.latencyMs;
-          bestCachedDomain = domain;
+  Future<String?> _discoverRoot(
+    Box<String> configBox, {
+    Set<String> excludeRoots = const {},
+  }) async {
+    final seedRoot = configBox.get(JpDomainDiscovery.lastApiRootKey);
+    List<String>? seedList;
+    final raw = configBox.get(JpDomainDiscovery.apiDomainsKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = json.decode(raw);
+        if (decoded is List) {
+          seedList = decoded.map((e) => e.toString()).toList();
         }
+      } catch (_) {}
+    }
+
+    final exclude = {...excludeRoots, ..._dnsFailedRoots};
+    final result = await _domainDiscovery.resolve(
+      seedRoot: seedRoot,
+      seedDomainList: seedList,
+      excludeRoots: exclude,
+    );
+    if (result == null) return null;
+    if (result.fetchedList != null && result.fetchedList!.isNotEmpty) {
+      await configBox.put(
+        JpDomainDiscovery.apiDomainsKey,
+        json.encode(result.fetchedList),
+      );
+    }
+    return result.root;
+  }
+
+  void _applyApiRoot(String root) {
+    _apiRoot = root;
+    _baseUrl = _domainDiscovery.buildApiBaseUrl(root);
+    jpLog('API', 'Active API root=$_apiRoot baseUrl=$_baseUrl');
+  }
+
+  bool _isHostLookupFailure(Object e) {
+    final s = e.toString().toLowerCase();
+    if (s.contains('failed host lookup')) return true;
+    if (s.contains('nodename nor servname')) return true;
+    if (e is SocketException) {
+      if (e.osError?.errorCode == 8) return true;
+      final msg = (e.message).toLowerCase();
+      if (msg.contains('failed host lookup') ||
+          msg.contains('nodename nor servname')) {
+        return true;
       }
     }
-    if (bestCachedDomain != null) {
-      jpLog('API', 'Using cached fast API domain: $bestCachedDomain (${bestCachedLatency}ms)');
-      return 'https://$bestCachedDomain/api';
-    }
+    return false;
+  }
 
-    final completer = Completer<String?>();
-    int failedCount = 0;
+  /// DNS/主机解析失败后换根域；成功返回 true。
+  Future<bool> _failoverAfterDnsFailure() {
+    final existing = _failoverInFlight;
+    if (existing != null) return existing;
+    final future = _doFailoverAfterDnsFailure();
+    _failoverInFlight = future;
+    return future.whenComplete(() {
+      if (identical(_failoverInFlight, future)) {
+        _failoverInFlight = null;
+      }
+    });
+  }
 
-    for (final domain in domains) {
-      final url = 'https://$domain/api';
-      final start = DateTime.now().millisecondsSinceEpoch;
-      _testDomain(url).then((success) {
-        final latency = DateTime.now().millisecondsSinceEpoch - start;
-        if (success) {
-          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
-          if (!completer.isCompleted) completer.complete(url);
-        } else {
-          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: 99999, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
-          failedCount++;
-          if (failedCount == domains.length && !completer.isCompleted) {
-            completer.complete(null);
+  Future<bool> _doFailoverAfterDnsFailure() async {
+    final failed = _apiRoot;
+    _dnsFailedRoots.add(failed);
+    jpLog('API', 'DNS/host lookup failed for root=$failed; failing over...');
+
+    try {
+      final configBox = Hive.box<String>('config');
+      final cached = configBox.get(JpDomainDiscovery.lastApiRootKey);
+      if (cached != null && cached == failed) {
+        await configBox.delete(JpDomainDiscovery.lastApiRootKey);
+      }
+
+      final root = await _discoverRoot(
+        configBox,
+        excludeRoots: {failed},
+      );
+      if (root == null) {
+        jpLog('API', 'Failover discover returned no root');
+        return false;
+      }
+      _applyApiRoot(root);
+      await configBox.put(JpDomainDiscovery.lastApiRootKey, root);
+      await configBox.put(JpDomainDiscovery.legacyLastApiDomainKey, _baseUrl);
+      // 换域后尽量刷新 secret（无签名接口也可能仍可用）
+      try {
+        final initResp = await http
+            .get(
+              Uri.parse('$_baseUrl/v2/sys/init'),
+              headers: const {
+                'Content-Type': 'application/json',
+                'User-Agent': 'jianpian-linux/1.0',
+              },
+            )
+            .timeout(const Duration(seconds: 10));
+        if (initResp.statusCode == 200) {
+          final body = json.decode(initResp.body);
+          final data = body is Map ? body['data'] : null;
+          final secret = data is Map ? data['secret'] : null;
+          if (secret is String && secret.isNotEmpty) {
+            _secret = secret;
+            await configBox.put('secret', _secret);
           }
         }
-      });
-    }
-    return completer.future;
-  }
-
-  /// 测试指定 API 域名的连通性
-  /// 
-  /// 发送基础 Auth 配置请求，要求 HTTP 返回 200 且业务 code == 1 视为连通
-  Future<bool> _testDomain(String url) async {
-    try {
-      final resp = await http
-          .get(Uri.parse('$url/v2/settings/appAuthConfig'))
-          .timeout(const Duration(seconds: 5));
-      if (resp.statusCode == 200) {
-        final body = json.decode(resp.body);
-        if (body['code'] == 1) return true;
+      } catch (e) {
+        jpLog('API', 'Failover sys/init soft-fail: $e');
       }
-      return false;
-    } catch (_) {
+      jpLog('API', 'Failover success → $_apiRoot');
+      return true;
+    } catch (e, s) {
+      jpLog('API', 'Failover error: $e\n$s');
       return false;
     }
   }
@@ -176,7 +309,7 @@ class JpApi {
   Future<bool> _testImgDomain(String domain, String path) async {
     if (domain.isEmpty) return false;
     try {
-      final request = await _sharedHttpClient.getUrl(Uri.parse('https://$domain$path'))
+      final request = await _cdnHttpClient.getUrl(Uri.parse('https://$domain$path'))
           .timeout(const Duration(seconds: 2));
       // 移除 'Connection: close'，允许复用
       final response = await request.close().timeout(const Duration(seconds: 2));
@@ -241,6 +374,7 @@ class JpApi {
   /// 
   /// 若默认图片域名无法连通，将从服务器拉取备用域名列表并进行并发测速，
   /// 若均不可用，会自动降级使用内置硬编码的 CDN 域名（如 static2.gutaike.com）。
+  /// 无论默认域是否可用，都会合并 package + 硬编码为 [_imgDomainCandidates]（主域置首）。
   Future<void> _loadConfig() async {
     try {
       final authResp = await _get('/v2/settings/appAuthConfig');
@@ -255,28 +389,29 @@ class JpApi {
         testPath = '/upload/video/2023/12/09/0cff0e65030b486db58408abeeefd85b.jpg';
       }
 
+      // 始终拉取备用域列表，供封面失败换域（不改变单测速图选主逻辑）
+      final fallbackResp = await _get('/v2/settings/packageDomainConfig');
+      List<String> packageDomains = [];
+      if (fallbackResp != null && fallbackResp['data'] != null) {
+        final domainsStr = fallbackResp['data']['imgDomain'] as String? ?? '';
+        packageDomains = domainsStr
+            .split(',')
+            .map((s) => s.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+      }
+      jpLog('CDN', 'Package img domains: $packageDomains');
+
       // 验证默认图片域名是否可以连通
       final defaultOk = await _testImgDomain(_imgDomain, testPath);
       jpLog('CDN', 'Default domain check: $_imgDomain is working: $defaultOk');
 
       if (!defaultOk) {
-        jpLog('CDN', 'Default domain failed. Fetching backup domains...');
-        // 从云端拉取多组备选图片域名
-        final fallbackResp = await _get('/v2/settings/packageDomainConfig');
-        List<String> backupDomains = [];
-        if (fallbackResp != null && fallbackResp['data'] != null) {
-          final domainsStr = fallbackResp['data']['imgDomain'] as String? ?? '';
-          backupDomains = domainsStr.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
-        }
-        jpLog('CDN', 'Backup domains list: $backupDomains');
-        
-        // 压入硬编码的安全备用图片域名
-        const hardcodedBackups = ['static2.gutaike.com', 'static.shaxyt.com'];
-        for (final fallback in hardcodedBackups) {
-          if (!backupDomains.contains(fallback)) {
-            backupDomains.add(fallback);
-          }
-        }
+        jpLog('CDN', 'Default domain failed. Racing backup domains...');
+        final backupDomains = mergeImgDomainCandidates(
+          primary: '',
+          fromPackage: packageDomains,
+        );
         jpLog('CDN', 'Final testing list (including hardcoded fallback): $backupDomains');
 
         // 并发进行备选域名测速 (竞速模式)
@@ -291,7 +426,13 @@ class JpApi {
         }
       }
 
+      _imgDomainCandidates = mergeImgDomainCandidates(
+        primary: _imgDomain,
+        fromPackage: packageDomains,
+      );
+
       jpLog('CDN', 'Final active imgDomain resolved to: $_imgDomain');
+      jpLog('CDN', 'imgDomainCandidates: $_imgDomainCandidates');
       
       final configBox = Hive.box<String>('config');
       await configBox.put('last_img_domain', _imgDomain);
@@ -304,12 +445,13 @@ class JpApi {
       }
     } catch (e, s) {
       jpLog('CDN', 'Error in _loadConfig: $e\n$s');
+      _imgDomainCandidates = mergeImgDomainCandidates(primary: _imgDomain);
     }
   }
 
   /// 计算并填充 API 安全校验签名 Header
-  /// 
-  /// 签名规则符合荐片逆向标准：MD5("503" + timestamp + secret)
+  ///
+  /// 签名规则：MD5(version + timestamp + secret)，version 对齐桌面 5.0.4 为 504。
   Map<String, String> _signedHeaders() {
     final headers = <String, String>{
       'Content-Type': 'application/json',
@@ -317,8 +459,8 @@ class JpApi {
     };
     if (_secret.isNotEmpty) {
       final ts = (DateTime.now().millisecondsSinceEpoch / 1000).floor().toString();
-      final sig = md5.convert(utf8.encode('503$ts$_secret')).toString();
-      headers['version'] = '503';
+      final sig = md5.convert(utf8.encode('$_apiVersion$ts$_secret')).toString();
+      headers['version'] = _apiVersion;
       headers['timestamp'] = ts;
       headers['signature'] = sig;
     }
@@ -326,10 +468,11 @@ class JpApi {
   }
 
   /// 底层通用的 HTTP GET 请求方法
-  /// 
-  /// 配备了网络超时延长（15秒）以及超时/网络异常自动重试逻辑（默认重试 2 次，每次间隔 1 秒）
+  ///
+  /// 超时/网络异常默认重试；若判定为 DNS/主机解析失败，则换根域后再试一次。
   Future<dynamic> _get(String path, {int retries = 2}) async {
     int attempt = 0;
+    var didDnsFailover = false;
     while (true) {
       try {
         final resp = await http
@@ -341,6 +484,14 @@ class JpApi {
         }
         return null;
       } catch (e) {
+        if (!didDnsFailover && _isHostLookupFailure(e)) {
+          didDnsFailover = true;
+          final ok = await _failoverAfterDnsFailure();
+          if (ok) {
+            jpLog('API', 'Retrying $path after DNS failover → $_baseUrl');
+            continue;
+          }
+        }
         attempt++;
         if (attempt > retries) {
           jpLog('API', 'Request to $path failed after $retries retries: $e');
@@ -381,18 +532,71 @@ class JpApi {
     return [];
   }
 
+  /// 运营手推片：`data` 为 tagId → 视频列表。失败返回空 map。
+  Future<Map<int, List<VideoItem>>> getHomeHandData(int categoryId) async {
+    try {
+      final resp = await _get('/dyTag/hand_data?category_id=$categoryId');
+      final raw = resp?['data'];
+      if (raw is! Map) return {};
+      final out = <int, List<VideoItem>>{};
+      for (final entry in raw.entries) {
+        final tagId = int.tryParse(entry.key.toString());
+        final list = entry.value;
+        if (tagId == null || list is! List) continue;
+        out[tagId] = list
+            .whereType<Map>()
+            .map((j) => VideoItem.fromTagJson(Map<String, dynamic>.from(j)))
+            .toList();
+      }
+      return out;
+    } catch (e) {
+      jpLog('API', 'getHomeHandData($categoryId) failed: $e');
+      return {};
+    }
+  }
+
   /// 全局视频搜索接口
-  /// 
-  /// 关键词已进行 URL 安全编码，防御空格/特殊字符。返回搜索结果集及总数。
+  ///
+  /// 关键词已进行 URL 安全编码。返回列表按：精确 title → title/original_name 包含 → 其余（稳定排序）。
   Future<({List<VideoItem> videos, int total})> search(String keyword, {int page = 1}) async {
     final encodedKey = Uri.encodeComponent(keyword);
     final resp = await _get('/v2/search/videoV2?key=$encodedKey&page=$page');
     if (resp != null && resp['data'] != null && resp['data'] is List) {
-      final videos = (resp['data'] as List).map((j) => VideoItem.fromSearchJson(j)).toList();
+      final raw = (resp['data'] as List)
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+      final sorted = _sortSearchResults(raw, keyword);
+      final videos = sorted.map(VideoItem.fromSearchJson).toList();
       final total = (resp['total'] as num?)?.toInt() ?? videos.length;
       return (videos: videos, total: total);
     }
     return (videos: <VideoItem>[], total: 0);
+  }
+
+  /// 精确匹配优先，其次标题/原名包含关键词；同档保持相对顺序。
+  List<Map<String, dynamic>> _sortSearchResults(
+    List<Map<String, dynamic>> items,
+    String keyword,
+  ) {
+    final kw = keyword.trim();
+    if (kw.isEmpty || items.length <= 1) return items;
+
+    int rank(Map<String, dynamic> j) {
+      final title = (j['title'] ?? '').toString();
+      final original = (j['original_name'] ?? '').toString();
+      if (title == kw) return 0;
+      if (title.contains(kw) || original.contains(kw)) return 1;
+      return 2;
+    }
+
+    final indexed = [for (var i = 0; i < items.length; i++) (i, items[i])];
+    indexed.sort((a, b) {
+      final c = rank(a.$2).compareTo(rank(b.$2));
+      if (c != 0) return c;
+      return a.$1.compareTo(b.$1);
+    });
+    return [for (final e in indexed) e.$2];
   }
 
   /// 获取影片详情数据（包含全部待测速的播放线路列表）

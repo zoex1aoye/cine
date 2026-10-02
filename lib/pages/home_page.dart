@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'dart:ui';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
@@ -10,6 +9,7 @@ import '../widgets/movie_sliver_grid.dart';
 import '../widgets/mubu_error_widget.dart';
 import '../widgets/mubu_dialog.dart';
 import '../widgets/mubu_button.dart';
+import '../widgets/failover_cover_image.dart';
 import 'player_page.dart';
 import 'category_filter_page.dart';
 import 'search_page.dart';
@@ -17,6 +17,7 @@ import 'tag_videos_page.dart';
 
 import '../api/mubu_ui_adapt.dart';
 import '../api/mubu_constants.dart';
+import '../utils/home_hand_data.dart';
 import '../widgets/load_more_button.dart';
 
 // ─── Design Tokens ───────────────────────────────────────────
@@ -562,7 +563,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               await MubuStorage.deleteHistoryItem(video.id);
               await _loadBookmarksAndHistory();
             },
-            showSubtitle: false,
+            showSubtitle: true,
           ),
         ),
         if (_historyLoadingMore)
@@ -1094,13 +1095,14 @@ class _HeroBannerState extends State<_HeroBanner> {
               top: 0,
               bottom: 0,
               width: MediaQuery.of(context).size.width * 0.6,
-              child: CachedNetworkImage(
-                imageUrl: widget.video.coverUrl(widget.imgDomain),
+              child: FailoverCoverImage(
+                coverPath: widget.video.coverPath,
+                imgDomain: widget.imgDomain,
                 fit: BoxFit.cover,
                 color: Colors.white.withOpacity(0.5),
                 colorBlendMode: BlendMode.modulate,
-                placeholder: (_, __) => Container(color: Colors.black38),
-                errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                placeholderBuilder: (_) => Container(color: Colors.black38),
+                errorBuilder: (_) => const SizedBox.shrink(),
               ),
             ),
           // 1. Left-to-right fade for text readability
@@ -1286,6 +1288,7 @@ class _HeroBannerState extends State<_HeroBanner> {
 // ─── TAG SECTION (Stateful with Lazy Loading) ──────────────────
 class _TagSection extends StatefulWidget {
   final TagItem tag;
+  final int categoryId;
   final String imgDomain;
   final ValueChanged<VideoItem> onPlay;
   final ValueChanged<VideoItem> onInfo;
@@ -1295,6 +1298,7 @@ class _TagSection extends StatefulWidget {
   const _TagSection({
     super.key,
     required this.tag,
+    required this.categoryId,
     required this.imgDomain,
     required this.onPlay,
     required this.onInfo,
@@ -1356,16 +1360,27 @@ class _TagSectionState extends State<_TagSection> {
       });
     }
     try {
+      const count = 12;
       final vids = await MubuApiClient.instance.getTagVideos(
         tagId,
         tpl: tpl,
-        count: 12,
+        count: count,
       );
+      var handData = <int, List<VideoItem>>{};
+      try {
+        handData = await MubuApiClient.instance.getHomeHandData(widget.categoryId);
+      } catch (_) {}
       if (!mounted || generation != _loadGeneration || widget.tag.id != tagId) {
         return;
       }
       setState(() {
-        _videos = vids;
+        _videos = mergeHomeHandFirstPage(
+          tagId: tagId,
+          page: 1,
+          count: count,
+          tplVideos: vids,
+          handData: handData,
+        );
         _loading = false;
       });
     } catch (e) {
@@ -1621,19 +1636,39 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
       _tagVideos = {};
     });
     try {
-      final tags = await widget.api.getHomeTags(widget.category.id);
+      final tagsFuture = widget.api.getHomeTags(widget.category.id);
+      final handFuture = widget.api.getHomeHandData(widget.category.id);
+      final tags = await tagsFuture;
+      if (!mounted || session != _currentLoadSession) return;
+
+      var handData = <int, List<VideoItem>>{};
+      try {
+        handData = await handFuture;
+      } catch (_) {
+        handData = {};
+      }
       if (!mounted || session != _currentLoadSession) return;
 
       final tagVideos = <int, List<VideoItem>>{};
       if (tags.isNotEmpty) {
+        const count = 12;
         final entries = await Future.wait(
           tags.map((tag) async {
             final vids = await widget.api.getTagVideos(
               tag.id,
               tpl: tag.template,
-              count: 12,
+              count: count,
             );
-            return MapEntry(tag.id, vids);
+            return MapEntry(
+              tag.id,
+              mergeHomeHandFirstPage(
+                tagId: tag.id,
+                page: 1,
+                count: count,
+                tplVideos: vids,
+                handData: handData,
+              ),
+            );
           }),
         );
         if (!mounted || session != _currentLoadSession) return;
@@ -1708,6 +1743,7 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
             child: _TagSection(
               key: ValueKey('home-tag-${widget.category.id}-${tag.id}'),
               tag: tag,
+              categoryId: widget.category.id,
               imgDomain: widget.api.imgDomain,
               onPlay: widget.onPlay,
               onInfo: widget.onInfo,
@@ -1716,7 +1752,10 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => TagVideosPage(tag: tag),
+                    builder: (_) => TagVideosPage(
+                      tag: tag,
+                      categoryId: widget.category.id,
+                    ),
                   ),
                 );
               },

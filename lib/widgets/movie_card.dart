@@ -1,9 +1,9 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
+import 'failover_cover_image.dart';
 import 'mubu_button.dart';
 
 class MovieCard extends StatefulWidget {
@@ -112,11 +112,12 @@ class _MovieCardState extends State<MovieCard> {
                                 ),
                               ),
                             )
-                          : CachedNetworkImage(
-                              imageUrl: widget.video.coverUrl(widget.imgDomain),
+                          : FailoverCoverImage(
+                              coverPath: widget.video.coverPath,
+                              imgDomain: widget.imgDomain,
                               fit: BoxFit.cover,
                               filterQuality: FilterQuality.high,
-                              placeholder: (_, __) => Container(
+                              placeholderBuilder: (_) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: const Center(
                                   child: SizedBox(
@@ -129,7 +130,7 @@ class _MovieCardState extends State<MovieCard> {
                                   ),
                                 ),
                               ),
-                              errorWidget: (_, url, error) => Container(
+                              errorBuilder: (_) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: Icon(
                                   Icons.movie,
@@ -272,12 +273,16 @@ class _MovieCardState extends State<MovieCard> {
                   builder: (context) {
                     // 动态合成副标题：若包含年份或类型则用中间点拼接；若均为空则返回空字符串
                     final showSubtitle = widget.showSubtitle ?? (widget.onDelete == null);
-                    final subtitle = showSubtitle
-                        ? [
-                            if (widget.video.year.isNotEmpty) widget.video.year,
-                            if (widget.video.category.isNotEmpty) widget.video.category
-                          ].join(' • ')
-                        : '';
+                    final lastEp = widget.video.lastEpisodeName?.trim() ?? '';
+                    final subtitle = !showSubtitle
+                        ? ''
+                        : lastEp.isNotEmpty
+                            ? lastEp
+                            : [
+                                if (widget.video.year.isNotEmpty) widget.video.year,
+                                if (widget.video.category.isNotEmpty)
+                                  widget.video.category
+                              ].join(' • ');
                     final hasSubtitle = subtitle.isNotEmpty;
                     return SizedBox(
                       height: hasSubtitle ? 52 : 40, // 无副标题时压缩底部高度

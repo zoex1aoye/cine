@@ -18,3 +18,140 @@ bool matchesEpisode(VideoSource source, String ref) {
   if (source.weight.isNotEmpty && source.weight == ref) return true;
   return false;
 }
+
+/// Index of the probe/display representative for [lineName].
+///
+/// Prefers a source matching [episodeRef] (current episode). If none — e.g. film
+/// CDNs with divergent `source_name` labels — falls back to the first source on
+/// that line so line lists and speed tests still cover every distinct line.
+int representativeIndexForLine(
+  List<VideoSource> sources,
+  String lineName, {
+  String episodeRef = '',
+}) {
+  if (lineName.isEmpty || sources.isEmpty) return -1;
+  if (episodeRef.isNotEmpty) {
+    final matched = sources.indexWhere(
+      (s) => s.name == lineName && matchesEpisode(s, episodeRef),
+    );
+    if (matched >= 0) return matched;
+  }
+  return sources.indexWhere((s) => s.name == lineName);
+}
+
+final _seriesEpisodeLabel = RegExp(
+  r'第\s*\d+\s*集|EP?\s*\d+|S\d+\s*E\s*\d+',
+  caseSensitive: false,
+);
+
+/// Whether [label] looks like a numbered TV/short-drama episode.
+bool looksLikeSeriesEpisodeLabel(String label) {
+  final t = label.trim();
+  if (t.isEmpty) return false;
+  return _seriesEpisodeLabel.hasMatch(t);
+}
+
+/// Film / single-title layout: version labels (正片、BD…、1080P) rather than
+/// shared「第N集」across CDNs. Used to ignore episode scope when auto-picking
+/// the globally fastest line.
+bool isFilmStyleSources(List<VideoSource> sources) {
+  if (sources.isEmpty) return true;
+  var seriesLike = 0;
+  for (final s in sources) {
+    if (looksLikeSeriesEpisodeLabel(s.sourceName) ||
+        looksLikeSeriesEpisodeLabel(s.weight)) {
+      seriesLike++;
+    }
+  }
+  return seriesLike < 2;
+}
+
+/// Episode scope for [SourcePicker]: empty on film-style titles (global pick).
+String pickScopeEpisodeName(
+  List<VideoSource> sources,
+  String currentEpisodeRef,
+) {
+  if (isFilmStyleSources(sources)) return '';
+  return currentEpisodeRef;
+}
+
+/// Resolve which episode ref should scope speed-test / auto-pick.
+///
+/// Until the user manually picks an episode, prefer [savedEpisodeName] so
+/// early-play does not lock to source index 0 (often episode 1).
+String resolveEpisodeScopeRef({
+  required String currentEpisodeRef,
+  String? savedEpisodeName,
+  required bool userPickedEpisode,
+  String fallbackFirstRef = '',
+}) {
+  if (userPickedEpisode && currentEpisodeRef.isNotEmpty) {
+    return currentEpisodeRef;
+  }
+  if (savedEpisodeName != null && savedEpisodeName.isNotEmpty) {
+    return savedEpisodeName;
+  }
+  if (currentEpisodeRef.isNotEmpty) return currentEpisodeRef;
+  return fallbackFirstRef;
+}
+
+bool _probedUsable(VideoSource s) =>
+    s.usable && s.playlistMs != null && s.playlistMs! < 999999;
+
+/// Find a source for [savedEpisodeName].
+///
+/// Soft (`requireProbed: false`): match episode + prefer [preferredLineName],
+/// no playlistMs/usable required — for pre-speed-test lock.
+/// Hard (`requireProbed: true`): existing three-tier probed match, then
+/// [fastestIndex] fallback.
+int? findSavedEpisodeSourceIndex(
+  List<VideoSource> sources, {
+  required String savedEpisodeName,
+  String? preferredLineName,
+  int? fastestIndex,
+  bool requireProbed = true,
+}) {
+  if (savedEpisodeName.isEmpty || sources.isEmpty) return null;
+
+  if (!requireProbed) {
+    if (preferredLineName != null && preferredLineName.isNotEmpty) {
+      final exact = sources.indexWhere(
+        (s) =>
+            matchesEpisode(s, savedEpisodeName) && s.name == preferredLineName,
+      );
+      if (exact != -1) return exact;
+    }
+    final any = sources.indexWhere((s) => matchesEpisode(s, savedEpisodeName));
+    return any == -1 ? null : any;
+  }
+
+  if (preferredLineName != null && preferredLineName.isNotEmpty) {
+    final exact = sources.indexWhere(
+      (s) =>
+          matchesEpisode(s, savedEpisodeName) &&
+          s.name == preferredLineName &&
+          _probedUsable(s),
+    );
+    if (exact != -1) return exact;
+  }
+
+  final anyProbed = sources.indexWhere(
+    (s) => matchesEpisode(s, savedEpisodeName) && _probedUsable(s),
+  );
+  if (anyProbed != -1) return anyProbed;
+
+  if (fastestIndex != null &&
+      fastestIndex >= 0 &&
+      fastestIndex < sources.length) {
+    final fastestLineName = sources[fastestIndex].name;
+    final matchIdx = sources.indexWhere(
+      (s) =>
+          s.name == fastestLineName &&
+          matchesEpisode(s, savedEpisodeName) &&
+          s.usable,
+    );
+    if (matchIdx != -1) return matchIdx;
+    return fastestIndex;
+  }
+  return null;
+}

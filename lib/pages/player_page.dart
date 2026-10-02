@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
@@ -16,6 +15,7 @@ import '../utils/source_picker.dart';
 import '../utils/source_quality.dart';
 import '../utils/stream_probe.dart';
 import '../widgets/mubu_dialog.dart';
+import '../widgets/failover_cover_image.dart';
 import 'package:hive/hive.dart';
 import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
@@ -88,6 +88,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   int? _savedDurationMs;
   String? _savedEpisodeName;
   String? _savedLineName;
+  /// User tapped an episode in the grid — stop preferring saved episode scope.
+  bool _userPickedEpisode = false;
 
   // 弱网自动切换：持续缓冲超时后的看门狗
   Timer? _bufferingWatchdog;
@@ -201,12 +203,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           _stage = LoadingStage.testingSpeed;
         });
       }
-      if (_sources.length > 1) {
+      if (_sources.isNotEmpty) {
+        // Soft-lock history episode before speed test so reps/Champion scope correctly.
+        _applySavedEpisodeSelection(requireProbed: false);
         await _runSpeedTest();
       }
       if (_disposed) return;
 
       if (_playerInitialized) {
+        // Early-play may have init'd on the wrong episode before soft lock took effect
+        // on a later path; hard-match and switch before the user taps play.
+        if (!_userPickedEpisode &&
+            _savedEpisodeName != null &&
+            _savedEpisodeName!.isNotEmpty &&
+            !_startPlayRequested &&
+            _sources.isNotEmpty &&
+            !matchesEpisode(
+              _sources[_selectedSource],
+              _savedEpisodeName!,
+            )) {
+          _applySavedEpisodeSelection(requireProbed: true, switchIfInit: true);
+        }
         if (mounted && _stage != LoadingStage.ready) {
           setState(() => _stage = LoadingStage.ready);
         }
@@ -448,14 +465,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastAutoSwitchMs < 30000) return;
 
-    // 寻找当前集数中质量+延迟最优的备用线路（弱网允许低档）
+    // 寻找当前集数中质量+延迟最优的备用线路（弱网允许低档；电影全局）
     if (_sources.isEmpty) return;
-    final currentEpisode = _currentEpisodeRef;
+    final currentEpisode = pickScopeEpisodeName(_sources, _currentEpisodeRef);
     final currentUrl = _sources[_selectedSource].url;
 
     final fallback = SourcePicker.pickMain(
       _sources,
-      episodeName: currentEpisode,
+      episodeName: currentEpisode.isEmpty ? null : currentEpisode,
       excludeUrl: currentUrl,
       preferLowerTierOnWeakNet: true,
     );
@@ -474,25 +491,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String get _currentEpisodeName =>
       _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
-  /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源
+  /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源。
+  /// 电影（无「第N集」式标签）忽略集名，在全部 usable 源里全局选。
   Future<void> _applyRecommendedSource({bool autoInit = false}) async {
     if (_sources.isEmpty) return;
-    final episode = _currentEpisodeRef.isNotEmpty
-        ? _currentEpisodeRef
-        : _sources.first.sourceName.isNotEmpty
-            ? episodeRef(_sources.first)
-            : '';
+    final rawEpisode = _episodeScopeRef;
+    final episode = pickScopeEpisodeName(_sources, rawEpisode);
+    final episodeArg = episode.isEmpty ? null : episode;
 
-    final idx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
+    final idx = SourcePicker.pickMainIndex(_sources, episodeName: episodeArg);
     if (idx == null) return;
 
     final picked = _sources[idx];
     final resolution = SourceQuality.resolutionLabel(picked);
     _recommendedLineName = picked.name;
+    final film = isFilmStyleSources(_sources);
     _fastestIndex = SourcePicker.indexOfFastest(
       _sources,
-      episodeName: episode,
-      withinResolution: resolution,
+      episodeName: episodeArg,
+      // 电影：全局最快；剧集：同分辨率桶内最快
+      withinResolution: film ? null : resolution,
     );
 
     final shouldUpgrade = _playerInitialized &&
@@ -502,7 +520,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (autoInit && !_playerInitialized) {
       _selectedSource = idx;
       _currentUrl = _sources[idx].url;
-      debugPrint('PLAYER: auto-pick ${resolution ?? _sources[idx].name} (${_sources[idx].playlistMs}ms) for $episode');
+      debugPrint(
+        'PLAYER: auto-pick ${resolution ?? _sources[idx].name} '
+        '(${_sources[idx].playlistMs}ms) scope=${film ? "film-global" : episode}',
+      );
       if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
       await _initPlayer();
     } else if (shouldUpgrade) {
@@ -518,72 +539,60 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
-  /// Re-enter 时根据保存的集数名 + 线路名选择播放源（三级优先级）
-  void _applySavedEpisodeSelection() {
+  /// Re-enter 时根据保存的集数名 + 线路名选择播放源。
+  ///
+  /// [requireProbed] false = 测速前软锁（不要求 usable/playlistMs）；
+  /// true = 测速后硬匹配（三级 probed）。
+  /// [switchIfInit] true 且播放器已 init 时用 [_switchSource] 切集。
+  void _applySavedEpisodeSelection({
+    bool requireProbed = true,
+    bool switchIfInit = false,
+  }) {
     if (_savedEpisodeName == null || _savedEpisodeName!.isEmpty) return;
-    final savedRef = _savedEpisodeName!;
-    var matched = false;
-    if (_savedLineName != null && _savedLineName!.isNotEmpty) {
-      final exactIdx = _sources.indexWhere((s) =>
-          matchesEpisode(s, savedRef) &&
-          s.name == _savedLineName &&
-          s.usable &&
-          s.playlistMs != null &&
-          s.playlistMs! < 999999);
-      if (exactIdx != -1) {
-        _selectedSource = exactIdx;
-        _currentUrl = _sources[exactIdx].url;
-        matched = true;
-        debugPrint('PLAYER: exact match — ${_sources[exactIdx].name} / $_savedEpisodeName');
-      }
+    final idx = findSavedEpisodeSourceIndex(
+      _sources,
+      savedEpisodeName: _savedEpisodeName!,
+      preferredLineName: _savedLineName,
+      fastestIndex: requireProbed ? _fastestIndex : null,
+      requireProbed: requireProbed,
+    );
+    if (idx == null) return;
+
+    final mode = requireProbed ? 'hard' : 'soft';
+    debugPrint(
+      'PLAYER: saved-episode $mode — ${_sources[idx].name} / $_savedEpisodeName',
+    );
+
+    if (switchIfInit &&
+        _playerInitialized &&
+        idx != _selectedSource &&
+        !_startPlayRequested) {
+      _switchSource(idx);
+      return;
     }
-    // 优先级2: 集数名匹配（任意线路）
-    if (!matched) {
-      for (var i = 0; i < _sources.length; i++) {
-        if (matchesEpisode(_sources[i], savedRef) &&
-            _sources[i].usable &&
-            _sources[i].playlistMs != null &&
-            _sources[i].playlistMs! < 999999) {
-          _selectedSource = i;
-          _currentUrl = _sources[i].url;
-          matched = true;
-          debugPrint('PLAYER: episode match (any line) — ${_sources[i].name} / $_savedEpisodeName');
-          break;
-        }
-      }
-    }
-    // 优先级3: 保存线路不可用，用最快线路匹配同名集数
-    if (!matched && _fastestIndex != null) {
-      final fastestLineName = _sources[_fastestIndex!].name;
-      final matchIdx = _sources.indexWhere((s) =>
-          s.name == fastestLineName && matchesEpisode(s, savedRef) && s.usable);
-      if (matchIdx != -1) {
-        _selectedSource = matchIdx;
-        _currentUrl = _sources[matchIdx].url;
-      } else {
-        _selectedSource = _fastestIndex!;
-        _currentUrl = _sources[_fastestIndex!].url;
-      }
-      debugPrint('PLAYER: fallback to fastest — $fastestLineName');
-    }
-    if (_sources.isNotEmpty) {
-      _syncInnerRatioFromSource(_sources[_selectedSource]);
-    }
+
+    _selectedSource = idx;
+    _currentUrl = _sources[idx].url;
+    _syncInnerRatioFromSource(_sources[idx]);
   }
 
   int _representativeIndexForLine(String lineName) {
-    final ref = _episodeScopeRef;
-    if (ref.isEmpty) return -1;
-    return _sources.indexWhere(
-      (s) => s.name == lineName && matchesEpisode(s, ref),
+    return representativeIndexForLine(
+      _sources,
+      lineName,
+      episodeRef: _episodeScopeRef,
     );
   }
 
   String get _episodeScopeRef {
-    if (_currentEpisodeRef.isNotEmpty) return _currentEpisodeRef;
-    if (_savedEpisodeName?.isNotEmpty == true) return _savedEpisodeName!;
-    if (_sources.isNotEmpty) return episodeRef(_sources.first);
-    return '';
+    final firstRef =
+        _sources.isNotEmpty ? episodeRef(_sources.first) : '';
+    return resolveEpisodeScopeRef(
+      currentEpisodeRef: _currentEpisodeRef,
+      savedEpisodeName: _savedEpisodeName,
+      userPickedEpisode: _userPickedEpisode,
+      fallbackFirstRef: firstRef,
+    );
   }
 
   void _applyProbeRecord(VideoSource target, SourceProbeRecord record) {
@@ -692,16 +701,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     // 2. Champion 快启：缓存命中的推荐线路复测阶段 1+2
     if (!_playerInitialized) {
-      final episode = _episodeScopeRef;
+      final rawEpisode = _episodeScopeRef;
+      final episode = pickScopeEpisodeName(_sources, rawEpisode);
+      final episodeArg = episode.isEmpty ? null : episode;
 
       int? championIdx;
-      if (episode.isNotEmpty) {
-        championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episode);
-        if (championIdx != null) {
-          final latency = _sources[championIdx].playlistMs;
-          if (latency == null || latency >= SourcePicker.latencyGood) {
-            championIdx = null;
-          }
+      championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episodeArg);
+      if (championIdx != null) {
+        final latency = _sources[championIdx].playlistMs;
+        if (latency == null || latency >= SourcePicker.latencyGood) {
+          championIdx = null;
         }
       }
 
@@ -719,7 +728,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             _sources[repIdx].playlistMs != null &&
             _sources[repIdx].playlistMs! < SourcePicker.latencyGood) {
           final playIdx =
-              SourcePicker.pickMainIndex(_sources, episodeName: episode) ??
+              SourcePicker.pickMainIndex(_sources, episodeName: episodeArg) ??
                   championIdx;
           _selectedSource = playIdx;
           _currentUrl = _sources[playIdx].url;
@@ -736,28 +745,85 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     }
 
-    // 3. 剩余 distinct 线路并行两阶段检测
-    final pending =
-        indices.where((idx) => idx >= 0 && _sources[idx].playlistMs == null).toList();
-    if (pending.isNotEmpty && !_disposed && !_abortSpeedTest) {
-      await Future.wait(pending.map((idx) async {
-        if (_disposed || _abortSpeedTest) return;
-        final localClient = http.Client();
-        try {
-          await _testLine(idx, localClient);
-        } finally {
-          localClient.close();
+    // 3. 本轮新测（无 playlistMs）分批：先并行前 3 条早开播，其余后台续测可升级。
+    // 缓存命中已有指标，不算进「前 3」。
+    const earlyBatchSize = 3;
+    final pending = indices
+        .where((idx) => idx >= 0 && _sources[idx].playlistMs == null)
+        .toList();
+
+    Future<void> testOne(int idx) async {
+      if (_disposed || _abortSpeedTest) return;
+      final localClient = http.Client();
+      try {
+        await _testLine(idx, localClient);
+      } finally {
+        localClient.close();
+      }
+      if (_disposed || _abortSpeedTest) return;
+      if (mounted) setState(() => _testedCount++);
+    }
+
+    if (pending.isEmpty) {
+      if (mounted) setState(() => _testedCount = indices.length);
+    } else if (!_disposed && !_abortSpeedTest) {
+      final firstBatch = pending.take(earlyBatchSize).toList();
+      final rest = pending.skip(earlyBatchSize).toList();
+
+      debugPrint(
+        'SPEED: early-batch size=${firstBatch.length} rest=${rest.length}',
+      );
+      await Future.wait(firstBatch.map(testOne));
+      if (_disposed) return;
+
+      // 前 3（或不足 3 的全部）测完 → SourcePicker 选优早 init
+      if (!_abortSpeedTest) {
+        await _applyRecommendedSource(autoInit: !_playerInitialized);
+      }
+
+      if (rest.isNotEmpty && !_disposed && !_abortSpeedTest) {
+        if (!_playerInitialized) {
+          // 首批无可用：逐条续测，一有可用立刻 init；init 后剩余改并行。
+          final still = List<int>.from(rest);
+          while (still.isNotEmpty &&
+              !_playerInitialized &&
+              !_disposed &&
+              !_abortSpeedTest) {
+            final idx = still.removeAt(0);
+            await testOne(idx);
+            if (_disposed || _abortSpeedTest) break;
+            await _applyRecommendedSource(autoInit: true);
+          }
+          if (still.isNotEmpty && !_disposed && !_abortSpeedTest) {
+            await Future.wait(still.map(testOne));
+            if (!_disposed && !_abortSpeedTest && !_startPlayRequested) {
+              await _applyRecommendedSource(autoInit: !_playerInitialized);
+            }
+          }
+        } else {
+          // 已早开播：其余并行测完，未点播放则 upgrade
+          await Future.wait(rest.map(testOne));
+          if (!_disposed && !_abortSpeedTest && !_startPlayRequested) {
+            await _applyRecommendedSource(autoInit: false);
+          }
         }
-        if (_disposed || _abortSpeedTest) return;
-        if (mounted) setState(() => _testedCount++);
-      }));
-    } else if (mounted) {
-      setState(() => _testedCount = indices.length);
+      }
     }
 
     _client?.close();
     _client = null;
     if (_disposed) return;
+
+    // Finalize any line left without metrics (abort / skipped mid-flight).
+    for (final idx in indices) {
+      if (idx < 0 || idx >= _sources.length) continue;
+      final src = _sources[idx];
+      if (src.playlistMs != null) continue;
+      src.applyProbeMetrics(usable: false, playlistMs: 999999);
+      _writeProbeCache(src.name, src.url, src);
+      _propagateLineMetrics(src.name, src);
+      debugPrint('SPEED: [$idx] ${src.name} finalized as timeout (was null)');
+    }
 
     // 4. 传播 distinct 线路结果到本剧所有同 name 源
     final lineTemplates = <String, VideoSource>{};
@@ -773,6 +839,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     }
 
+    // 收尾：仍未 init 则再试；已 init 且未点播放则最终 upgrade
     await _applyRecommendedSource(autoInit: !_playerInitialized);
 
     final usable = _sources.where((s) => s.usable && s.playlistMs != null).length;
@@ -888,8 +955,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
 
     final imgDomain = MubuApiClient.instance.imgDomain;
-    final coverUrl = widget.video.coverUrl(imgDomain);
-    if (coverUrl.isEmpty) {
+    if (widget.video.coverPath.isEmpty || imgDomain.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -904,10 +970,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             duration: const Duration(milliseconds: 600),
             opacity: imgOpacity,
             curve: Curves.easeOutCubic,
-            child: CachedNetworkImage(
-              imageUrl: coverUrl,
+            child: FailoverCoverImage(
+              coverPath: widget.video.coverPath,
+              imgDomain: imgDomain,
               fit: BoxFit.cover,
-              errorWidget: (_, __, ___) => const SizedBox.shrink(),
+              errorBuilder: (_) => const SizedBox.shrink(),
+              placeholderBuilder: (_) => const SizedBox.shrink(),
             ),
           ),
           ClipRect(
@@ -940,12 +1008,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           : null;
 
   VideoSource? _representativeForLine(String lineName) {
-    final ref = _episodeScopeRef;
-    if (ref.isEmpty) return null;
-    final idx = _sources.indexWhere(
-      (s) => s.name == lineName && matchesEpisode(s, ref),
-    );
-    return idx != -1 ? _sources[idx] : null;
+    final idx = _representativeIndexForLine(lineName);
+    if (idx < 0 || idx >= _sources.length) return null;
+    return _sources[idx];
   }
 
   String _lineQualityCaption(String lineName) {
@@ -1001,6 +1066,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     bool closeOnTap = false,
   }) {
     void onTap(int sourceIdx) {
+      _userPickedEpisode = true;
       _switchSource(sourceIdx);
       if (closeOnTap) Navigator.pop(context);
     }
@@ -1296,17 +1362,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return null;
   }
 
-  Widget _buildBlurredPosterBase(String coverUrl) {
-    if (coverUrl.isEmpty) {
+  Widget _buildBlurredPosterBase(String coverPath, String imgDomain) {
+    if (coverPath.isEmpty) {
       return const ColoredBox(color: Color(0xFF070708));
     }
     return Stack(
       fit: StackFit.expand,
       children: [
-        CachedNetworkImage(
-          imageUrl: coverUrl,
+        FailoverCoverImage(
+          coverPath: coverPath,
+          imgDomain: imgDomain,
           fit: BoxFit.cover,
-          errorWidget: (_, __, ___) => const ColoredBox(color: Color(0xFF070708)),
+          errorBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
+          placeholderBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
         ),
         ClipRect(
           child: BackdropFilter(
@@ -1322,7 +1390,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Widget _buildVideoPlayerContainer() {
     final imgDomain = MubuApiClient.instance.imgDomain;
-    final coverUrl = widget.video.coverUrl(imgDomain);
+    final hasCover = widget.video.coverPath.isNotEmpty && imgDomain.isNotEmpty;
     final showForegroundOverlay =
         _stage == LoadingStage.ready && !_startPlayRequested;
     final showVideo = _stage == LoadingStage.ready &&
@@ -1347,7 +1415,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             fit: StackFit.expand,
             children: [
               // B2: persistent blurred poster fills letterbox/pillarbox areas
-              _buildBlurredPosterBase(coverUrl),
+              _buildBlurredPosterBase(widget.video.coverPath, imgDomain),
 
               // Inner video viewport (contain, silent 200ms resize)
               if (showVideo)
@@ -1362,13 +1430,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     child: _player!.buildVideoWidget(
                       context,
                       title: widget.video.title,
-                      onBack: () => Navigator.of(context).pop(),
+                      // 全屏叠层返回由 CineVideoControls 调 exitFullscreen；
+                      // 勿在此传 Navigator.pop，否则二次 pop 会离页。
                     ),
                   ),
                 ),
 
               // L3: sharp cover + frost overlay (fades when playback starts)
-              if (coverUrl.isNotEmpty)
+              if (hasCover)
                 Positioned.fill(
                   child: IgnorePointer(
                     ignoring: !showForegroundOverlay,
@@ -1376,10 +1445,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       duration: const Duration(milliseconds: 600),
                       opacity: showForegroundOverlay ? 1.0 : 0.0,
                       curve: Curves.easeOutCubic,
-                      child: CachedNetworkImage(
-                        imageUrl: coverUrl,
+                      child: FailoverCoverImage(
+                        coverPath: widget.video.coverPath,
+                        imgDomain: imgDomain,
                         fit: BoxFit.cover,
-                        errorWidget: (_, __, ___) => const SizedBox.shrink(),
+                        errorBuilder: (_) => const SizedBox.shrink(),
+                        placeholderBuilder: (_) => const SizedBox.shrink(),
                       ),
                     ),
                   ),

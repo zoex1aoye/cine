@@ -1,3 +1,5 @@
+import '../utils/cover_cdn.dart';
+
 class VideoItem {
   final int id;
   final String title;
@@ -93,20 +95,7 @@ class VideoItem {
     );
   }
 
-  String coverUrl(String imgDomain) {
-    if (coverPath.isEmpty) return '';
-    
-    // Redirect failing bqxqqqnf.top domain to static2.gutaike.com
-    String domain = imgDomain;
-    if (domain == 'bqxqqqnf.top') {
-      domain = 'static2.gutaike.com';
-    }
-    
-    if (coverPath.startsWith('http')) {
-      return coverPath.replaceAll('bqxqqqnf.top', 'static2.gutaike.com');
-    }
-    return 'https://$domain$coverPath';
-  }
+  String coverUrl(String imgDomain) => buildCoverUrl(coverPath, imgDomain);
 
   bool get hasCover => coverPath.isNotEmpty;
 

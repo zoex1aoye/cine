@@ -8,15 +8,18 @@ import '../widgets/movie_info_dialog.dart';
 import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
+import '../utils/home_hand_data.dart';
 import '../widgets/load_more_button.dart';
 import '../widgets/mubu_error_widget.dart';
 
 class TagVideosPage extends StatefulWidget {
   final TagItem tag;
+  final int? categoryId;
 
   const TagVideosPage({
     super.key,
     required this.tag,
+    this.categoryId,
   });
 
   @override
@@ -74,18 +77,32 @@ class _TagVideosPageState extends State<TagVideosPage> {
       _error = null;
     });
     try {
+      const count = 30;
       final vids = await _api.getTagVideos(
         widget.tag.id,
         tpl: widget.tag.template,
         page: _page,
-        count: 30,
+        count: count,
       );
+      var merged = vids;
+      if (_page == 1 && widget.categoryId != null) {
+        try {
+          final hand = await _api.getHomeHandData(widget.categoryId!);
+          merged = mergeHomeHandFirstPage(
+            tagId: widget.tag.id,
+            page: 1,
+            count: count,
+            tplVideos: vids,
+            handData: hand,
+          );
+        } catch (_) {}
+      }
       if (!mounted) return;
       setState(() {
-        _videos.addAll(vids);
+        _videos.addAll(merged);
         _page++;
         _isLoading = false;
-        if (vids.isEmpty || vids.length < 8) _hasMore = false;
+        if (merged.isEmpty || vids.length < 8) _hasMore = false;
       });
     } catch (e) {
       debugPrint('TAG_VIDEOS: Failed to load | tag: ${widget.tag.name} | page: $_page | error: $e');
