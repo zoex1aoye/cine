@@ -10,6 +10,7 @@ import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../utils/platform_utils.dart';
+import '../utils/device_profile.dart';
 import '../utils/episode_utils.dart';
 import '../utils/source_picker.dart';
 import '../utils/source_quality.dart';
@@ -747,7 +748,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     // 3. 本轮新测（无 playlistMs）分批：先并行前 3 条早开播，其余后台续测可升级。
     // 缓存命中已有指标，不算进「前 3」。
-    const earlyBatchSize = 3;
+    const earlyBatchSizeDefault = 3;
+    final earlyBatchSize = DeviceProfile.isConstrained
+        ? DeviceProfile.constrainedProbeEarlyBatch
+        : earlyBatchSizeDefault;
     final pending = indices
         .where((idx) => idx >= 0 && _sources[idx].playlistMs == null)
         .toList();
@@ -1151,7 +1155,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return PopScope(
       canPop: true,
       child: CallbackShortcuts(
-        bindings: {SingleActivator(LogicalKeyboardKey.escape): () => Navigator.pop(context)},
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              Navigator.pop(context),
+          const SingleActivator(LogicalKeyboardKey.goBack): () =>
+              Navigator.pop(context),
+        },
         child: Scaffold(
           backgroundColor: Colors.black,
           body: SafeArea(

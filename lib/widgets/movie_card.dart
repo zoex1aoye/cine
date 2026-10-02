@@ -2,6 +2,8 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_ui_adapt.dart';
+import '../utils/cine_surface.dart';
+import '../utils/device_profile.dart';
 import '../utils/platform_utils.dart';
 import 'failover_cover_image.dart';
 import 'mubu_button.dart';
@@ -42,8 +44,9 @@ class _MovieCardState extends State<MovieCard> {
   @override
   Widget build(BuildContext context) {
     final hasScore = widget.video.score.isNotEmpty && widget.video.score != '0';
+    final dpr = MediaQuery.devicePixelRatioOf(context);
 
-    return MouseRegion(
+    Widget card = MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       cursor: SystemMouseCursors.click,
@@ -95,7 +98,14 @@ class _MovieCardState extends State<MovieCard> {
                 // AspectRatio forces a strictly uniform aspect ratio for all images
                 AspectRatio(
                   aspectRatio: 2 / 3,
-                  child: Stack(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final logicalW = constraints.maxWidth.isFinite
+                          ? constraints.maxWidth
+                          : DeviceProfile.constrainedCoverMemWidth.toDouble();
+                      final memW = (logicalW * dpr).round().clamp(64, 720);
+                      final memH = (memW * 3 / 2).round();
+                      return Stack(
                     fit: StackFit.expand,
                     children: [
                       widget.imgDomain.isEmpty
@@ -116,7 +126,11 @@ class _MovieCardState extends State<MovieCard> {
                               coverPath: widget.video.coverPath,
                               imgDomain: widget.imgDomain,
                               fit: BoxFit.cover,
-                              filterQuality: FilterQuality.high,
+                              filterQuality: DeviceProfile.isConstrained
+                                  ? FilterQuality.low
+                                  : FilterQuality.high,
+                              memCacheWidth: memW,
+                              memCacheHeight: memH,
                               placeholderBuilder: (_) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: const Center(
@@ -139,7 +153,6 @@ class _MovieCardState extends State<MovieCard> {
                                 ),
                               ),
                             ),
-                      
                       // Rating score badge
                       if (hasScore)
                         Positioned(
@@ -265,9 +278,11 @@ class _MovieCardState extends State<MovieCard> {
                           ),
                         ),
                     ],
+                      );
+                    },
                   ),
                 ),
-                
+
                 // 底部文字详情区
                 Builder(
                   builder: (context) {
@@ -326,6 +341,37 @@ class _MovieCardState extends State<MovieCard> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+
+    if (!isTvSurface) return card;
+
+    return FocusableActionDetector(
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            widget.onPlay();
+            return null;
+          },
+        ),
+      },
+      onShowFocusHighlight: (focused) {
+        if (_hovered != focused) setState(() => _hovered = focused);
+      },
+      child: AnimatedScale(
+        scale: _hovered ? 1.06 : 1.0,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: _hovered ? _kRed : Colors.transparent,
+              width: 2.5,
+            ),
+          ),
+          child: card,
         ),
       ),
     );

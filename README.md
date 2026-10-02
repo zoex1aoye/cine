@@ -34,15 +34,24 @@
 
 #### 构建 Android 版本
 
-```bash
-# 1. 确保 Android 配置已更新
-#    settings.gradle.kts:  org.jetbrains.kotlin.android → 最新版本
-#    app/build.gradle.kts:  compileSdk → 最新 SDK 版本
-#    gradle-wrapper.properties:  Gradle 版本与 Kotlin 兼容
+Android 使用 `mobile` / `tv` 两个 **flavor**（dimension `surface`）。构建或 `flutter run` **必须**带 `--flavor`，并同步传入 `--dart-define=CINE_SURFACE=…`（与 flavor 同名），否则 UI/焦点策略会与包体不一致。
 
-# 2. 构建 APK
-flutter build apk --release --target-platform android-arm64
+```bash
+# 手机 / 平板
+flutter build apk --release --flavor mobile \
+  --dart-define=CINE_SURFACE=mobile \
+  --target-platform android-arm64
+
+# TV / 投影（遥控器优先；Leanback required=false，便于侧载）
+flutter build apk --release --flavor tv \
+  --dart-define=CINE_SURFACE=tv \
+  --target-platform android-arm64
+
+# 开发运行示例
+flutter run --flavor mobile --dart-define=CINE_SURFACE=mobile -d <deviceId>
 ```
+
+产物命名形如：`mubu_<version>_mobile_arm64-v8a.apk` / `mubu_<version>_tv_arm64-v8a.apk`。tv 包 `applicationId` 后缀为 `.tv`。
 
 > **注意**：如果遇到 Kotlin 编译错误，通常是因为 pub.dev 上的插件使用了更新的 Kotlin 版本。请同步升级 `android/settings.gradle.kts` 中的 Kotlin 插件版本和 Gradle 版本，参见 [Kotlin 版本列表](https://kotlinlang.org/docs/releases.html)。
 

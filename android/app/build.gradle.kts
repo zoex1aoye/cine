@@ -37,6 +37,20 @@ android {
         }
     }
 
+    // mobile = phone/tablet；tv = projector/Android TV sideload（Leanback required=false）
+    // 构建须带 --flavor，并同步 --dart-define=CINE_SURFACE=mobile|tv
+    flavorDimensions += "surface"
+    productFlavors {
+        create("mobile") {
+            dimension = "surface"
+        }
+        create("tv") {
+            dimension = "surface"
+            applicationIdSuffix = ".tv"
+            resValue("string", "app_name", "幕布 TV")
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -50,7 +64,8 @@ android {
         variant.outputs.all {
             val output = this as com.android.build.gradle.api.ApkVariantOutput
             val abi = output.filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
-            output.outputFileName = "mubu_${variant.versionName}_${abi}.apk"
+            val surface = variant.flavorName.ifEmpty { "mobile" }
+            output.outputFileName = "mubu_${variant.versionName}_${surface}_${abi}.apk"
         }
     }
 }

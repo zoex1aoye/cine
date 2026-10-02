@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../models/mubu_models.dart';
@@ -8,6 +9,7 @@ import 'failover_cover_image.dart';
 import 'mubu_button.dart';
 import 'mubu_dialog.dart';
 import 'mubu_skeleton.dart';
+import '../utils/cine_surface.dart';
 
 class MovieInfoDialog extends StatefulWidget {
   final VideoItem video;
@@ -320,6 +322,7 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                   label: '开始播放',
                   icon: Icons.play_circle_fill_rounded,
                   type: MubuButtonType.primary,
+                  autofocus: isTvSurface,
                   onPressed: widget.onPlay,
                   fullWidth: true,
                   customHeight: isWide ? UIAdapt.px(context, 48) : UIAdapt.px(context, 40),
@@ -378,8 +381,15 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
                       : Column(
                           children: [
                             // Top Poster
-                            AspectRatio(
-                              aspectRatio: 16 / 9,
+                            // 宽屏设备（pad）上海报随宽度等比放大，固定弹窗高内会
+                            // 挤没剧情简介；封顶 220 并用 cover 裁切。
+                            // 手机（宽 390）下 390*9/16≈219，与原 AspectRatio 无差。
+                            SizedBox(
+                              width: double.infinity,
+                              height: math.min(
+                                (width - UIAdapt.px(context, 40)) * 9 / 16,
+                                UIAdapt.px(context, 220),
+                              ),
                               child: posterWidget(),
                             ),
                             // Bottom Content

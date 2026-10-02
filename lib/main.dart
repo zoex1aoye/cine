@@ -10,6 +10,9 @@ import 'models/mubu_hive.dart';
 import 'api/mubu_api_client.dart';
 import 'api/jp_api_impl.dart';
 import 'api/doh_dns.dart';
+import 'utils/cine_surface.dart';
+import 'utils/device_profile.dart';
+import 'utils/tv_focus.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -63,6 +66,10 @@ Future<void> main() async {
     // It will be safely retried inside home_page.dart when loading categories.
   }
 
+  assertSurfaceMatchesFlavorExpectation();
+  await DeviceProfile.ensureInitialized();
+  DeviceProfile.applyImageCacheLimits();
+
   runApp(const MubuApp());
 }
 
@@ -110,7 +117,7 @@ class MubuApp extends StatelessWidget {
           bodySmall: TextStyle(color: Colors.white38),
         ),
       ),
-      home: const HomePage(),
+      home: const TvShortcutsShell(child: HomePage()),
     );
   }
 }
