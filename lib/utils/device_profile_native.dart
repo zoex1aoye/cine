@@ -21,22 +21,23 @@ class DeviceProfile {
   static int? get availMemBytes => _availMemBytes;
 
   /// Constrained demux / cache budgets (mpv string property values).
-  static const constrainedFwdBytes = '10485760'; // 10 MB
-  static const constrainedBackBytes = '6291456'; // 6 MB
-  static const constrainedReadaheadSecs = '12';
-  static const constrainedCacheSecs = '20';
-  static const constrainedStreamBuffer = '524288'; // 512 KB
+  /// 针对 1GB 设备深度压缩前向与后向缓冲区，避免系统 OOM killer 击杀应用
+  static const constrainedFwdBytes = '8388608'; // 8 MB
+  static const constrainedBackBytes = '2097152'; // 2 MB
+  static const constrainedReadaheadSecs = '8';
+  static const constrainedCacheSecs = '15';
+  static const constrainedStreamBuffer = '262144'; // 256 KB
   static const constrainedHwdecExtraFrames = '2';
 
-  /// Image cache caps when constrained.
-  static const constrainedImageCacheCount = 50;
-  static const constrainedImageCacheBytes = 48 << 20; // 48 MB
+  /// Image cache caps when constrained (1GB 级内存收紧至 30 张 / 24MB).
+  static const constrainedImageCacheCount = 30;
+  static const constrainedImageCacheBytes = 24 << 20; // 24 MB
 
   /// Speed-test early batch size when constrained.
   static const constrainedProbeEarlyBatch = 2;
 
   /// Cover decode width hint (logical px) fallback when layout unknown.
-  static const constrainedCoverMemWidth = 240;
+  static const constrainedCoverMemWidth = 180;
 
   static Future<void> ensureInitialized() async {
     if (_initialized) return;
@@ -63,6 +64,17 @@ class DeviceProfile {
     final cache = PaintingBinding.instance.imageCache;
     cache.maximumSize = constrainedImageCacheCount;
     cache.maximumSizeBytes = constrainedImageCacheBytes;
+  }
+
+  /// 进入播放页等高显存/高内存消耗场景时，主动清除非必要图片缓存，为解码器腾出物理内存
+  static void trimImageCacheOnPlayerEnter() {
+    try {
+      final cache = PaintingBinding.instance.imageCache;
+      cache.clearLiveImages();
+      if (isConstrained) {
+        cache.clear();
+      }
+    } catch (_) {}
   }
 
   @visibleForTesting

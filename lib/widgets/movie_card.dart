@@ -103,7 +103,10 @@ class _MovieCardState extends State<MovieCard> {
                       final logicalW = constraints.maxWidth.isFinite
                           ? constraints.maxWidth
                           : DeviceProfile.constrainedCoverMemWidth.toDouble();
-                      final memW = (logicalW * dpr).round().clamp(64, 720);
+                      final maxMemW = (DeviceProfile.isConstrained || isTvSurface)
+                          ? DeviceProfile.constrainedCoverMemWidth
+                          : 720;
+                      final memW = (logicalW * dpr).round().clamp(64, maxMemW);
                       final memH = (memW * 3 / 2).round();
                       return Stack(
                     fit: StackFit.expand,

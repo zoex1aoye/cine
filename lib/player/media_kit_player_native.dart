@@ -133,6 +133,10 @@ class MediaKitPlayerImpl implements JpPlayer {
         await native.setProperty('demuxer-max-back-bytes', backBytes);
         // 已下载分片保留在内存，减少 HLS 反复拉同一 TS 分片
         await native.setProperty('demuxer-seekable-cache', 'yes');
+        // 1GB/受限设备启用 donate-buffer：将解复用完毕的空闲内存及时归还给操作系统，防止低内存被杀
+        if (constrained) {
+          await native.setProperty('demuxer-donate-buffer', 'yes');
+        }
 
         // 启动缓冲 — 播放前先缓存一段数据，避免开场卡顿（cache-pause-wait 已在下方统一设置）
         await native.setProperty('cache-pause-initial', 'yes');

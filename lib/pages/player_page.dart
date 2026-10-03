@@ -108,6 +108,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    // 进播放页先主动修剪图片缓存，为视频解码内核腾出宝贵的物理内存
+    DeviceProfile.trimImageCacheOnPlayerEnter();
     _innerAspectRatio =
         PlayerSlotLayout.defaultInnerAspectRatio(isShortDrama: _isShortDramaPage);
     WidgetsBinding.instance.addObserver(this);
