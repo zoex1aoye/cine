@@ -9,7 +9,7 @@
   - constrained：`ImageCache` 48MB、封面解码宽 <= 240、demux 前向 10MB / 后向 6MB。
 - 封面：只传 `memCacheWidth`（同时传宽高会被强拉成 2:3 变形）；解码上限只看内存档，不看 TV/手机 surface。
 - 进播放页：受限档 `ImageCache.clear()` 释放闲置封面；不再调用 `clearLiveImages()`。
-- TV 清单：保留 `LEANBACK_LAUNCHER` 与横幅；普通 `LAUNCHER` 由 main 清单提供；不加 `largeHeap` / `hardwareAccelerated`。
+- TV 清单：同时显式声明 `LEANBACK_LAUNCHER` 与 `LAUNCHER`（侧载后 Google TV / 第三方 TV 桌面 / 投影 AOSP 桌面均可见）并保留横幅；不加 `largeHeap` / `hardwareAccelerated`。
 - Gradle：`-Ptarget-platform` 映射 ABI，未知取值忽略，默认 `arm64-v8a`（32 位固件见 PRD-02 决策 #5）。
 - CI：`build.yml` 按 `mobile` / `tv` flavor 分别构建。
 - 硬解自愈：

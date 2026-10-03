@@ -7,8 +7,8 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
-    <!-- 普通 LAUNCHER 入口已由 main 清单的 MainActivity 声明，flavor 合并后与 LEANBACK_LAUNCHER 并存，
-         因此 AOSP 桌面与 Leanback 桌面都能看到图标，这里只补 Leanback 入口。 -->
+    <!-- 侧载兼容：LEANBACK_LAUNCHER 供 Google/Android TV 桌面，LAUNCHER 供第三方 TV 桌面与投影仪魔改 AOSP 桌面。
+         两者显式写在同一个 filter 中，不依赖 main 清单的合并结果。 -->
     <application android:banner="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -16,6 +16,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>

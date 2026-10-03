@@ -27,7 +27,7 @@
 - [x] D4 去掉无效的 `demuxer-donate-buffer` 与对 MediaCodec 无效的 `hwdec-extra-frames` 收紧
 
 ### E 构建与文档
-- [x] E1 TV manifest 去掉多余 `LAUNCHER` / `largeHeap` / `hardwareAccelerated`
+- [x] E1 TV manifest 去掉 `largeHeap` / `hardwareAccelerated`；`LAUNCHER` 与 `LEANBACK_LAUNCHER` 保持双声明（侧载可见性，不依赖合并）
 - [x] E2 ABI 解析去掉透传分支，PRD 补决策记录
 - [x] E3 CI 按 flavor 构建
 - [x] E4 测试：删自证测试，补看门狗 / 按键策略 / 档位 / 图片缓存的真实测试

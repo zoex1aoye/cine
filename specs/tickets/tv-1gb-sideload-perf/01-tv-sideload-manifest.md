@@ -7,7 +7,7 @@
 
 ## 交付什么
 `android/app/src/tv/AndroidManifest.xml`：
-1. 保留 Leanback 入口（`LEANBACK_LAUNCHER`，`leanback required=false`）；普通 `LAUNCHER` 由 `main` 清单提供，flavor 合并后并存，不重复声明；
+1. 保留 Leanback 入口（`LEANBACK_LAUNCHER`，`leanback required=false`）；tv 清单同一 intent-filter 内同时声明 `LEANBACK_LAUNCHER` 与标准 `LAUNCHER`，覆盖 Google/Android TV、第三方 TV 桌面与投影仪魔改 AOSP 桌面；
 2. 增加 TV 横幅 `android:banner="@mipmap/ic_launcher"`；
 3. `android/app/build.gradle.kts`：`-Ptarget-platform` 映射为 ABI，未知取值忽略，全部无效回落 `arm64-v8a`；
 4. 保证 `mobile` 与 `tv` 打包配置完好（CI 同步按 flavor 构建）。
