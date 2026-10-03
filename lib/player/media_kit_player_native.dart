@@ -149,12 +149,12 @@ class MediaKitPlayerImpl implements JpPlayer {
           cacheSecs = '45';
           streamBuffer = '1048576';
         } else {
-          // 桌面端: 前向 128MB + 后向 64MB
-          fwdBytes = '134217728';
-          backBytes = '67108864';
-          readaheadSecs = '45';
-          cacheSecs = '60';
-          streamBuffer = '4194304';
+          // 桌面端: 前向 48MB + 后向 24MB（充分保障 1080P/4K HLS 预读与秒级 Seek，同时大幅减轻 RAM 驻留）
+          fwdBytes = '50331648';
+          backBytes = '25165824';
+          readaheadSecs = '25';
+          cacheSecs = '40';
+          streamBuffer = '2097152';
         }
 
         await native.setProperty('cache', 'yes');
@@ -164,6 +164,8 @@ class MediaKitPlayerImpl implements JpPlayer {
         await native.setProperty('demuxer-max-back-bytes', backBytes);
         // 已下载分片保留在内存，减少 HLS 反复拉同一 TS 分片
         await native.setProperty('demuxer-seekable-cache', 'yes');
+        // 解码帧消费后尽早释放 packet 内存，防止 RAM 持续虚高
+        await native.setProperty('demuxer-donate-buffer', 'yes');
 
         // 启动缓冲 — 播放前先缓存一段数据，避免开场卡顿（cache-pause-wait 已在下方统一设置）
         await native.setProperty('cache-pause-initial', 'yes');
@@ -175,6 +177,8 @@ class MediaKitPlayerImpl implements JpPlayer {
 
         // 解码线程优化 — 自动检测 CPU 核心数并启用多线程解码
         await native.setProperty('vd-lavc-threads', '0');
+        // 软解快速模式：优化非关键去块滤波，显著降低 CPU 负载且视觉无损
+        await native.setProperty('vd-lavc-fast', 'yes');
         // 直接渲染：减少解码器到渲染器的内存拷贝
         await native.setProperty('vd-lavc-dr', 'yes');
         // Seek 时允许丢帧以加速定位
@@ -383,13 +387,26 @@ class MediaKitPlayerImpl implements JpPlayer {
     }
   }
 
-  /// 软解降载：低内存/低端机跳过非关键帧环路滤波；硬解时恢复默认。
+  /// 软解降载：低内存/低端机跳过非关键帧环路滤波；ultra 档跳过所有非参考滤波；硬解时恢复默认。
   Future<void> _applyDecodeTuning(
     NativePlayer native, {
     required bool hardware,
   }) async {
-    final skip = (!hardware && DeviceProfile.isConstrained) ? 'nonkey' : 'default';
+    final String skip;
+    if (hardware) {
+      skip = 'default';
+    } else if (DeviceProfile.isUltra) {
+      skip = 'nonref';
+    } else if (DeviceProfile.isConstrained) {
+      skip = 'nonkey';
+    } else {
+      skip = 'default';
+    }
     await native.setProperty('vd-lavc-skiploopfilter', skip);
+    // 移动端软解时显式开启快速软解模式
+    if (!hardware) {
+      await native.setProperty('vd-lavc-fast', 'yes');
+    }
   }
 
   /// 切换解码模式并重开当前源，保留进度与暂停态。

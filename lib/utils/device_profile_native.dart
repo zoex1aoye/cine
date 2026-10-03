@@ -30,6 +30,7 @@ class DeviceProfile {
   static Future<void> ensureInitialized() async {
     if (_initialized) return;
     _initialized = true;
+    _channel.setMethodCallHandler(_handleNativeCall);
     try {
       final raw =
           await _channel.invokeMapMethod<String, dynamic>('getMemoryInfo');
@@ -44,6 +45,28 @@ class DeviceProfile {
     } catch (_) {
       // Channel missing (desktop / stub activity) → keep normal.
     }
+  }
+
+  static void handleTrimMemory(int level) {
+    if (level >= 15) {
+      PaintingBinding.instance.imageCache.clear();
+    }
+  }
+
+  static void handleLowMemory() {
+    PaintingBinding.instance.imageCache.clear();
+  }
+
+  static Future<dynamic> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'onTrimMemory') {
+      final level = call.arguments as int? ?? 0;
+      handleTrimMemory(level);
+      return null;
+    } else if (call.method == 'onLowMemory') {
+      handleLowMemory();
+      return null;
+    }
+    return null;
   }
 
   static void applyImageCacheLimits() {

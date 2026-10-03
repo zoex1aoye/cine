@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cine/utils/device_profile.dart';
@@ -175,6 +176,22 @@ void trimTests() {
       DeviceProfile.trimImageCacheOnPlayerEnter();
 
       expect(cache.containsKey('idle'), isTrue);
+      cache.clear();
+    });
+
+    testWidgets('onTrimMemory (level >= 15) 触发 clear() 驱逐空闲项', (tester) async {
+      final image = (await tester.runAsync(() => createTestImage(width: 4, height: 4)))!;
+      final cache = PaintingBinding.instance.imageCache..clear();
+      final h = _TrimHarness(cache);
+      h.put('idle', ImageInfo(image: image.clone()), live: false);
+      h.put('onscreen', ImageInfo(image: image.clone()), live: true);
+      await tester.pump();
+      expect(cache.containsKey('idle'), isTrue);
+
+      DeviceProfile.handleTrimMemory(20);
+
+      expect(cache.containsKey('idle'), isFalse, reason: '收到 onTrimMemory >= 15 应释放空闲项');
+      expect(cache.statusForKey('onscreen').live, isTrue, reason: '正在渲染的 live 项保留');
       cache.clear();
     });
   });

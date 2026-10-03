@@ -344,35 +344,40 @@ class _MovieCardState extends State<MovieCard> {
       ),
     );
 
-    if (!isTvSurface) return card;
+    Widget rootWidget = card;
 
-    return FocusableActionDetector(
-      actions: <Type, Action<Intent>>{
-        ActivateIntent: CallbackAction<ActivateIntent>(
-          onInvoke: (_) {
-            widget.onPlay();
-            return null;
-          },
-        ),
-      },
-      onShowFocusHighlight: (focused) {
-        if (_hovered != focused) setState(() => _hovered = focused);
-      },
-      child: AnimatedScale(
-        scale: _hovered ? 1.06 : 1.0,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: _hovered ? _kRed : Colors.transparent,
-              width: 2.5,
-            ),
+    if (isTvSurface) {
+      rootWidget = FocusableActionDetector(
+        actions: <Type, Action<Intent>>{
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              widget.onPlay();
+              return null;
+            },
           ),
-          child: card,
+        },
+        onShowFocusHighlight: (focused) {
+          if (_hovered != focused) setState(() => _hovered = focused);
+        },
+        child: AnimatedScale(
+          scale: _hovered ? 1.06 : 1.0,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: _hovered ? _kRed : Colors.transparent,
+                width: 2.5,
+              ),
+            ),
+            child: card,
+          ),
         ),
-      ),
-    );
+      );
+    }
+
+    // 通过 RepaintBoundary 建立独立重绘图层，防止卡片悬浮、呼吸动画或焦点缩放向上污染整个列表
+    return RepaintBoundary(child: rootWidget);
   }
 }
