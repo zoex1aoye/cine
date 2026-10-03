@@ -1,23 +1,27 @@
-# TV 1GB 内存侧载优化与性能增强
+# TV 1GB 内存侧载优化与硬解自愈
 - 日期：2026-10-03
-- PRD：PRD-20261003-02
-- Tickets：`specs/tickets/tv-1gb-sideload-perf/01`–`05`
+- PRD：PRD-20261003-02、PRD-20261003-03
+- Tickets：`specs/tickets/tv-1gb-sideload-perf/01`–`06`
 
 ## 变更摘要
-- TV Manifest 侧载桌面兼容：新增普通 `LAUNCHER` category 支持非 Android TV / AOSP 第三方桌面图标展示；增加 `android:banner` 电视横幅与 `largeHeap="true"` 权限提升进程堆上限。
-- Gradle 动态 ABI 过滤：支持 `-Ptarget-platform=android-arm` 打出 `armeabi-v7a` 安装包，适配 32位固件的 1GB 低端电视/投影仪。
-- DeviceProfile 1GB 极限内存调优：
-  - `PaintingBinding.imageCache` 上限收敛至 30 张 / 24MB；
-  - TV / 受限模式下 `MovieCard` 封面 decode 宽限制在 180px，防止大屏高 DPR 撑爆显存；
-  - 进播放页时主动执行 `DeviceProfile.trimImageCacheOnPlayerEnter()` 回收闲置图片显存。
-- Native 播放内核调优与解码健壮性：
-  - 受限档启用 `demuxer-donate-buffer=yes`，分片播放后主动向系统归还物理 RAM；
-  - 前向缓冲收缩至 8MB、后向收缩至 2MB，减少流媒体网络包内存常驻；
-  - 扩充底层显式硬解异常捕获词库（包含 dequeue buffer、surface abandoned、omx/c2/amediaerror 等 SoC 驱动死锁特征）；
-  - 增加 5 秒硬解静默假死看门狗（Watchdog），遇到流已加载但第 0 秒进度不走时自动触发软解回退（`hwdec=no`）；
-  - 软解降载优化：低端机软解时启用 `vd-lavc-skiploopfilter=nonkey` 跳过非关键帧滤波，保音画同步；CMA 显存 `hwdec-extra-frames` 调优至 1；
-  - TV 遥控器交互：播放全屏控制栏增加遥控器可聚焦的「硬解/软解」状态切换按钮，支持用户手动救砖。
+- 内存分档：新增 `ultra`（`totalMem <= 1.2GiB` 或系统 low-ram）/ `constrained`（`< 2GiB`）/ `normal` 三档，预算集中在 `lib/utils/device_budget.dart`，native 与 stub 共用。
+  - ultra：`ImageCache` 24MB、封面解码宽 <= 180、demux 前向 8MB / 后向 4MB；
+  - constrained：`ImageCache` 48MB、封面解码宽 <= 240、demux 前向 10MB / 后向 6MB。
+- 封面：只传 `memCacheWidth`（同时传宽高会被强拉成 2:3 变形）；解码上限只看内存档，不看 TV/手机 surface。
+- 进播放页：受限档 `ImageCache.clear()` 释放闲置封面；不再调用 `clearLiveImages()`。
+- TV 清单：保留 `LEANBACK_LAUNCHER` 与横幅；普通 `LAUNCHER` 由 main 清单提供；不加 `largeHeap` / `hardwareAccelerated`。
+- Gradle：`-Ptarget-platform` 映射 ABI，未知取值忽略，默认 `arm64-v8a`（32 位固件见 PRD-02 决策 #5）。
+- CI：`build.yml` 按 `mobile` / `tv` flavor 分别构建。
+- 硬解自愈：
+  - `HwdecWatchdog` 仅在「硬解生效 + 有视频轨 + 播放中 + 未缓冲」累计 5 秒，用 `estimated-vf-fps` 实测出帧，确认无帧才回退软解；
+  - 回退与手动切换保留进度与暂停态；自动回退的换集后重试硬解；用户选择持久化；
+  - release 日志回到 `warn`；失败特征不再匹配泛化的 `mediacodec` + `error`；
+  - 软解降载 `vd-lavc-skiploopfilter=nonkey` 覆盖「设备本就无硬解」的初始路径。
+- TV 遥控：焦点在控件栏内时方向/确认键让出给焦点遍历，控件栏可见时 `↑` 进入控件栏，返回键先回根；隐藏时控件不可聚焦；解码徽标仅 Android 显示。
+- 修复：`media_kit_player_stub.dart` 同步 `JpPlayer` 接口（此前 `flutter analyze` 有 error）；`pubspec.lock` 回滚无关降级。
 
 ## 验证
 - [x] `flutter analyze` 无 error
-- [x] `flutter test` 全部 78 个测试通过
+- [x] `flutter test` 全部通过
+- [ ] 目标 1GB TV / 投影实机：播一条 HLS、遥控器走通控件栏、观察看门狗与回退（未做，需实机）
+- [ ] `flutter build apk --flavor mobile|tv`（环境无 Android SDK，未做；CI 将验证）
