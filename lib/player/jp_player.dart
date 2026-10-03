@@ -11,8 +11,11 @@ abstract class JpPlayer {
   Future<void> setSource(String url, {bool autoPlay = true});
   Future<void> dispose();
 
-  /// 切换硬解/软解模式（如果底层平台支持）
-  Future<void> toggleDecodeMode() async {}
+  /// 当前平台是否支持用户手动切换硬解/软解（仅 Android 原生实现为 true）。
+  bool get supportsDecodeToggle;
+
+  /// 切换硬解/软解；不支持的平台为 no-op。
+  Future<void> toggleDecodeMode();
 
   // ValueNotifiers for state observation
   ValueNotifier<bool> get isInitializedNotifier;
@@ -22,7 +25,7 @@ abstract class JpPlayer {
   ValueNotifier<bool> get isBufferingNotifier;
   ValueNotifier<int?> get videoWidthNotifier;
   ValueNotifier<int?> get videoHeightNotifier;
-  ValueNotifier<bool> get isHardwareDecodeNotifier => ValueNotifier(true);
+  ValueNotifier<bool> get isHardwareDecodeNotifier;
 
   // Build the video rendering widget
   Widget buildVideoWidget(BuildContext context, {String? title});

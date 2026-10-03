@@ -70,6 +70,9 @@ class MediaKitPlayerImpl implements JpPlayer {
   ValueNotifier<bool> get isHardwareDecodeNotifier => _isHardwareDecode;
 
   @override
+  bool get supportsDecodeToggle => Platform.isAndroid;
+
+  @override
   Future<void> initialize() async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 初始化原生内核中...');
     // 每装载一条新视频源重新武装软解回退（单条视频内仍限一次）。
