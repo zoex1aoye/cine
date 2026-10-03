@@ -1,6 +1,7 @@
 // media_kit_player_native.dart – native implementation using media_kit
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -10,6 +11,7 @@ import '../api/jp_log.dart';
 import '../utils/device_profile.dart';
 import 'cine_video_controls.dart';
 import 'hwdec_policy.dart';
+import 'hwdec_watchdog.dart';
 
 /// 基于 `media_kit` 实现的原生桌面/移动端播放控制器实现类
 /// 
@@ -21,7 +23,19 @@ class MediaKitPlayerImpl implements JpPlayer {
   late final Player _player;
   late final VideoController _controller;
   late String _currentUrl;
-  bool _softFallbackInFlight = false;
+  bool _decodeReopenInFlight = false;
+
+  /// 本条视频源是否已消耗过「自动回退软解」额度（按实例、按源重置）。
+  bool _softFallbackUsed = false;
+
+  /// 用户手动选择软解（含持久化偏好）。换集不会恢复硬解。
+  bool _userForcedSoft = false;
+
+  /// 因硬解失败自动退到软解。换集时会重新尝试硬解。
+  bool _autoFellBack = false;
+
+  /// 上次 reopen 用 `start` 属性定位后，下次 open 前要清回 0。
+  bool _startOverridden = false;
   /// 首次 open 的完成信号：日志触发的软解回退必须等它结束后再 reopen，
   /// 禁止与 initialize() 进行中的 open 并发（双重重载/状态不一致）。
   Completer<void>? _initialOpenDone;
@@ -34,6 +48,15 @@ class MediaKitPlayerImpl implements JpPlayer {
   final ValueNotifier<bool> _isBuffering = ValueNotifier(false);
   final ValueNotifier<int?> _videoWidth = ValueNotifier(null);
   final ValueNotifier<int?> _videoHeight = ValueNotifier(null);
+  final ValueNotifier<bool> _isHardwareDecode = ValueNotifier(true);
+
+  late final HwdecWatchdog _watchdog = HwdecWatchdog(
+    hasRenderedFrame: _probeRenderedFrame,
+    onStall: () {
+      jpLog('PLAYER', 'Android 硬解假死看门狗触发 → 自动回退软解');
+      unawaited(_fallbackToSoftwareDecode());
+    },
+  );
 
   final List<StreamSubscription> _subscriptions = [];
 
@@ -62,15 +85,22 @@ class MediaKitPlayerImpl implements JpPlayer {
   ValueNotifier<int?> get videoHeightNotifier => _videoHeight;
 
   @override
+  ValueNotifier<bool> get isHardwareDecodeNotifier => _isHardwareDecode;
+
+  @override
+  bool get supportsDecodeToggle => Platform.isAndroid;
+
+  @override
   Future<void> initialize() async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 初始化原生内核中...');
-    // 每装载一条新视频源重新武装软解回退（单条视频内仍限一次）。
-    HwdecPolicy.resetSoftFallback();
     _initialOpenDone = Completer<void>();
-    // MPVLogLevel.warn: 只输出警告/错误；Android 诊断硬解时提高到 info，便于看 decoder 协商
+    // MPVLogLevel.warn: 只输出警告/错误，避免每条日志都过一遍 Dart 侧字符串匹配。
+    // 仅 Android debug 提高到 info 以便看 decoder 协商；release 保持 warn。
     _player = Player(
       configuration: PlayerConfiguration(
-        logLevel: Platform.isAndroid ? MPVLogLevel.info : MPVLogLevel.warn,
+        logLevel: (Platform.isAndroid && kDebugMode)
+            ? MPVLogLevel.info
+            : MPVLogLevel.warn,
       ),
     );
 
@@ -105,11 +135,12 @@ class MediaKitPlayerImpl implements JpPlayer {
         final String cacheSecs;
         final String streamBuffer;
         if (constrained) {
-          fwdBytes = DeviceProfile.constrainedFwdBytes;
-          backBytes = DeviceProfile.constrainedBackBytes;
-          readaheadSecs = DeviceProfile.constrainedReadaheadSecs;
-          cacheSecs = DeviceProfile.constrainedCacheSecs;
-          streamBuffer = DeviceProfile.constrainedStreamBuffer;
+          final b = DeviceProfile.budget;
+          fwdBytes = b.demuxFwdBytes;
+          backBytes = b.demuxBackBytes;
+          readaheadSecs = b.readaheadSecs;
+          cacheSecs = b.cacheSecs;
+          streamBuffer = b.streamBuffer;
         } else if (isMobile) {
           // 移动端: 前向 32MB + 后向 24MB
           fwdBytes = '33554432';
@@ -214,12 +245,17 @@ class MediaKitPlayerImpl implements JpPlayer {
           await native.setProperty('hwdec', 'd3d11va');
         } else if (Platform.isAndroid) {
           await HwdecPolicy.ensureProbed();
-          final hwdec = HwdecPolicy.initialHwdecProperty();
-          // amediacodec 优先；无硬件 codec 时 HwdecPolicy 直接给 no
+          _userForcedSoft = HwdecPolicy.userPrefersSoft;
+          // amediacodec 优先；无硬件 codec 或用户偏好软解时直接 no
+          final hwdec =
+              _userForcedSoft ? 'no' : HwdecPolicy.initialHwdecProperty();
           await native.setProperty('hwdec', hwdec);
+          await _applyDecodeTuning(native, hardware: hwdec != 'no');
+          _isHardwareDecode.value = hwdec != 'no';
+          _watchdog.setEnabled(_isHardwareDecode.value);
           jpLog(
             'PLAYER',
-            'Android hwdec initial=$hwdec '
+            'Android hwdec initial=$hwdec userSoft=$_userForcedSoft '
             '(hasHw=${HwdecPolicy.hasAnyHardwareVideo} '
             'h264=${HwdecPolicy.probedH264} hevc=${HwdecPolicy.probedHevc})',
           );
@@ -237,12 +273,12 @@ class MediaKitPlayerImpl implements JpPlayer {
         // 在移动端造成不必要的高 CPU 占用和功耗。
         await native.setProperty('hwdec-codecs', 'h264,hevc,vp8,vp9,av1,mpeg4,mpeg2video,vc1,wmv3');
 
-        // hwdec-extra-frames: 硬解流水线中额外预解码的帧数（默认 1）。
-        // 受限档降为 2，降低 GPU/内存压力。
-        final extraFrames = DeviceProfile.isConstrained
-            ? DeviceProfile.constrainedHwdecExtraFrames
-            : '4';
-        await native.setProperty('hwdec-extra-frames', extraFrames);
+        // hwdec-extra-frames: 仅对需要预分配表面的 API（d3d11va/vaapi）生效，
+        // 对 Android MediaCodec 无影响；受限档沿用较小值。
+        await native.setProperty(
+          'hwdec-extra-frames',
+          DeviceProfile.budget.hwdecExtraFrames,
+        );
 
         jpLog('PLAYER', 'MediaKitPlayerImpl: hwdec configured for ${Platform.operatingSystem}');
       }
@@ -253,6 +289,7 @@ class MediaKitPlayerImpl implements JpPlayer {
     // 订阅播放状态流
     _subscriptions.add(_player.stream.playing.listen((playing) {
       _isPlaying.value = playing;
+      _watchdog.setPlaying(playing);
     }));
     _subscriptions.add(_player.stream.position.listen((pos) {
       _position.value = pos;
@@ -262,26 +299,26 @@ class MediaKitPlayerImpl implements JpPlayer {
     }));
     _subscriptions.add(_player.stream.buffering.listen((buf) {
       _isBuffering.value = buf;
+      _watchdog.setBuffering(buf);
+    }));
+    _subscriptions.add(_player.stream.tracks.listen((tracks) {
+      _watchdog.setHasVideoTrack(tracks.video.any(_isRealVideoTrack));
     }));
     _subscriptions.add(_player.stream.width.listen((w) {
       _videoWidth.value = w;
+      if (w != null && w > 0) _watchdog.markFrameRendered();
     }));
     _subscriptions.add(_player.stream.height.listen((h) {
       _videoHeight.value = h;
     }));
 
-    // Android：硬解失败关键词 → 最多 reopen 软解一次（release 也挂，warn 级日志量可控）
+    // Android：硬解生效期间，日志命中失败特征 → 本源最多自动 reopen 软解一次
     if (Platform.isAndroid) {
       _subscriptions.add(_player.stream.log.listen((event) {
+        if (!_isHardwareDecode.value) return;
         final text = event.text.toLowerCase();
-        if (text.contains('hwdec') ||
-            text.contains('mediacodec') ||
-            text.contains('amediacodec') ||
-            text.contains('using decoder') ||
-            text.contains('lavc')) {
+        if (looksLikeHwdecFailure(text)) {
           jpLog('MPV', '[${event.prefix}] ${event.text}');
-        }
-        if (_looksLikeHwdecFailure(text)) {
           unawaited(_fallbackToSoftwareDecode());
         }
       }));
@@ -316,27 +353,73 @@ class MediaKitPlayerImpl implements JpPlayer {
         'PLAYER',
         'decoder[$phase] hwdec=$hwdec hwdec-current=$hwdecCurrent '
         'current-decoder=$decoder vo=$vo '
-        'probe h264=${HwdecPolicy.hasAnyHardwareVideo} '
-        'softFallback=${HwdecPolicy.softFallbackUsed}',
+        'probe hw=${HwdecPolicy.hasAnyHardwareVideo} '
+        'softFallbackUsed=$_softFallbackUsed',
       );
     } catch (e) {
       jpLog('PLAYER', 'decoder[$phase] probe failed: $e');
     }
   }
 
-  bool _looksLikeHwdecFailure(String text) {
-    return text.contains('could not open hwdec') ||
-        text.contains('failed to create hwdec') ||
-        text.contains('error opening video hwdec') ||
-        text.contains('failed to initialize video decoder') ||
-        (text.contains('hwdec') && text.contains('fallback to software')) ||
-        (text.contains('mediacodec') && text.contains('failed'));
+  static bool _isRealVideoTrack(VideoTrack t) =>
+      t.id != 'auto' &&
+      t.id != 'no' &&
+      t.image != true &&
+      t.albumart != true;
+
+  /// 看门狗到点时实测：解码器是否已有帧输出。
+  /// `estimated-vf-fps` 在没有任何帧通过滤镜链时为空，等价于「解码器没出帧」。
+  Future<bool?> _probeRenderedFrame() async {
+    if (_player.platform is! NativePlayer) return null;
+    try {
+      final raw = await (_player.platform as NativePlayer)
+          .getProperty('estimated-vf-fps');
+      if (raw.isEmpty) return false;
+      final fps = double.tryParse(raw);
+      if (fps == null) return null;
+      return fps > 0;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 软解降载：低内存/低端机跳过非关键帧环路滤波；硬解时恢复默认。
+  Future<void> _applyDecodeTuning(
+    NativePlayer native, {
+    required bool hardware,
+  }) async {
+    final skip = (!hardware && DeviceProfile.isConstrained) ? 'nonkey' : 'default';
+    await native.setProperty('vd-lavc-skiploopfilter', skip);
+  }
+
+  /// 切换解码模式并重开当前源，保留进度与暂停态。
+  Future<void> _reopenWithDecode({required bool hardware}) async {
+    final native = _player.platform;
+    if (native is! NativePlayer) return;
+    final pos = _player.state.position;
+    final wasPlaying = _player.state.playing;
+
+    _watchdog.setEnabled(false);
+    await native.setProperty(
+      'hwdec',
+      hardware ? HwdecPolicy.initialHwdecProperty() : 'no',
+    );
+    await _applyDecodeTuning(native, hardware: hardware);
+    _isHardwareDecode.value = hardware;
+
+    if (pos > Duration.zero) {
+      await native.setProperty('start', (pos.inMilliseconds / 1000).toStringAsFixed(3));
+      _startOverridden = true;
+    }
+    await _player.open(Media(_currentUrl), play: wasPlaying);
   }
 
   Future<void> _fallbackToSoftwareDecode() async {
-    if (!Platform.isAndroid || _softFallbackInFlight) return;
-    if (!HwdecPolicy.tryConsumeSoftFallback()) return;
-    _softFallbackInFlight = true;
+    if (!Platform.isAndroid || _decodeReopenInFlight) return;
+    if (_softFallbackUsed || !_isHardwareDecode.value) return;
+    _softFallbackUsed = true;
+    _decodeReopenInFlight = true;
+    _watchdog.setEnabled(false);
     jpLog('PLAYER', 'Android hwdec failed → reopen once with hwdec=no');
     try {
       // 首次 open 尚未结束时先等它完成，禁止并发 open。
@@ -344,14 +427,35 @@ class MediaKitPlayerImpl implements JpPlayer {
       if (initial != null && !initial.isCompleted) {
         await initial.future;
       }
-      if (_player.platform is NativePlayer) {
-        await (_player.platform as NativePlayer).setProperty('hwdec', 'no');
-      }
-      await _player.open(Media(_currentUrl), play: true);
+      _autoFellBack = true;
+      await _reopenWithDecode(hardware: false);
     } catch (e) {
       jpLog('PLAYER', 'soft-decode reopen failed: $e');
     } finally {
-      _softFallbackInFlight = false;
+      _decodeReopenInFlight = false;
+    }
+  }
+
+  @override
+  Future<void> toggleDecodeMode() async {
+    if (!supportsDecodeToggle || _decodeReopenInFlight) return;
+    final targetHw = !_isHardwareDecode.value;
+    _decodeReopenInFlight = true;
+    jpLog('PLAYER', '用户手动切换解码模式: ${targetHw ? "硬解" : "软解"}');
+    try {
+      await HwdecPolicy.ensureProbed();
+      if (targetHw && !HwdecPolicy.hasAnyHardwareVideo) {
+        jpLog('PLAYER', '设备无硬件视频解码器，忽略切回硬解');
+        return;
+      }
+      _userForcedSoft = !targetHw;
+      _autoFellBack = false;
+      await HwdecPolicy.setUserPrefersSoft(_userForcedSoft);
+      await _reopenWithDecode(hardware: targetHw);
+    } catch (e) {
+      jpLog('PLAYER', '切换解码模式失败: $e');
+    } finally {
+      _decodeReopenInFlight = false;
     }
   }
 
@@ -367,7 +471,24 @@ class MediaKitPlayerImpl implements JpPlayer {
   @override
   Future<void> setSource(String url, {bool autoPlay = true}) async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 热切换播放源至 $url');
+    _softFallbackUsed = false;
+    _watchdog.resetForNewSource();
     _currentUrl = url;
+    final native = _player.platform;
+    if (native is NativePlayer) {
+      if (_startOverridden) {
+        await native.setProperty('start', '0');
+        _startOverridden = false;
+      }
+      // 上一条因硬解失败自动退到软解：新源重新尝试硬解（用户强制软解则保持）。
+      if (Platform.isAndroid && _autoFellBack && !_userForcedSoft) {
+        _autoFellBack = false;
+        await native.setProperty('hwdec', HwdecPolicy.initialHwdecProperty());
+        await _applyDecodeTuning(native, hardware: true);
+        _isHardwareDecode.value = true;
+      }
+      _watchdog.setEnabled(Platform.isAndroid && _isHardwareDecode.value);
+    }
     await _player.open(Media(url), play: autoPlay);
   }
 
@@ -385,6 +506,7 @@ class MediaKitPlayerImpl implements JpPlayer {
   @override
   Future<void> dispose() async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 销毁播放控制器，释放订阅句柄...');
+    _watchdog.dispose();
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -413,6 +535,7 @@ class MediaKitPlayerImpl implements JpPlayer {
     _isBuffering.dispose();
     _videoWidth.dispose();
     _videoHeight.dispose();
+    _isHardwareDecode.dispose();
   }
 
   @override
@@ -423,7 +546,15 @@ class MediaKitPlayerImpl implements JpPlayer {
       subtitleViewConfiguration: const SubtitleViewConfiguration(
         padding: EdgeInsets.fromLTRB(24, 16, 24, 48),
       ),
-      controls: isShort ? AdaptiveVideoControls : (state) => CineVideoControls(state, title: title),
+      controls: isShort
+          ? AdaptiveVideoControls
+          : (state) => CineVideoControls(
+                state,
+                title: title,
+                onToggleDecodeMode: supportsDecodeToggle ? toggleDecodeMode : null,
+                isHardwareDecodeListenable:
+                    supportsDecodeToggle ? _isHardwareDecode : null,
+              ),
       onEnterFullscreen: isShort
           ? () async {
               try {

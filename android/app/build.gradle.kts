@@ -30,10 +30,21 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        // 天玑等 arm64 真机：仅打 arm64-v8a，排除 v7a/x86 兼容库
+        // 默认保留 arm64-v8a；低端 1GB 电视若为 32位固件，可通过 -Ptarget-platform=android-arm 打 armeabi-v7a
+        // 不认识的取值一律忽略，全部无效时回落 arm64-v8a，避免产出空 ABI 的包。
+        val abiByPlatform = mapOf(
+            "android-arm" to "armeabi-v7a",
+            "android-arm64" to "arm64-v8a",
+            "android-x64" to "x86_64",
+        )
+        val targetAbis = (project.findProperty("target-platform") as? String)
+            ?.split(",")
+            ?.mapNotNull { abiByPlatform[it.trim()] }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf("arm64-v8a")
         ndk {
             abiFilters.clear()
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += targetAbis
         }
     }
 

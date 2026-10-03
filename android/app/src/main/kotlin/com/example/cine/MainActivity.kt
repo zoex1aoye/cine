@@ -24,30 +24,30 @@ class MainActivity : FlutterActivity() {
                             mapOf(
                                 "totalMem" to info.totalMem,
                                 "availMem" to info.availMem,
+                                "lowRam" to am.isLowRamDevice,
                             ),
                         )
                     }
                     "hasHardwareVideoDecoder" -> {
-                        val detail = probeDecoderDetail("video/avc")
-                        val hevcDetail = probeDecoderDetail("video/hevc")
-                        android.util.Log.i(
-                            "CineHwdec",
-                            "probe avc=$detail hevc=$hevcDetail api=${Build.VERSION.SDK_INT}",
-                        )
-                        result.success(
-                            mapOf(
-                                "h264" to (detail["hw"] as Boolean),
-                                "hevc" to (hevcDetail["hw"] as Boolean),
-                            ),
-                        )
+                        result.success(hardwareVideoProbe)
                     }
                     else -> result.notImplemented()
                 }
             }
     }
 
-    private fun hasHardwareDecoder(mime: String): Boolean {
-        return probeDecoderDetail(mime)["hw"] as Boolean
+    /** 枚举 MediaCodecList 较慢（低端 TV 上可达上百毫秒），只在首次调用时扫描。 */
+    private val hardwareVideoProbe: Map<String, Boolean> by lazy {
+        val avc = probeDecoderDetail("video/avc")
+        val hevc = probeDecoderDetail("video/hevc")
+        android.util.Log.i(
+            "CineHwdec",
+            "probe avc=$avc hevc=$hevc api=${Build.VERSION.SDK_INT}",
+        )
+        mapOf(
+            "h264" to (avc["hw"] as Boolean),
+            "hevc" to (hevc["hw"] as Boolean),
+        )
     }
 
     /** Returns map: hw (bool), names (comma-separated), count (int). */

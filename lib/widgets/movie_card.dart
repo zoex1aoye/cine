@@ -100,11 +100,11 @@ class _MovieCardState extends State<MovieCard> {
                   aspectRatio: 2 / 3,
                   child: LayoutBuilder(
                     builder: (context, constraints) {
-                      final logicalW = constraints.maxWidth.isFinite
-                          ? constraints.maxWidth
-                          : DeviceProfile.constrainedCoverMemWidth.toDouble();
-                      final memW = (logicalW * dpr).round().clamp(64, 720);
-                      final memH = (memW * 3 / 2).round();
+                      // 只约束宽度：同时给宽高会按 BoxFit.fill 强拉成 2:3，海报比例不一致时变形。
+                      final memW = DeviceProfile.budget.coverDecodeWidth(
+                        logicalWidth: constraints.maxWidth,
+                        dpr: dpr,
+                      );
                       return Stack(
                     fit: StackFit.expand,
                     children: [
@@ -130,7 +130,6 @@ class _MovieCardState extends State<MovieCard> {
                                   ? FilterQuality.low
                                   : FilterQuality.high,
                               memCacheWidth: memW,
-                              memCacheHeight: memH,
                               placeholderBuilder: (_) => Container(
                                 color: const Color(0xFF1A1A1E),
                                 child: const Center(

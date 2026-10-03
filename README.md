@@ -42,10 +42,15 @@ flutter build apk --release --flavor mobile \
   --dart-define=CINE_SURFACE=mobile \
   --target-platform android-arm64
 
-# TV / 投影（遥控器优先；Leanback required=false，便于侧载）
+# TV / 投影（遥控器优先；Leanback required=false，支持非 Google 商店侧载与 1GB 内存优化）
 flutter build apk --release --flavor tv \
   --dart-define=CINE_SURFACE=tv \
   --target-platform android-arm64
+
+# 若针对 32位 固件的 1GB 低端电视/投影仪（armeabi-v7a）：
+flutter build apk --release --flavor tv \
+  --dart-define=CINE_SURFACE=tv \
+  --target-platform android-arm
 
 # 开发运行示例
 flutter run --flavor mobile --dart-define=CINE_SURFACE=mobile -d <deviceId>

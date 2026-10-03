@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
@@ -45,26 +46,19 @@ class _FakeMubuApiClient implements MubuApiClient {
 
 void main() {
   testWidgets('App starts', (WidgetTester tester) async {
-    // 与 main() 对齐的 Hive 初始化：临时目录 + 注册 adapter + 打开所需 box。
-    final tmpDir = await Directory.systemTemp.createTemp('cine_widget_test');
-    // ignore: avoid_print
-    print('DBG: temp dir ready');
+    final tmpDir = Directory.systemTemp.createTempSync('cine_widget_test');
     Hive.init(tmpDir.path);
     Hive.registerAdapter(VideoItemAdapter());
     Hive.registerAdapter(NodeSpeedRecordAdapter());
     Hive.registerAdapter(SourceProbeRecordAdapter());
-    await Hive.openBox<VideoItem>('bookmarks');
-    await Hive.openBox<VideoItem>('history');
-    await Hive.openBox<String>('config');
-    await Hive.openBox<NodeSpeedRecord>('node_speeds');
-    await Hive.openBox<SourceProbeRecord>('source_probes');
-    // ignore: avoid_print
-    print('DBG: hive ready');
+    await Hive.openBox<VideoItem>('bookmarks', bytes: Uint8List(0));
+    await Hive.openBox<VideoItem>('history', bytes: Uint8List(0));
+    await Hive.openBox<String>('config', bytes: Uint8List(0));
+    await Hive.openBox<NodeSpeedRecord>('node_speeds', bytes: Uint8List(0));
+    await Hive.openBox<SourceProbeRecord>('source_probes', bytes: Uint8List(0));
 
     MubuApiClient.instance = _FakeMubuApiClient();
     await tester.pumpWidget(const MubuApp());
-    // ignore: avoid_print
-    print('DBG: pumped');
     expect(find.byType(MubuApp), findsOneWidget);
   });
 }

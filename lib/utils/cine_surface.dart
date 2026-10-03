@@ -6,10 +6,18 @@ enum CineSurface { mobile, tv }
 const String _kCineSurfaceRaw =
     String.fromEnvironment('CINE_SURFACE', defaultValue: 'mobile');
 
-final CineSurface cineSurface =
-    _kCineSurfaceRaw == 'tv' ? CineSurface.tv : CineSurface.mobile;
+CineSurface? _debugOverrideSurface;
+
+CineSurface get cineSurface =>
+    _debugOverrideSurface ??
+    (_kCineSurfaceRaw == 'tv' ? CineSurface.tv : CineSurface.mobile);
 
 bool get isTvSurface => cineSurface == CineSurface.tv;
+
+@visibleForTesting
+void debugOverrideSurface(CineSurface? surface) {
+  _debugOverrideSurface = surface;
+}
 
 /// Debug helper: surface must match the Android flavor used at build time.
 void assertSurfaceMatchesFlavorExpectation() {

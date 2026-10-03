@@ -1,30 +1,34 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:hive/hive.dart';
 
-/// Android hwdec probe + one-shot soft-decode fallback state.
+/// Android hwdec 能力探测、用户解码偏好、硬解失败日志特征。
+///
+/// 回退是否已消耗等「每个播放器实例」的状态不放这里，见 `MediaKitPlayerImpl`。
 class HwdecPolicy {
   HwdecPolicy._();
 
   static const _channel = MethodChannel('com.example.cine/device');
+  static const _prefKey = 'prefer_soft_decode';
 
   static bool? _h264Hw;
   static bool? _hevcHw;
   static bool _probed = false;
-  static bool _softFallbackUsed = false;
+  static Future<void>? _probing;
 
-  static bool get softFallbackUsed => _softFallbackUsed;
   static bool? get probedH264 => _h264Hw;
   static bool? get probedHevc => _hevcHw;
 
-  /// True if at least one common video MIME has a hardware decoder.
+  /// 探测前、探测失败、探测结果缺失时都按「有硬解」处理，由看门狗兜底。
   static bool get hasAnyHardwareVideo {
-    if (!_probed) return true; // optimistic until probed
+    if (!_probed || (_h264Hw == null && _hevcHw == null)) return true;
     return (_h264Hw == true) || (_hevcHw == true);
   }
 
-  static Future<void> ensureProbed() async {
-    if (_probed) return;
-    _probed = true;
+  /// 并发安全：多个播放器同时初始化时共享同一次探测。
+  static Future<void> ensureProbed() => _probing ??= _probe();
+
+  static Future<void> _probe() async {
     try {
       final raw = await _channel
           .invokeMapMethod<String, dynamic>('hasHardwareVideoDecoder');
@@ -33,30 +37,38 @@ class HwdecPolicy {
         _hevcHw = raw['hevc'] as bool? ?? false;
       }
     } catch (_) {
-      // Non-Android or channel missing: leave optimistic defaults.
-      _h264Hw = true;
-      _hevcHw = true;
+      // 非 Android 或 channel 缺失：保持乐观默认。
+    } finally {
+      _probed = true;
     }
   }
 
-  /// Initial mpv `hwdec` value for Android.
+  /// 初始 mpv `hwdec` 值（不含用户偏好）。
   static String initialHwdecProperty() {
     if (!hasAnyHardwareVideo) return 'no';
     return 'amediacodec,mediacodec';
   }
 
-  /// Mark that soft fallback reopen has been consumed (max once per video).
-  /// 每装载一条新视频源时重置：单条视频内仍限一次（防止日志反复触发回退），
-  /// 但不会让后续视频因回退额度被上一条耗尽而黑屏。
-  static bool tryConsumeSoftFallback() {
-    if (_softFallbackUsed) return false;
-    _softFallbackUsed = true;
-    return true;
+  /// 用户是否手动选择过软解（持久化在 config box）。
+  static bool get userPrefersSoft {
+    try {
+      if (!Hive.isBoxOpen('config')) return false;
+      return Hive.box<String>('config').get(_prefKey) == '1';
+    } catch (_) {
+      return false;
+    }
   }
 
-  /// Re-arm the one-shot soft fallback for a newly loaded video source.
-  static void resetSoftFallback() {
-    _softFallbackUsed = false;
+  static Future<void> setUserPrefersSoft(bool value) async {
+    try {
+      if (!Hive.isBoxOpen('config')) return;
+      final box = Hive.box<String>('config');
+      if (value) {
+        await box.put(_prefKey, '1');
+      } else {
+        await box.delete(_prefKey);
+      }
+    } catch (_) {}
   }
 
   @visibleForTesting
@@ -64,11 +76,31 @@ class HwdecPolicy {
     bool? h264,
     bool? hevc,
     bool probed = true,
-    bool softUsed = false,
   }) {
     _probed = probed;
     _h264Hw = h264;
     _hevcHw = hevc;
-    _softFallbackUsed = softUsed;
+    _probing = null;
   }
+}
+
+/// mpv 日志中「硬解初始化/运行期失败」的特征（已转小写）。
+///
+/// 刻意不匹配泛化的 `mediacodec` + `error`：HLS 中单个坏包的
+/// `error while decoding` 之类日志很常见，不应触发整条流重开。
+bool looksLikeHwdecFailure(String lowerCasedText) {
+  final text = lowerCasedText;
+  return text.contains('could not open hwdec') ||
+      text.contains('failed to create hwdec') ||
+      text.contains('error opening video hwdec') ||
+      text.contains('failed to initialize video decoder') ||
+      text.contains('dequeue output buffer') ||
+      text.contains('omx error') ||
+      text.contains('c2 error') ||
+      text.contains('amediaerror') ||
+      text.contains('surface abandoned') ||
+      text.contains('surface invalid') ||
+      text.contains('surface lost') ||
+      (text.contains('hwdec') && text.contains('fallback to software')) ||
+      (text.contains('mediacodec') && text.contains('failed'));
 }

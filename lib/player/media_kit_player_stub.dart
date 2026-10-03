@@ -13,6 +13,16 @@ class MediaKitPlayerImpl implements JpPlayer {
   final _isBuffering = ValueNotifier<bool>(false);
   final _videoWidth = ValueNotifier<int?>(null);
   final _videoHeight = ValueNotifier<int?>(null);
+  final _isHardwareDecode = ValueNotifier<bool>(false);
+
+  @override
+  bool get supportsDecodeToggle => false;
+
+  @override
+  Future<void> toggleDecodeMode() async {}
+
+  @override
+  ValueNotifier<bool> get isHardwareDecodeNotifier => _isHardwareDecode;
 
   @override
   ValueNotifier<bool> get isInitializedNotifier => _isInitialized;
@@ -61,6 +71,7 @@ class MediaKitPlayerImpl implements JpPlayer {
     _isBuffering.dispose();
     _videoWidth.dispose();
     _videoHeight.dispose();
+    _isHardwareDecode.dispose();
   }
 
   @override
