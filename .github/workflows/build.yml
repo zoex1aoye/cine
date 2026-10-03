@@ -148,23 +148,49 @@ jobs:
         run: flutter pub get
 
       # 工程定义了 mobile / tv 两个 flavor，必须显式带 --flavor，且 CINE_SURFACE 与 flavor 同名。
-      - name: Build Android APK (mobile)
+      # 同一 flavor 连续构建会清掉 build/app/outputs/apk 下上一个 APK，因此每次构建后立即拷到 dist-android/。
+      # tv 侧载设备可能是 32 位固件，分别产出 armeabi-v7a 与 arm64-v8a 两个包；mobile 仅 arm64。
+      - name: Build Android APK (mobile arm64)
         run: >
           flutter build apk --release --flavor mobile
           --dart-define=CINE_SURFACE=mobile
           --target-platform android-arm64
 
-      - name: Build Android APK (tv)
+      - name: Collect mobile APK
+        run: |
+          mkdir -p dist-android
+          cp build/app/outputs/apk/mobile/release/mubu_*.apk dist-android/
+
+      - name: Build Android APK (tv arm64)
         run: >
           flutter build apk --release --flavor tv
           --dart-define=CINE_SURFACE=tv
           --target-platform android-arm64
 
+      - name: Collect tv arm64 APK
+        run: cp build/app/outputs/apk/tv/release/mubu_*.apk dist-android/
+
+      - name: Build Android APK (tv armeabi-v7a)
+        run: >
+          flutter build apk --release --flavor tv
+          --dart-define=CINE_SURFACE=tv
+          --target-platform android-arm
+
+      - name: Collect tv armeabi-v7a APK
+        run: cp build/app/outputs/apk/tv/release/mubu_*.apk dist-android/
+
+      - name: Verify Android APK set
+        run: |
+          ls -la dist-android
+          test "$(ls dist-android/mubu_*_mobile_arm64-v8a.apk | wc -l)" = 1
+          test "$(ls dist-android/mubu_*_tv_arm64-v8a.apk | wc -l)" = 1
+          test "$(ls dist-android/mubu_*_tv_armeabi-v7a.apk | wc -l)" = 1
+
       - name: Upload Android Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: mubu-android-build
-          path: build/app/outputs/**/mubu_*.apk
+          path: dist-android/mubu_*.apk
 
   create-release:
     needs: [build-linux, build-windows, build-android]

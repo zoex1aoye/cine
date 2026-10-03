@@ -11,7 +11,7 @@
 - 进播放页：受限档 `ImageCache.clear()` 释放闲置封面；不再调用 `clearLiveImages()`。
 - TV 清单：同时显式声明 `LEANBACK_LAUNCHER` 与 `LAUNCHER`（侧载后 Google TV / 第三方 TV 桌面 / 投影 AOSP 桌面均可见）并保留横幅；不加 `largeHeap` / `hardwareAccelerated`。
 - Gradle：`-Ptarget-platform` 映射 ABI，未知取值忽略，默认 `arm64-v8a`（32 位固件见 PRD-02 决策 #5）。
-- CI：`build.yml` 按 `mobile` / `tv` flavor 分别构建。
+- CI：`build.yml` 按 flavor 构建，产物 3 个：`mobile` arm64、`tv` arm64-v8a、`tv` armeabi-v7a（PRD-02 决策 #5）；文件名带真实 ABI，每次构建后立即拷贝到 `dist-android/` 并校验数量。
 - 硬解自愈：
   - `HwdecWatchdog` 仅在「硬解生效 + 有视频轨 + 播放中 + 未缓冲」累计 5 秒，用 `estimated-vf-fps` 实测出帧，确认无帧才回退软解；
   - 回退与手动切换保留进度与暂停态；自动回退的换集后重试硬解；用户选择持久化；
@@ -24,4 +24,6 @@
 - [x] `flutter analyze` 无 error
 - [x] `flutter test` 全部通过
 - [ ] 目标 1GB TV / 投影实机：播一条 HLS、遥控器走通控件栏、观察看门狗与回退（未做，需实机）
-- [ ] `flutter build apk --flavor mobile|tv`（环境无 Android SDK，未做；CI 将验证）
+- [x] 本机（Android SDK 36 / NDK 27.0.12077973）按 CI 命令依次构建 mobile arm64、tv arm64、tv armeabi-v7a 全部成功；`aapt2` 确认三包 `native-code` 分别为 arm64-v8a / arm64-v8a / armeabi-v7a，32 位包含 `libmpv.so`、`libflutter.so`、`libapp.so`
+- [ ] GitHub Actions 实跑（未做）
+- [ ] 32 位真机安装与播放（未做，需 32 位固件设备）

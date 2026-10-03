@@ -37,7 +37,7 @@
 | 含 | 不含 |
 |---|---|
 | Android flavors + Manifest | iOS/桌面 flavor |
-| DeviceProfile + 内存收缩 | armeabi-v7a（除非实机非 arm64） |
+| DeviceProfile + 内存收缩 | armeabi-v7a（仅 mobile；tv 见 PRD-20261003-02 决策 #5） |
 | hwdec 探测与一次回退 | 商店上架/EPG/推荐行重做 |
 | TV 浏览+播放焦点键位 | 设置页「强制软解」 |
 
@@ -53,4 +53,4 @@
 ## 不做的事
 - 完整 Google TV 认证与商店物料
 - 用户设置里的强制软解开关
-- 回补 32-bit ABI（无实机证据前）
+- 回补 32-bit ABI（mobile 仍不做；tv 已由 PRD-20261003-02 决策 #5 放开，同时发 arm64 + armeabi-v7a）
