@@ -1,7 +1,6 @@
 // lib/pages/player_page.dart
 import 'dart:async';
 import 'dart:ui';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -108,8 +107,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    // 进播放页先主动修剪图片缓存，为视频解码内核腾出宝贵的物理内存
+    // 进播放页先主动修剪图片缓存，为视频解码内核腾出宝贵的物理内存。
+    // 在受限机型上由 DeviceProfile 治理，在桌面/常规端也主动清除非引用缓存，避免首页海报长期堆积。
     DeviceProfile.trimImageCacheOnPlayerEnter();
+    if (isDesktopPlatform) {
+      PaintingBinding.instance.imageCache.clear();
+    }
     _innerAspectRatio =
         PlayerSlotLayout.defaultInnerAspectRatio(isShortDrama: _isShortDramaPage);
     WidgetsBinding.instance.addObserver(this);
@@ -490,9 +493,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   String get _currentEpisodeRef =>
       _sources.isNotEmpty ? episodeRef(_sources[_selectedSource]) : '';
-
-  String get _currentEpisodeName =>
-      _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
   /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源。
   /// 电影（无「第N集」式标签）忽略集名，在全部 usable 源里全局选。
@@ -1222,7 +1222,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               ),
 
               // 3. Dropdown click-outside mask
-              if (_expanded)
+              if (_expanded && isDesktopPlatform)
                 Positioned.fill(
                   child: GestureDetector(
                     onTap: () => setState(() => _expanded = false),
@@ -1231,12 +1231,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ),
 
               // 4. Floating line dropdown card (anchored below line label)
-              if (_expanded && _sources.isNotEmpty)
+              if (_expanded && isDesktopPlatform && _sources.isNotEmpty)
                 CompositedTransformFollower(
                   link: _lineLink,
                   offset: const Offset(0, 8),
-                  targetAnchor: useRowLayout ? Alignment.bottomRight : Alignment.bottomLeft,
-                  followerAnchor: useRowLayout ? Alignment.topRight : Alignment.topLeft,
+                  targetAnchor: Alignment.bottomLeft,
+                  followerAnchor: Alignment.topLeft,
                   child: _buildLineDropdownCard(),
                 ),
 
@@ -1294,6 +1294,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          // 顶栏线路切换快捷入口（桌面端）
+          if (isDesktopPlatform && _sources.isNotEmpty) ...[
+            TextButton.icon(
+              onPressed: _showAdaptiveLineSelector,
+              icon: const Icon(Icons.tune_rounded, size: 16, color: Colors.white70),
+              label: Text(
+                _selectedLineName.isNotEmpty ? _selectedLineName : '线路',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0x0FFFFFFF),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
           // 收藏胶囊按钮
           GestureDetector(
             onTap: _toggleBookmark,
@@ -1347,17 +1364,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         ],
       ),
     );
-  }
-
-  String? _getFastPreviewUrl() {
-    if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
-    final currentEpisode = _currentEpisodeRef;
-    final currentUrl = _sources[_selectedSource].url;
-    return SourcePicker.pickPreview(
-      _sources,
-      episodeName: currentEpisode,
-      excludeUrl: currentUrl,
-    )?.url;
   }
 
   /// Resume position with optional intro skip (titles_duration from API).
@@ -1425,8 +1431,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             alignment: Alignment.center,
             fit: StackFit.expand,
             children: [
-              // B2: persistent blurred poster fills letterbox/pillarbox areas
-              _buildBlurredPosterBase(widget.video.coverPath, imgDomain),
+              // B2: persistent blurred poster fills letterbox/pillarbox areas before playback;
+              // once playback starts, replace with solid black to completely avoid offscreen blur compositing.
+              if (!showVideo)
+                _buildBlurredPosterBase(widget.video.coverPath, imgDomain)
+              else
+                const ColoredBox(color: Color(0xFF070708)),
 
               // Inner video viewport (contain, silent 200ms resize)
               if (showVideo)
@@ -1467,22 +1477,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   ),
                 ),
 
-              Positioned.fill(
-                child: IgnorePointer(
-                  ignoring: !showForegroundOverlay,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 600),
-                    opacity: showForegroundOverlay ? 1.0 : 0.0,
-                    curve: Curves.easeOutCubic,
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                      child: Container(
-                        color: const Color(0xFF070708).withOpacity(0.45),
-                      ),
+              if (showForegroundOverlay)
+                const Positioned.fill(
+                  child: IgnorePointer(
+                    child: ColoredBox(
+                      color: Color(0x73070708),
                     ),
                   ),
                 ),
-              ),
 
               if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
                 Center(
@@ -1493,53 +1495,44 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   ),
                 ),
 
-              Positioned.fill(
-                child: IgnorePointer(
-                  ignoring: !showForegroundOverlay,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 600),
-                    opacity: showForegroundOverlay ? 1.0 : 0.0,
-                    curve: Curves.easeOutCubic,
-                    child: Center(
-                      child: BreathingPlayPulse(
-                        onTap: () {
-                          setState(() {
-                            _startPlayRequested = true;
-                          });
-                          _abortBackgroundSpeedTest();
-                          _player?.play().then((_) {
-                            final episodeName = _sources.isNotEmpty
-                                ? _sources[_selectedSource].sourceName
-                                : null;
-                            final lineName = _sources.isNotEmpty
-                                ? _sources[_selectedSource].name
-                                : null;
-                            MubuStorage.recordWatch(
-                              widget.video,
-                              positionMs: _savedPositionMs,
-                              durationMs: _savedDurationMs,
-                              episodeName: episodeName,
-                              lineName: lineName,
-                            );
-                            final startMs = _playbackStartPositionMs();
-                            if (startMs != null) {
-                              _player?.seek(Duration(milliseconds: startMs));
-                            }
-                            _startBufferingWatchdog();
-                          }).catchError((e) {
-                            debugPrint('PLAYER: play() failed: $e');
-                          });
-                          _progressTimer?.cancel();
-                          _progressTimer = Timer.periodic(
-                            const Duration(seconds: 10),
-                            (_) => _saveProgress(),
-                          );
-                        },
-                      ),
-                    ),
+              if (showForegroundOverlay)
+                Center(
+                  child: BreathingPlayPulse(
+                    onTap: () {
+                      setState(() {
+                        _startPlayRequested = true;
+                      });
+                      _abortBackgroundSpeedTest();
+                      _player?.play().then((_) {
+                        final episodeName = _sources.isNotEmpty
+                            ? _sources[_selectedSource].sourceName
+                            : null;
+                        final lineName = _sources.isNotEmpty
+                            ? _sources[_selectedSource].name
+                            : null;
+                        MubuStorage.recordWatch(
+                          widget.video,
+                          positionMs: _savedPositionMs,
+                          durationMs: _savedDurationMs,
+                          episodeName: episodeName,
+                          lineName: lineName,
+                        );
+                        final startMs = _playbackStartPositionMs();
+                        if (startMs != null) {
+                          _player?.seek(Duration(milliseconds: startMs));
+                        }
+                        _startBufferingWatchdog();
+                      }).catchError((e) {
+                        debugPrint('PLAYER: play() failed: $e');
+                      });
+                      _progressTimer?.cancel();
+                      _progressTimer = Timer.periodic(
+                        const Duration(seconds: 10),
+                        (_) => _saveProgress(),
+                      );
+                    },
                   ),
                 ),
-              ),
 
               Positioned.fill(
                 child: IgnorePointer(
@@ -1805,44 +1798,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _showAdaptiveLineSelector() {
-    if (isDesktopPlatform) {
-      setState(() => _expanded = !_expanded);
-    } else {
-      final isWide = MediaQuery.of(context).size.width >= 600;
-      if (isWide) {
-        // TV / Pad landscape: Center Dialog
-        MubuDialog.showCustom(
-          context: context,
-          builder: (ctx) => Center(
-            child: Material(
-              color: Colors.transparent,
-              child: MubuDialogContainer(
-                maxWidth: 360,
-                child: _buildLineSelectorContent(isDialog: true),
-              ),
-            ),
+    showDialog(
+      context: context,
+      builder: (ctx) => Center(
+        child: Material(
+          color: Colors.transparent,
+          child: MubuDialogContainer(
+            maxWidth: 360,
+            child: _buildLineSelectorContent(isDialog: true),
           ),
-        );
-      } else {
-        // Mobile: BottomSheet
-        showModalBottomSheet(
-          context: context,
-          backgroundColor: Colors.transparent,
-          isScrollControlled: true,
-          builder: (ctx) => Container(
-            decoration: BoxDecoration(
-              color: const Color(0xFF16161A).withOpacity(0.95),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-              border: Border(top: BorderSide(color: Colors.white.withOpacity(0.08))),
-            ),
-            child: SafeArea(
-              top: false,
-              child: _buildLineSelectorContent(isBottomSheet: true),
-            ),
-          ),
-        );
-      }
-    }
+        ),
+      ),
+    );
   }
 
   Widget _buildLineDropdownCard() {
@@ -1880,12 +1847,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               const Spacer(),
               if (!isDialog && !isBottomSheet)
                 GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onTap: () => setState(() => _expanded = false),
                   child: const Icon(Icons.close, color: Colors.white38, size: 18),
                 )
-              else if (isBottomSheet)
+              else
                 GestureDetector(
-                  onTap: () => Navigator.pop(context),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context, rootNavigator: true).pop(),
                   child: Container(
                     padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle),
@@ -1914,12 +1883,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 if (!usable && !active) return const SizedBox.shrink();
 
                 return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onTap: () {
                     _switchLine(name);
-                    if (isDesktopPlatform && _expanded) {
-                      setState(() => _expanded = false);
-                    } else if (isBottomSheet || isDialog) {
-                      Navigator.pop(context);
+                    setState(() => _expanded = false);
+                    if (isBottomSheet || isDialog) {
+                      Navigator.of(context, rootNavigator: true).pop();
                     }
                   },
                   child: Container(
@@ -2177,6 +2146,7 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
         );
 
         return GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onTap: widget.onTap,
           child: AnimatedBuilder(
             animation: _controller,
