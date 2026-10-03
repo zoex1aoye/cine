@@ -147,8 +147,18 @@ jobs:
       - name: Install Flutter Dependencies
         run: flutter pub get
 
-      - name: Build Android APK
-        run: flutter build apk --release --target-platform android-arm64
+      # 工程定义了 mobile / tv 两个 flavor，必须显式带 --flavor，且 CINE_SURFACE 与 flavor 同名。
+      - name: Build Android APK (mobile)
+        run: >
+          flutter build apk --release --flavor mobile
+          --dart-define=CINE_SURFACE=mobile
+          --target-platform android-arm64
+
+      - name: Build Android APK (tv)
+        run: >
+          flutter build apk --release --flavor tv
+          --dart-define=CINE_SURFACE=tv
+          --target-platform android-arm64
 
       - name: Upload Android Artifacts
         uses: actions/upload-artifact@v4
