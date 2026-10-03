@@ -33,6 +33,11 @@
 - [x] E4 测试：删自证测试，补看门狗 / 按键策略 / 档位 / 图片缓存的真实测试
 - [x] E5 文档对账（ticket 标题、PRD 勾选、changelog）
 
+## 未验证（需实机 / CI）
+- [ ] 目标 SoC 上 `estimated-vf-fps` 的行为、看门狗与回退的真实表现
+- [ ] TV 遥控器走通 `↑` 进控件栏 → 切换解码 → 返回
+- [ ] `flutter build apk --flavor mobile|tv`（本环境无 Android SDK）与 Kotlin 编译
+
 ## 不在本票范围
 - Impeller 全局关闭（需确认 Fire HD 场景后再决定是否收敛到 tv flavor）
 - 进度条拖动不暂停的实现（需实机验证）

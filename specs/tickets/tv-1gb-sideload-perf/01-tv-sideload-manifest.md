@@ -6,13 +6,14 @@
 - 须装载：cine-flutter-dev
 
 ## 交付什么
-优化 `src/tv/AndroidManifest.xml`：
-1. 兼顾 Leanback Launcher 与标准 Launcher（确保非 Google TV / 普通 AOSP 投影仪桌面也能显示 App 图标）；
-2. 增加 TV 横幅声明 `android:banner="@mipmap/ic_launcher"`；
-3. 声明 `android:largeHeap="true"` 与 `android:hardwareAccelerated="true"`。
-4. 保证 `mobile` 与 `tv` 打包配置完好，支持常见架构侧载。
+`android/app/src/tv/AndroidManifest.xml`：
+1. 保留 Leanback 入口（`LEANBACK_LAUNCHER`，`leanback required=false`）；普通 `LAUNCHER` 由 `main` 清单提供，flavor 合并后并存，不重复声明；
+2. 增加 TV 横幅 `android:banner="@mipmap/ic_launcher"`；
+3. `android/app/build.gradle.kts`：`-Ptarget-platform` 映射为 ABI，未知取值忽略，全部无效回落 `arm64-v8a`；
+4. 保证 `mobile` 与 `tv` 打包配置完好（CI 同步按 flavor 构建）。
 
 ## 验收
-- [ ] `src/tv/AndroidManifest.xml` 支持双 category 启动或多 intent-filter
-- [ ] 开启 `largeHeap`
-- [ ] `flutter analyze` 无 error
+- [x] tv 包合并后的清单同时含 `LAUNCHER` 与 `LEANBACK_LAUNCHER`（来源见 PRD 决策 #1）
+- [x] 不加 `largeHeap` / `hardwareAccelerated`（PRD 决策 #2）
+- [x] CI 分别构建 mobile / tv
+- [x] `flutter analyze` 无 error

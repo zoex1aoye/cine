@@ -1,4 +1,4 @@
-# 02 TV Decode Mode UI & Software Loopfilter
+# 05 TV Decode Mode UI & Software Loopfilter
 - 状态： [x] 完成
 - PRD：PRD-20261003-03
 - 依赖：04
@@ -6,15 +6,13 @@
 - 须装载：cine-flutter-dev
 
 ## 交付什么
-1. `lib/player/media_kit_player_native.dart`：
-   - 受限档及软解下配置 `vd-lavc-skiploopfilter=nonkey`，防止软解 1080P CPU 撑爆导致严重掉帧；
-   - 受限档 `hwdec-extra-frames` 设为 `1`，减少 CMA 显存消耗；
-   - 暴露 `toggleDecodeMode()` 或 `setHwdecEnabled(bool)` 方法支持手动硬/软解切换。
-2. `lib/player/cine_video_controls.dart`：
-   - 控制栏在 TV 模式/桌面提供「硬解/软解」状态小徽标按钮；
-   - 遥控器可聚焦并一键切换解码模式。
+1. `media_kit_player_native.dart`：受限档且软解时 `vd-lavc-skiploopfilter=nonkey`（含设备无硬解的初始路径），硬解恢复 `default`；`toggleDecodeMode()` 保留进度并持久化用户偏好；
+2. `lib/player/tv_player_keys.dart`：TV 播放页按键策略，焦点在控件栏内时放行方向/确认键；
+3. `cine_video_controls.dart`：解码徽标仅 `supportsDecodeToggle` 时显示；隐藏时控件 `ExcludeFocus`；TV 上 Slider 不参与焦点。
 
 ## 验收
-- [ ] 软解时下发 skiploopfilter 优化
-- [ ] TV 模式控制栏显示解码状态并支持按键切换
-- [ ] `flutter analyze` 无 error
+- [x] 软解降载参数下发（含初始软解路径）
+- [x] 焦点在控件栏时 →/OK 到达并激活徽标（见 `test/tv_player_keys_test.dart`）
+- [x] 非 Android 不显示徽标
+- [ ] TV 实机用遥控器走通 `↑` 进控件栏 → 切换 → 返回（需实机）
+- [x] `flutter analyze` 无 error
