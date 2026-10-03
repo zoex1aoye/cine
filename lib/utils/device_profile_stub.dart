@@ -16,7 +16,7 @@ class DeviceProfile {
   static const constrainedReadaheadSecs = '8';
   static const constrainedCacheSecs = '15';
   static const constrainedStreamBuffer = '262144';
-  static const constrainedHwdecExtraFrames = '2';
+  static const constrainedHwdecExtraFrames = '1';
   static const constrainedImageCacheCount = 30;
   static const constrainedImageCacheBytes = 24 << 20;
   static const constrainedProbeEarlyBatch = 2;

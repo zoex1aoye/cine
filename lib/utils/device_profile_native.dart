@@ -27,7 +27,7 @@ class DeviceProfile {
   static const constrainedReadaheadSecs = '8';
   static const constrainedCacheSecs = '15';
   static const constrainedStreamBuffer = '262144'; // 256 KB
-  static const constrainedHwdecExtraFrames = '2';
+  static const constrainedHwdecExtraFrames = '1';
 
   /// Image cache caps when constrained (1GB 级内存收紧至 30 张 / 24MB).
   static const constrainedImageCacheCount = 30;

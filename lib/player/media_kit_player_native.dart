@@ -34,6 +34,11 @@ class MediaKitPlayerImpl implements JpPlayer {
   final ValueNotifier<bool> _isBuffering = ValueNotifier(false);
   final ValueNotifier<int?> _videoWidth = ValueNotifier(null);
   final ValueNotifier<int?> _videoHeight = ValueNotifier(null);
+  final ValueNotifier<bool> _isHardwareDecode = ValueNotifier(true);
+
+  // 硬解假死静默看门狗
+  Timer? _hwdecWatchdog;
+  bool _hasRenderedProgress = false;
 
   final List<StreamSubscription> _subscriptions = [];
 
@@ -60,6 +65,9 @@ class MediaKitPlayerImpl implements JpPlayer {
 
   @override
   ValueNotifier<int?> get videoHeightNotifier => _videoHeight;
+
+  @override
+  ValueNotifier<bool> get isHardwareDecodeNotifier => _isHardwareDecode;
 
   @override
   Future<void> initialize() async {
@@ -257,12 +265,22 @@ class MediaKitPlayerImpl implements JpPlayer {
     // 订阅播放状态流
     _subscriptions.add(_player.stream.playing.listen((playing) {
       _isPlaying.value = playing;
+      if (playing && !_hasRenderedProgress) {
+        _armHwdecWatchdog();
+      }
     }));
     _subscriptions.add(_player.stream.position.listen((pos) {
       _position.value = pos;
+      if (pos > Duration.zero) {
+        _hasRenderedProgress = true;
+        _disarmHwdecWatchdog();
+      }
     }));
     _subscriptions.add(_player.stream.duration.listen((dur) {
       _duration.value = dur;
+      if (dur > Duration.zero && !_hasRenderedProgress) {
+        _armHwdecWatchdog();
+      }
     }));
     _subscriptions.add(_player.stream.buffering.listen((buf) {
       _isBuffering.value = buf;
@@ -333,14 +351,42 @@ class MediaKitPlayerImpl implements JpPlayer {
         text.contains('failed to create hwdec') ||
         text.contains('error opening video hwdec') ||
         text.contains('failed to initialize video decoder') ||
+        text.contains('dequeue output buffer') ||
+        text.contains('omx error') ||
+        text.contains('c2 error') ||
+        text.contains('amediaerror') ||
+        text.contains('surface abandoned') ||
+        text.contains('surface invalid') ||
+        text.contains('surface lost') ||
         (text.contains('hwdec') && text.contains('fallback to software')) ||
-        (text.contains('mediacodec') && text.contains('failed'));
+        (text.contains('mediacodec') && (text.contains('failed') || text.contains('error')));
+  }
+
+  void _armHwdecWatchdog() {
+    if (!Platform.isAndroid || _hasRenderedProgress || _hwdecWatchdog != null) return;
+    if (!_isHardwareDecode.value) return;
+
+    // 5秒看门狗：流媒体已解析时长且处于播放中，但进度停滞在 0 秒，判定硬解假死
+    _hwdecWatchdog = Timer(const Duration(seconds: 5), () {
+      _hwdecWatchdog = null;
+      if (!_hasRenderedProgress && _position.value == Duration.zero && _isHardwareDecode.value) {
+        jpLog('PLAYER', 'Android 硬解假死看门狗触发 (5s 进度为 0) → 自动触发软解回退');
+        unawaited(_fallbackToSoftwareDecode());
+      }
+    });
+  }
+
+  void _disarmHwdecWatchdog() {
+    _hwdecWatchdog?.cancel();
+    _hwdecWatchdog = null;
   }
 
   Future<void> _fallbackToSoftwareDecode() async {
     if (!Platform.isAndroid || _softFallbackInFlight) return;
     if (!HwdecPolicy.tryConsumeSoftFallback()) return;
+    _disarmHwdecWatchdog();
     _softFallbackInFlight = true;
+    _isHardwareDecode.value = false;
     jpLog('PLAYER', 'Android hwdec failed → reopen once with hwdec=no');
     try {
       // 首次 open 尚未结束时先等它完成，禁止并发 open。
@@ -349,11 +395,54 @@ class MediaKitPlayerImpl implements JpPlayer {
         await initial.future;
       }
       if (_player.platform is NativePlayer) {
-        await (_player.platform as NativePlayer).setProperty('hwdec', 'no');
+        final native = _player.platform as NativePlayer;
+        await native.setProperty('hwdec', 'no');
+        // 软解优化：在低端设备上启用跳过非参考帧环路滤波，防止 CPU 算力吃紧导致音画不同步
+        if (DeviceProfile.isConstrained) {
+          await native.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+        }
       }
       await _player.open(Media(_currentUrl), play: true);
     } catch (e) {
       jpLog('PLAYER', 'soft-decode reopen failed: $e');
+    } finally {
+      _softFallbackInFlight = false;
+    }
+  }
+
+  @override
+  Future<void> toggleDecodeMode() async {
+    if (!Platform.isAndroid || _softFallbackInFlight) return;
+    final targetHw = !_isHardwareDecode.value;
+    _softFallbackInFlight = true;
+    _disarmHwdecWatchdog();
+    jpLog('PLAYER', '用户手动切换解码模式: ${targetHw ? "硬解" : "软解"}');
+    try {
+      if (_player.platform is NativePlayer) {
+        final native = _player.platform as NativePlayer;
+        if (targetHw) {
+          await HwdecPolicy.ensureProbed();
+          final hwdec = HwdecPolicy.initialHwdecProperty();
+          await native.setProperty('hwdec', hwdec);
+          if (DeviceProfile.isConstrained) {
+            await native.setProperty('vd-lavc-skiploopfilter', 'none');
+          }
+        } else {
+          await native.setProperty('hwdec', 'no');
+          if (DeviceProfile.isConstrained) {
+            await native.setProperty('vd-lavc-skiploopfilter', 'nonkey');
+          }
+        }
+      }
+      _isHardwareDecode.value = targetHw;
+      // 记录当前播放进度以便无缝恢复
+      final currentPos = _position.value;
+      await _player.open(Media(_currentUrl), play: true);
+      if (currentPos > Duration.zero) {
+        await _player.seek(currentPos);
+      }
+    } catch (e) {
+      jpLog('PLAYER', '切换解码模式失败: $e');
     } finally {
       _softFallbackInFlight = false;
     }
@@ -371,6 +460,9 @@ class MediaKitPlayerImpl implements JpPlayer {
   @override
   Future<void> setSource(String url, {bool autoPlay = true}) async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 热切换播放源至 $url');
+    _disarmHwdecWatchdog();
+    _hasRenderedProgress = false;
+    HwdecPolicy.resetSoftFallback();
     _currentUrl = url;
     await _player.open(Media(url), play: autoPlay);
   }
@@ -389,6 +481,7 @@ class MediaKitPlayerImpl implements JpPlayer {
   @override
   Future<void> dispose() async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 销毁播放控制器，释放订阅句柄...');
+    _disarmHwdecWatchdog();
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -417,6 +510,7 @@ class MediaKitPlayerImpl implements JpPlayer {
     _isBuffering.dispose();
     _videoWidth.dispose();
     _videoHeight.dispose();
+    _isHardwareDecode.dispose();
   }
 
   @override
@@ -427,7 +521,14 @@ class MediaKitPlayerImpl implements JpPlayer {
       subtitleViewConfiguration: const SubtitleViewConfiguration(
         padding: EdgeInsets.fromLTRB(24, 16, 24, 48),
       ),
-      controls: isShort ? AdaptiveVideoControls : (state) => CineVideoControls(state, title: title),
+      controls: isShort
+          ? AdaptiveVideoControls
+          : (state) => CineVideoControls(
+                state,
+                title: title,
+                onToggleDecodeMode: toggleDecodeMode,
+                isHardwareDecodeListenable: _isHardwareDecode,
+              ),
       onEnterFullscreen: isShort
           ? () async {
               try {

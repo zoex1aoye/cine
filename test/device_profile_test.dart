@@ -40,6 +40,7 @@ void main() {
       expect(DeviceProfile.constrainedImageCacheBytes, 24 * 1024 * 1024);
       expect(DeviceProfile.constrainedProbeEarlyBatch, 2);
       expect(DeviceProfile.constrainedCoverMemWidth, 180);
+      expect(DeviceProfile.constrainedHwdecExtraFrames, '1');
     });
 
     test('applyImageCacheLimits modifies PaintingBinding imageCache under constrained', () {

@@ -11,11 +11,15 @@ import '../utils/platform_utils.dart';
 class CineVideoControls extends StatefulWidget {
   final VideoState state;
   final String? title;
+  final VoidCallback? onToggleDecodeMode;
+  final ValueNotifier<bool>? isHardwareDecodeListenable;
 
   const CineVideoControls(
     this.state, {
     super.key,
     this.title,
+    this.onToggleDecodeMode,
+    this.isHardwareDecodeListenable,
   });
 
   @override
@@ -888,6 +892,59 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                               ),
+                            ),
+                          ],
+                          if (widget.onToggleDecodeMode != null &&
+                              widget.isHardwareDecodeListenable != null) ...[
+                            const SizedBox(width: 8),
+                            ValueListenableBuilder<bool>(
+                              valueListenable: widget.isHardwareDecodeListenable!,
+                              builder: (context, isHw, _) {
+                                return FocusableActionDetector(
+                                  actions: <Type, Action<Intent>>{
+                                    ActivateIntent: CallbackAction<ActivateIntent>(
+                                      onInvoke: (_) {
+                                        _startHideTimer();
+                                        widget.onToggleDecodeMode!();
+                                        return null;
+                                      },
+                                    ),
+                                  },
+                                  child: TextButton.icon(
+                                    style: TextButton.styleFrom(
+                                      backgroundColor: Colors.white.withOpacity(0.12),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                        side: BorderSide(
+                                          color: isHw ? primaryColor : Colors.white30,
+                                          width: 1,
+                                        ),
+                                      ),
+                                    ),
+                                    icon: Icon(
+                                      isHw ? Icons.memory : Icons.developer_board,
+                                      size: 16,
+                                      color: isHw ? primaryColor : Colors.white70,
+                                    ),
+                                    label: Text(
+                                      isHw ? '硬解' : '软解',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: isHw ? primaryColor : Colors.white70,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    onPressed: () {
+                                      _startHideTimer();
+                                      widget.onToggleDecodeMode!();
+                                    },
+                                  ),
+                                );
+                              },
                             ),
                           ],
                         ],
