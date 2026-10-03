@@ -33,7 +33,7 @@
 | 2 | `largeHeap` / `hardwareAccelerated` | 不加 | `largeHeap` 只放大 Java 堆，mpv/Flutter 在原生内存；`hardwareAccelerated` 默认即 true | 2026-10-03 |
 | 3 | `demuxer-donate-buffer` | 不设置 | mpv 默认 yes，语义是「后向缓冲借用前向缓冲空闲额度」，不归还物理内存 | 2026-10-03 |
 | 4 | `hwdec-extra-frames` | 不再为 1GB 单独收紧 | mpv 手册：仅对需预分配表面的 API（d3d11va/vaapi）生效，对 MediaCodec 无影响 | 2026-10-03 |
-| 5 | 32 位 ABI | 允许 `-Ptarget-platform=android-arm` 打 `armeabi-v7a`，默认仍 arm64 | 部分 1GB 电视为 32 位固件；与 PRD-20261002-05「无实机证据前不回补」冲突，**须在合入前补实机证据** | 2026-10-03 |
+| 5 | 32 位 ABI | **tv 同时发 `arm64-v8a` 与 `armeabi-v7a` 两个 APK**；mobile 仍仅 arm64 | 用户决策（2026-10-03）：TV / 投影侧载设备可能是 32 位固件，不能假定 64 位。取代 PRD-20261002-05「无实机证据前不回补 32-bit」中针对 tv 的部分；两包同 applicationId、同 versionCode，用户按设备 ABI 选装 | 2026-10-03 |
 | 6 | 图片缓存预算 | 以字节为主，张数放宽到 100 | 封面已按 memCacheWidth 缩小，30 张会让 TV 多行海报反复驱逐重解码 | 2026-10-03 |
 | 7 | ultra 后向缓冲 | 4MB（不低于） | 5–8Mbps 约 4–6 秒；再小则 TV「左键 -10s」每次回源 | 2026-10-03 |
 
