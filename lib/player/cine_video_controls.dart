@@ -7,6 +7,7 @@ import 'package:screen_brightness/screen_brightness.dart';
 
 import '../utils/cine_surface.dart';
 import '../utils/platform_utils.dart';
+import 'tv_player_keys.dart';
 
 class CineVideoControls extends StatefulWidget {
   final VideoState state;
@@ -136,6 +137,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
 
   @override
   void dispose() {
+    _chromeEntry.dispose();
     _returnTipTimer?.cancel();
     _seekDebounceTimer?.cancel();
     ScreenBrightness().resetScreenBrightness();
@@ -509,45 +511,30 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     );
   }
 
-  KeyEventResult _onTvKey(FocusNode node, KeyEvent event) {
-    if (!isTvSurface || event is! KeyDownEvent) return KeyEventResult.ignored;
+  /// 控件栏入口焦点：挂在底栏全屏按钮上，TV 上 ↑ 进入控件栏时落到这里。
+  final FocusNode _chromeEntry = FocusNode(debugLabel: 'cine-chrome-entry');
 
-    final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      _showControlsTransiently();
-      _seekBy(const Duration(seconds: -10));
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowRight) {
-      _showControlsTransiently();
-      _seekBy(const Duration(seconds: 10));
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowUp) {
-      _showControlsTransiently();
-      _nudgeVolume(5);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowDown) {
-      _showControlsTransiently();
-      _nudgeVolume(-5);
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.space) {
-      _showControlsTransiently();
-      player.playOrPause();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
-      if (widget.state.isFullscreen()) {
-        widget.state.exitFullscreen();
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    return KeyEventResult.ignored;
+  late final TvPlayerKeyActions _tvKeyActions = TvPlayerKeyActions(
+    controlsVisible: () => _showControls,
+    showControls: _showControlsTransiently,
+    seekBy: _seekBy,
+    nudgeVolume: _nudgeVolume,
+    playOrPause: () => player.playOrPause(),
+    exitFullscreen: () {
+      if (!widget.state.isFullscreen()) return false;
+      widget.state.exitFullscreen();
+      return true;
+    },
+    focusChrome: () {
+      if (!_chromeEntry.canRequestFocus) return false;
+      _chromeEntry.requestFocus();
+      return true;
+    },
+  );
+
+  KeyEventResult _onTvKey(FocusNode node, KeyEvent event) {
+    if (!isTvSurface) return KeyEventResult.ignored;
+    return handleTvPlayerKey(node, event, _tvKeyActions);
   }
 
   String _formatDuration(Duration duration) {
@@ -663,7 +650,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
         AnimatedOpacity(
           opacity: _showControls ? 1.0 : 0.0,
           duration: const Duration(milliseconds: 300),
-          child: IgnorePointer(
+          // 隐藏时控件不可聚焦，避免遥控器焦点落进看不见的按钮。
+          child: ExcludeFocus(
+            excluding: !_showControls,
+            child: IgnorePointer(
             ignoring: !_showControls,
             child: Stack(
               children: [
@@ -792,7 +782,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                                     overlayRadius: 14.0,
                                   ),
                                 ),
-                                child: Slider(
+                                // TV 上 ←/→ 已用于快进退；键盘调节 Slider 不会走 onChangeStart/End，
+                                // 会绕过拖动状态机，因此不让它参与焦点。
+                                child: ExcludeFocus(
+                                  excluding: isTvSurface,
+                                  child: Slider(
                                   value: sliderValue,
                                   min: 0.0,
                                   max: _duration.inMilliseconds.toDouble() > 0
@@ -804,6 +798,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                                     unawaited(_onScrubEnd());
                                   },
                                 ),
+                                ),
                               ),
                             ),
                             const SizedBox(width: 16),
@@ -813,6 +808,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                             ),
                             const SizedBox(width: 8),
                             IconButton(
+                              focusNode: _chromeEntry,
                               icon: Icon(
                                 widget.state.isFullscreen()
                                     ? Icons.fullscreen_exit
@@ -900,17 +896,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                             ValueListenableBuilder<bool>(
                               valueListenable: widget.isHardwareDecodeListenable!,
                               builder: (context, isHw, _) {
-                                return FocusableActionDetector(
-                                  actions: <Type, Action<Intent>>{
-                                    ActivateIntent: CallbackAction<ActivateIntent>(
-                                      onInvoke: (_) {
-                                        _startHideTimer();
-                                        widget.onToggleDecodeMode!();
-                                        return null;
-                                      },
-                                    ),
-                                  },
-                                  child: TextButton.icon(
+                                return TextButton.icon(
                                     style: TextButton.styleFrom(
                                       backgroundColor: Colors.white.withOpacity(0.12),
                                       padding: const EdgeInsets.symmetric(
@@ -942,8 +928,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                                       _startHideTimer();
                                       widget.onToggleDecodeMode!();
                                     },
-                                  ),
-                                );
+                                  );
                               },
                             ),
                           ],
@@ -953,6 +938,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                   ),
               ],
             ),
+          ),
           ),
         ),
 
