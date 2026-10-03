@@ -103,6 +103,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   // 防止并行测速期间多次并发 init；切后台后用于判断是否可重试
   Future<void>? _initPlayerFuture;
+  // 切后台前若正在播放，记录状态以便切回前台时恢复
+  bool _wasPlayingBeforeBackground = false;
 
   @override
   void initState() {
@@ -127,7 +129,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // 切后台时关闭测速 HTTP，避免挂起的请求阻塞恢复后的加载流程
       _client?.close();
       _client = null;
+      // 在移动端（Android/iOS）：切后台主动暂停视频播放与解码，避免空转耗电发热
+      final isPlaying = _player?.isPlayingNotifier.value ?? false;
+      if (!isDesktopPlatform && _player != null && isPlaying) {
+        _wasPlayingBeforeBackground = true;
+        _player?.pause();
+      }
     } else if (state == AppLifecycleState.resumed) {
+      if (!isDesktopPlatform && _wasPlayingBeforeBackground && _player != null) {
+        _wasPlayingBeforeBackground = false;
+        _player?.play();
+      }
       _recoverStuckLoading();
     }
   }
@@ -984,12 +996,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               placeholderBuilder: (_) => const SizedBox.shrink(),
             ),
           ),
-          ClipRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-              child: Container(color: Colors.black.withOpacity(0.2)),
-            ),
-          ),
+          // 仅在非移动端且非受限设备保留 BackdropFilter；移动端与受限设备使用预计算暗色遮罩以彻底消除 GPU 离屏合成
+          if (isDesktopPlatform && !DeviceProfile.isConstrained)
+            ClipRect(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: const ColoredBox(color: Color(0x33000000)),
+              ),
+            )
+          else
+            const ColoredBox(color: Color(0xCC070708)),
         ],
       ),
     );
@@ -1393,14 +1409,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           errorBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
           placeholderBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
         ),
-        ClipRect(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-            child: Container(
-              color: const Color(0xFF070708).withOpacity(0.55),
+        // 仅在桌面端且非受限设备使用 BackdropFilter；移动端与受限设备使用高性价比纯色/暗色叠加
+        if (isDesktopPlatform && !DeviceProfile.isConstrained)
+          ClipRect(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+              child: const ColoredBox(color: Color(0x8C070708)),
             ),
-          ),
-        ),
+          )
+        else
+          const ColoredBox(color: Color(0xD9070708)),
       ],
     );
   }
@@ -1993,14 +2011,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         onTap: () {},
         child: Stack(
           children: [
-            // Semi-transparent dark backdrop with blur
+            // Semi-transparent dark backdrop
             Positioned.fill(
-              child: ClipRect(
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
-                  child: Container(color: Colors.black.withOpacity(0.65)),
-                ),
-              ),
+              child: isDesktopPlatform && !DeviceProfile.isConstrained
+                  ? ClipRect(
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
+                        child: const ColoredBox(color: Color(0xA6000000)),
+                      ),
+                    )
+                  : const ColoredBox(color: Color(0xCC000000)),
             ),
             // Centered error card
             Center(
@@ -2008,91 +2028,88 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 padding: EdgeInsets.symmetric(horizontal: isMobile ? 24 : 32),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(18),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Container(
-                      constraints: BoxConstraints(
-                        maxWidth: isMobile ? double.infinity : 420,
-                      ),
-                      padding: EdgeInsets.all(isMobile ? 24 : 36),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF16161A).withOpacity(0.95),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: Colors.white.withOpacity(0.08)),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.85),
-                            blurRadius: 50,
-                            offset: const Offset(0, 25),
+                  child: Container(
+                    constraints: BoxConstraints(
+                      maxWidth: isMobile ? double.infinity : 420,
+                    ),
+                    padding: EdgeInsets.all(isMobile ? 24 : 36),
+                    decoration: BoxDecoration(
+                      color: const Color(0xF216161A),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: Colors.white.withOpacity(0.08)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.85),
+                          blurRadius: 50,
+                          offset: const Offset(0, 25),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Close button (with hover animation)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: HoverCloseButton(
+                            onTap: () => Navigator.pop(context),
+                            size: 18,
                           ),
-                        ],
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Close button (with hover animation)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: HoverCloseButton(
-                              onTap: () => Navigator.pop(context),
-                              size: 18,
+                        ),
+                        SizedBox(height: isMobile ? 4 : 8),
+                        // Video title
+                        Text(
+                          widget.video.title,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isMobile ? 17 : 20,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        SizedBox(height: isMobile ? 10 : 14),
+                        // Error message
+                        Text(
+                          _errorMessage?.replaceFirst('Exception: ', '') ?? '播放出错',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.45),
+                            fontSize: isMobile ? 13 : 15,
+                            height: 1.5,
+                          ),
+                        ),
+                        SizedBox(height: isMobile ? 28 : 36),
+                        // Retry button
+                        SizedBox(
+                          width: double.infinity,
+                          height: isMobile ? 46 : 52,
+                          child: ElevatedButton.icon(
+                            onPressed: _loadAndPrepare,
+                            icon: const Icon(Icons.refresh_rounded, size: 20),
+                            label: const Text(
+                              '重试',
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                             ),
-                          ),
-                          SizedBox(height: isMobile ? 4 : 8),
-                          // Video title
-                          Text(
-                            widget.video.title,
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: isMobile ? 17 : 20,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          SizedBox(height: isMobile ? 10 : 14),
-                          // Error message
-                          Text(
-                            _errorMessage?.replaceFirst('Exception: ', '') ?? '播放出错',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.45),
-                              fontSize: isMobile ? 13 : 15,
-                              height: 1.5,
-                            ),
-                          ),
-                          SizedBox(height: isMobile ? 28 : 36),
-                          // Retry button
-                          SizedBox(
-                            width: double.infinity,
-                            height: isMobile ? 46 : 52,
-                            child: ElevatedButton.icon(
-                              onPressed: _loadAndPrepare,
-                              icon: const Icon(Icons.refresh_rounded, size: 20),
-                              label: const Text(
-                                '重试',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primaryRed,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
                               ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: _primaryRed,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                              ).copyWith(
-                                backgroundColor: WidgetStateProperty.resolveWith((states) {
-                                  if (states.contains(WidgetState.hovered)) {
-                                    return const Color(0xFFF40F1D);
-                                  }
-                                  return _primaryRed;
-                                }),
-                              ),
+                            ).copyWith(
+                              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                                if (states.contains(WidgetState.hovered)) {
+                                  return const Color(0xFFF40F1D);
+                                }
+                                return _primaryRed;
+                              }),
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),

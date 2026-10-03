@@ -387,13 +387,26 @@ class MediaKitPlayerImpl implements JpPlayer {
     }
   }
 
-  /// 软解降载：低内存/低端机跳过非关键帧环路滤波；硬解时恢复默认。
+  /// 软解降载：低内存/低端机跳过非关键帧环路滤波；ultra 档跳过所有非参考滤波；硬解时恢复默认。
   Future<void> _applyDecodeTuning(
     NativePlayer native, {
     required bool hardware,
   }) async {
-    final skip = (!hardware && DeviceProfile.isConstrained) ? 'nonkey' : 'default';
+    final String skip;
+    if (hardware) {
+      skip = 'default';
+    } else if (DeviceProfile.isUltra) {
+      skip = 'nonref';
+    } else if (DeviceProfile.isConstrained) {
+      skip = 'nonkey';
+    } else {
+      skip = 'default';
+    }
     await native.setProperty('vd-lavc-skiploopfilter', skip);
+    // 移动端软解时显式开启快速软解模式
+    if (!hardware) {
+      await native.setProperty('vd-lavc-fast', 'yes');
+    }
   }
 
   /// 切换解码模式并重开当前源，保留进度与暂停态。
