@@ -7,18 +7,15 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
-    <application
-        android:banner="@mipmap/ic_launcher"
-        android:largeHeap="true"
-        android:hardwareAccelerated="true">
+    <!-- 普通 LAUNCHER 入口已由 main 清单的 MainActivity 声明，flavor 合并后与 LEANBACK_LAUNCHER 并存，
+         因此 AOSP 桌面与 Leanback 桌面都能看到图标，这里只补 Leanback 入口。 -->
+    <application android:banner="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
             android:banner="@mipmap/ic_launcher">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-                <!-- Non-Google TV / AOSP projector side-load compatibility: show app icon in ordinary launchers -->
-                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>
