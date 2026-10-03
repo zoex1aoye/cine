@@ -135,11 +135,12 @@ class MediaKitPlayerImpl implements JpPlayer {
         final String cacheSecs;
         final String streamBuffer;
         if (constrained) {
-          fwdBytes = DeviceProfile.constrainedFwdBytes;
-          backBytes = DeviceProfile.constrainedBackBytes;
-          readaheadSecs = DeviceProfile.constrainedReadaheadSecs;
-          cacheSecs = DeviceProfile.constrainedCacheSecs;
-          streamBuffer = DeviceProfile.constrainedStreamBuffer;
+          final b = DeviceProfile.budget;
+          fwdBytes = b.demuxFwdBytes;
+          backBytes = b.demuxBackBytes;
+          readaheadSecs = b.readaheadSecs;
+          cacheSecs = b.cacheSecs;
+          streamBuffer = b.streamBuffer;
         } else if (isMobile) {
           // 移动端: 前向 32MB + 后向 24MB
           fwdBytes = '33554432';
@@ -274,10 +275,10 @@ class MediaKitPlayerImpl implements JpPlayer {
 
         // hwdec-extra-frames: 仅对需要预分配表面的 API（d3d11va/vaapi）生效，
         // 对 Android MediaCodec 无影响；受限档沿用较小值。
-        final extraFrames = DeviceProfile.isConstrained
-            ? DeviceProfile.constrainedHwdecExtraFrames
-            : '4';
-        await native.setProperty('hwdec-extra-frames', extraFrames);
+        await native.setProperty(
+          'hwdec-extra-frames',
+          DeviceProfile.budget.hwdecExtraFrames,
+        );
 
         jpLog('PLAYER', 'MediaKitPlayerImpl: hwdec configured for ${Platform.operatingSystem}');
       }

@@ -8,6 +8,7 @@ import 'package:cine/models/mubu_models.dart';
 void main() {
   tearDown(() {
     debugOverrideSurface(null);
+    DeviceProfile.debugOverride(tier: DeviceProfileTier.normal);
   });
 
   group('TV and Low-end Pad Surface and Focus Tests', () {
@@ -96,41 +97,36 @@ void main() {
       expect(isTvSurface, isFalse);
     });
 
-    testWidgets('TV mode enforces constrainedCoverMemWidth limit on MovieCard decode width', (tester) async {
-      debugOverrideSurface(CineSurface.tv);
-      DeviceProfile.debugOverride(tier: DeviceProfileTier.constrained);
+    test('封面解码宽度只看内存档，不看 TV/手机 surface', () {
+      for (final surface in [CineSurface.tv, CineSurface.mobile]) {
+        debugOverrideSurface(surface);
 
-      final video = VideoItem(
-        id: 999,
-        title: 'TV 封面尺寸测试视频',
-        category: '电影',
-        year: '2026',
-        score: '9.0',
-        coverPath: '/test/cover.jpg',
-      );
+        DeviceProfile.debugOverride(tier: DeviceProfileTier.normal);
+        expect(
+          DeviceProfile.budget.coverDecodeWidth(logicalWidth: 200, dpr: 2),
+          400,
+          reason: '常规内存的 TV 不应被糊化 (surface=$surface)',
+        );
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: 200,
-                height: 380,
-                child: MovieCard(
-                  video: video,
-                  imgDomain: '',
-                  onPlay: () {},
-                  onInfo: () {},
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-      await tester.pump();
+        DeviceProfile.debugOverride(tier: DeviceProfileTier.constrained);
+        expect(
+          DeviceProfile.budget.coverDecodeWidth(logicalWidth: 200, dpr: 2),
+          240,
+        );
 
-      // 在 TV 模式或受限模式下，memCacheWidth 会被限制在 constrainedCoverMemWidth (180)
-      expect(DeviceProfile.constrainedCoverMemWidth, 180);
+        DeviceProfile.debugOverride(tier: DeviceProfileTier.ultra);
+        expect(
+          DeviceProfile.budget.coverDecodeWidth(logicalWidth: 200, dpr: 2),
+          180,
+        );
+      }
+    });
+
+    test('布局宽未知或 dpr 异常时回落到档位上限', () {
+      const b = DeviceBudget.ultra;
+      expect(b.coverDecodeWidth(logicalWidth: double.infinity, dpr: 2), 180);
+      expect(b.coverDecodeWidth(logicalWidth: 100, dpr: 0), 180);
+      expect(b.coverDecodeWidth(logicalWidth: 10, dpr: 1), 64);
     });
   });
 }

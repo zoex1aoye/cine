@@ -14,7 +14,7 @@ class _Harness {
   }
 
   late final HwdecWatchdog dog;
-  bool? _probe;
+  final bool? _probe;
   bool _throwOnProbe = false;
   int probeCalls = 0;
   int stalls = 0;

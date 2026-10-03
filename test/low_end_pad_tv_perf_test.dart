@@ -87,8 +87,8 @@ void main() {
     DeviceProfile.applyImageCacheLimits();
 
     final cache = PaintingBinding.instance.imageCache;
-    expect(cache.maximumSize, 30, reason: '受限档图片数量上限应收缩为 30');
-    expect(cache.maximumSizeBytes, 24 * 1024 * 1024, reason: '受限档图片内存上限应收缩为 24MB');
+    expect(cache.maximumSize, DeviceBudget.constrained.imageCacheCount);
+    expect(cache.maximumSizeBytes, 48 * 1024 * 1024, reason: '受限档按字节预算 48MB');
 
     // 模拟 600 逻辑宽 Pad 视口
     tester.view.physicalSize = const Size(800, 1280);
