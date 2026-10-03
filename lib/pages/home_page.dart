@@ -18,6 +18,8 @@ import 'tag_videos_page.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../api/mubu_constants.dart';
 import '../utils/home_hand_data.dart';
+import '../utils/device_profile.dart';
+import '../utils/tv_focus.dart';
 import '../widgets/load_more_button.dart';
 
 // ─── Design Tokens ───────────────────────────────────────────
@@ -967,7 +969,7 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
   }
 
   Widget _railBtn(IconData icon, String label, bool active, VoidCallback onTap) {
-    return MouseRegion(
+    final btn = MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: onTap,
@@ -1009,6 +1011,7 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
         ),
       ),
     );
+    return TvFocusable(onActivate: onTap, child: btn);
   }
 }
 
@@ -1599,7 +1602,7 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
   int _currentLoadSession = 0;
 
   @override
-  bool get wantKeepAlive => true;
+  bool get wantKeepAlive => !DeviceProfile.isConstrained;
 
   @override
   void initState() {

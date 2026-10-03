@@ -37,6 +37,9 @@ class FailoverCoverImage extends StatefulWidget {
   final BlendMode? colorBlendMode;
   final WidgetBuilder? placeholderBuilder;
   final WidgetBuilder? errorBuilder;
+  /// Decode width/height hints for [CachedNetworkImage] (physical px preferred).
+  final int? memCacheWidth;
+  final int? memCacheHeight;
 
   const FailoverCoverImage({
     super.key,
@@ -49,6 +52,8 @@ class FailoverCoverImage extends StatefulWidget {
     this.colorBlendMode,
     this.placeholderBuilder,
     this.errorBuilder,
+    this.memCacheWidth,
+    this.memCacheHeight,
   });
 
   @override
@@ -195,6 +200,8 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
       filterQuality: widget.filterQuality,
       color: widget.color,
       colorBlendMode: widget.colorBlendMode,
+      memCacheWidth: widget.memCacheWidth,
+      memCacheHeight: widget.memCacheHeight,
       placeholder: (_, __) =>
           (widget.placeholderBuilder ?? _defaultPlaceholder)(context),
       errorWidget: (_, __, ___) {
