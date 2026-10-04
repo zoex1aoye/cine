@@ -10,44 +10,62 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channelName = "com.example.cine/device"
+    private var methodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "getMemoryInfo" -> {
-                        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                        val info = ActivityManager.MemoryInfo()
-                        am.getMemoryInfo(info)
-                        result.success(
-                            mapOf(
-                                "totalMem" to info.totalMem,
-                                "availMem" to info.availMem,
-                            ),
-                        )
-                    }
-                    "hasHardwareVideoDecoder" -> {
-                        val detail = probeDecoderDetail("video/avc")
-                        val hevcDetail = probeDecoderDetail("video/hevc")
-                        android.util.Log.i(
-                            "CineHwdec",
-                            "probe avc=$detail hevc=$hevcDetail api=${Build.VERSION.SDK_INT}",
-                        )
-                        result.success(
-                            mapOf(
-                                "h264" to (detail["hw"] as Boolean),
-                                "hevc" to (hevcDetail["hw"] as Boolean),
-                            ),
-                        )
-                    }
-                    else -> result.notImplemented()
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        methodChannel = channel
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getMemoryInfo" -> {
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val info = ActivityManager.MemoryInfo()
+                    am.getMemoryInfo(info)
+                    result.success(
+                        mapOf(
+                            "totalMem" to info.totalMem,
+                            "availMem" to info.availMem,
+                            "lowRam" to am.isLowRamDevice,
+                        ),
+                    )
                 }
+                "hasHardwareVideoDecoder" -> {
+                    result.success(hardwareVideoProbe)
+                }
+                else -> result.notImplemented()
             }
+        }
     }
 
-    private fun hasHardwareDecoder(mime: String): Boolean {
-        return probeDecoderDetail(mime)["hw"] as Boolean
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        methodChannel?.setMethodCallHandler(null)
+        methodChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        methodChannel?.invokeMethod("onTrimMemory", level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        methodChannel?.invokeMethod("onLowMemory", null)
+    }
+
+    /** 枚举 MediaCodecList 较慢，只在首次调用时扫描。 */
+    private val hardwareVideoProbe: Map<String, Boolean> by lazy {
+        val avc = probeDecoderDetail("video/avc")
+        val hevc = probeDecoderDetail("video/hevc")
+        android.util.Log.i(
+            "CineHwdec",
+            "probe avc=$avc hevc=$hevc api=${Build.VERSION.SDK_INT}",
+        )
+        mapOf(
+            "h264" to (avc["hw"] as Boolean),
+            "hevc" to (hevc["hw"] as Boolean),
+        )
     }
 
     /** Returns map: hw (bool), names (comma-separated), count (int). */

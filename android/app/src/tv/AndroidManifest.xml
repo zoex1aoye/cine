@@ -7,11 +7,15 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
-    <application>
-        <activity android:name=".MainActivity">
+    <!-- 侧载：LEANBACK_LAUNCHER 给电视桌面，LAUNCHER 给没有 Leanback 的投影/AOSP 桌面。 -->
+    <application android:banner="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:banner="@mipmap/ic_launcher">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
     </application>
