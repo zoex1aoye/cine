@@ -1,0 +1,40 @@
+---
+description: Android mobile/tv 打包与 ABI。改 Gradle、TV Manifest 或 release workflow 时生效。
+globs: android/**,.github/workflows/build.yml
+alwaysApply: false
+---
+
+# Android TV 打包
+
+## Flavor
+
+- `mobile` / `tv` 必须同时带同名 `--dart-define=CINE_SURFACE=mobile|tv`
+- 缺 flavor 或 surface 与包不一致：焦点策略会错
+
+## ABI（禁止 abiFilters）
+
+- **禁止**在 `defaultConfig` 或任何 `productFlavor` 写 `ndk.abiFilters`
+- `--split-per-abi` 的 `splits` 是**工程级**的。任一 flavor 上残留 `abiFilters`，电视构建都会报：`Conflicting configuration : 'arm64-v8a' in ndk abiFilters cannot be present when splits abi filters are set`
+- ABI 只由 Flutter `--target-platform` 决定
+
+```bash
+# 手机：仅 arm64
+flutter build apk --release --flavor mobile \
+  --dart-define=CINE_SURFACE=mobile \
+  --target-platform android-arm64
+
+# 电视：32 位与 64 位各一个 APK
+flutter build apk --release --flavor tv \
+  --dart-define=CINE_SURFACE=tv \
+  --target-platform android-arm,android-arm64 \
+  --split-per-abi
+```
+
+- 两次 `flutter build` 之间把 `build/app/outputs` 里的 `mubu_*.apk` 拷到 `dist/`。后一次构建会清掉 outputs
+- 期望文件名：`mubu_<version>_mobile_arm64-v8a.apk`、`mubu_<version>_tv_armeabi-v7a.apk`、`mubu_<version>_tv_arm64-v8a.apk`
+- Release workflow 由 tag `v*` 触发，不是推 `main` 就发版
+
+## TV 清单
+
+- `src/main` 已有 `LAUNCHER`。`src/tv` **只追加** `LEANBACK_LAUNCHER`，禁止再声明 `LAUNCHER`（合并后会出现两个桌面图标）
+- `android:banner` 用 16:9 的 `@drawable/tv_banner`。禁止把方形 `ic_launcher` 当成横幅

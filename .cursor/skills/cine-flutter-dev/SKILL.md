@@ -1,8 +1,8 @@
 ---
 name: cine-flutter-dev
 description: >-
-  幕布 (Cine) Flutter 开发手册：目录落位、API 初始化、Hive、测速选线、播放器与跨平台验证。
-  改 lib/ 下任何代码或跑端调试前使用。
+  幕布 (Cine) Flutter 开发手册：目录落位、API 初始化、Hive、测速选线、播放器、
+  Android TV 打包与遥控、低端内存档。改 lib/、android/ 或 release workflow 前使用。
 ---
 
 # Cine Flutter Dev
@@ -26,7 +26,8 @@ description: >-
 |------|------|
 | 新 API | `lib/api/` + 必要时 `models/` |
 | 新页面 | `lib/pages/` + 从 `home_page` 等导航挂上 |
-| 播放控件/硬解 | `lib/player/`（守 player-discipline） |
+| 播放控件/硬解/TV 遥控/内存档 | `lib/player/` + `player-discipline` |
+| Android flavor / ABI / TV 清单 | `android/` + `android-tv-packaging` |
 | 卡片/弹窗/骨架 | `lib/widgets/` |
 | 测速/选源 | `lib/utils/source_*.dart`、`stream_probe.dart` |
 
@@ -39,8 +40,23 @@ description: >-
 ## 播放器
 
 - 内部全屏 vs 窗口全屏；seek-preview 仅内部全屏
+- TV：未内部全屏方向键走焦点；seek/音量只在内部全屏。细则 `player-discipline`
 - 改 `*_native.dart` 必改 stub
 - 验证：唤出控件、Seek、音量、切线、进出内部全屏、至少一条流
+
+## Android TV 打包
+
+细则 `.cursor/rules/android-tv-packaging.mdc`。禁止在 Gradle 写 `ndk.abiFilters`。
+
+```bash
+flutter build apk --release --flavor mobile \
+  --dart-define=CINE_SURFACE=mobile --target-platform android-arm64
+flutter build apk --release --flavor tv \
+  --dart-define=CINE_SURFACE=tv \
+  --target-platform android-arm,android-arm64 --split-per-abi
+```
+
+发版打 tag `v*`（推 `main` 不会出 Release）。核对资产里有 `mubu_*_tv_armeabi-v7a.apk` 和 `mubu_*_tv_arm64-v8a.apk`。
 
 ## 验证命令
 

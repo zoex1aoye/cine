@@ -1,6 +1,6 @@
 ---
-description: 播放器与平台条件编译红线（改 player / 平台 utils 时生效）
-globs: lib/player/**/*.dart,lib/utils/platform_utils*.dart
+description: 播放器、硬解、TV 遥控与低端内存档。改 player、焦点或设备档时生效。
+globs: lib/player/**/*.dart,lib/utils/platform_utils*.dart,lib/utils/tv_focus.dart,lib/utils/cine_surface.dart,lib/utils/device_profile*.dart,lib/utils/device_budget.dart,lib/pages/player_page.dart,lib/pages/category_filter_page.dart,lib/pages/home_page.dart
 alwaysApply: false
 ---
 
@@ -18,9 +18,27 @@ alwaysApply: false
 - **窗口全屏** ≠ 内部全屏；seek-preview（红框缩略图）**仅**在内部全屏渲染
 - 改全屏切换逻辑前先读 `cine_video_controls.dart` 现有分支
 
+## TV 遥控
+
+- 未内部全屏：方向键走焦点（分类、筛选、返回、收藏、播放、全屏、线路、剧集），OK 激活
+- 内部全屏才把左右交给 ±10 秒、上下交给音量、OK 交给播停；Back 先退全屏
+- 禁止在播放器根节点上无条件吞掉方向键，否则详情页控件永远够不到
+- `TvFocusable` 只画焦点框。禁止 `scale` 放大：布局尺寸不变，密排芯片会叠在一起
+- 非当前 Tab 用 `ExcludeFocus`，避免方向键沉进看不见的页
+
+## 内存档
+
+- 档位只看内存，不看 surface：`ultra`（≤1.2GiB 或 `lowRam`）/ `constrained`（<2GiB）/ `normal`。预算只放 `DeviceBudget`
+- 封面只设 `memCacheWidth`。同时设宽高会被拉成 2:3
+- 进播放页，受限档只 `ImageCache.clear()`。禁止 `clearLiveImages()`
+- 切后台只在 `hidden` / `paused` 暂停解码。禁止把 `inactive`（通知栏、过渡）当成后台
+
 ## 硬解与 locale
 
 - 硬解参数按 OS 分支（见 `media_kit_player_native.dart`）；禁止把某一端的 mpv 参数套到全平台
+- 假死看门狗只信 `estimated-vf-fps`。禁止用视频宽度或播放进度判断已经出帧
+- `setSource`、软解回退、手动切解码必须走 `PlaybackOpenGate`。禁止并发 `player.open`
+- 失败特征用 `looksLikeHwdecFailure`。禁止泛匹配 `mediacodec` + `error`（HLS 坏包会误触发）
 - `setNumericLocaleToC()` 等 locale fix 仅 native 有意义；stub 保持 no-op
 
 ## 验证
