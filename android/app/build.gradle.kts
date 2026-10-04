@@ -47,10 +47,8 @@ android {
             dimension = "surface"
             applicationIdSuffix = ".tv"
             resValue("string", "app_name", "幕布 TV")
-            // 电视盒子含 32 位系统；与 arm64 分成两个 APK，由 workflow --split-per-abi 产出
-            ndk {
-                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
-            }
+            // 不要在这里写 abiFilters。workflow 用 --split-per-abi 打 v7a 与 arm64，
+            // AGP 不允许 abiFilters 和 splits 同时存在。
         }
     }
 
