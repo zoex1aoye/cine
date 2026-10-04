@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -7,16 +8,13 @@ import 'package:screen_brightness/screen_brightness.dart';
 
 import '../utils/cine_surface.dart';
 import '../utils/platform_utils.dart';
+import '../utils/tv_focus.dart';
 
 class CineVideoControls extends StatefulWidget {
   final VideoState state;
   final String? title;
 
-  const CineVideoControls(
-    this.state, {
-    super.key,
-    this.title,
-  });
+  const CineVideoControls(this.state, {super.key, this.title});
 
   @override
   State<CineVideoControls> createState() => _CineVideoControlsState();
@@ -24,6 +22,11 @@ class CineVideoControls extends StatefulWidget {
 
 class _CineVideoControlsState extends State<CineVideoControls> {
   bool _showControls = false;
+  final FocusNode _tvTransportFocus = FocusNode(debugLabel: 'tv-transport');
+  bool _tvTransportLatched = false;
+
+  /// 用户已经开始过播放后，窗口态才提供播放/暂停焦点，避免绕过详情页开播。
+  bool _tvWindowPlaybackEngaged = false;
   Timer? _hideTimer;
   Timer? _indicatorTimer;
 
@@ -31,6 +34,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   bool _isScrubbing = false;
   Duration? _anchorPosition;
   bool? _anchorWasPlaying;
+
   /// Per-gesture: whether playback should resume when the thumb is released.
   /// Independent of the return-to-anchor session (which only sets [_anchorWasPlaying]
   /// on the first scrub of a tip cycle).
@@ -39,6 +43,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   bool _showReturnTip = false;
   Timer? _returnTipTimer;
   Timer? _seekDebounceTimer;
+
   /// Bumps on each seek so in-flight seeks from scrub updates cannot run after end.
   int _seekEpoch = 0;
 
@@ -87,6 +92,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   Timer? _bufferSpeedRevealTimer;
   Timer? _cacheSpeedPollTimer;
   bool _showBufferSpeed = false;
+
   /// 已格式化的速率（如 `1.2 MB/s`）；`null` 表示显示 —。
   String? _cacheSpeedText;
 
@@ -105,7 +111,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     });
 
     _playingSub = player.stream.playing.listen((event) {
-      if (mounted) setState(() => _playing = event);
+      if (!mounted) return;
+      setState(() {
+        _playing = event;
+        if (event) _tvWindowPlaybackEngaged = true;
+      });
     });
     _positionSub = player.stream.position.listen((event) {
       if (mounted && !_isScrubbing) {
@@ -144,6 +154,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     _durationSub.cancel();
     _volumeSub.cancel();
     _bufferingSub.cancel();
+    _tvTransportFocus.dispose();
     super.dispose();
   }
 
@@ -345,7 +356,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       thresholdMs = _kSliderDeadbandFloorMs;
     }
 
-    if ((milliseconds - _scrubTarget.inMilliseconds.toDouble()).abs() < thresholdMs) {
+    if ((milliseconds - _scrubTarget.inMilliseconds.toDouble()).abs() <
+        thresholdMs) {
       return;
     }
 
@@ -376,13 +388,15 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       await player.play();
       // A seek started before this end can still complete afterward and pause
       // mpv on Android — reinforce play once shortly after.
-      unawaited(Future<void>.delayed(const Duration(milliseconds: 150), () async {
-        if (!mounted || epoch != _seekEpoch) return;
-        if (!player.state.playing) {
-          await player.play();
-          if (mounted) setState(() => _playing = true);
-        }
-      }));
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 150), () async {
+          if (!mounted || epoch != _seekEpoch) return;
+          if (!player.state.playing) {
+            await player.play();
+            if (mounted) setState(() => _playing = true);
+          }
+        }),
+      );
     }
 
     if (!mounted) return;
@@ -418,8 +432,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   void _onVerticalDragStart(DragStartDetails details, double screenWidth) {
     if (!widget.state.isFullscreen()) return;
     _verticalDragDistancePx = 0.0;
-    _activeVerticalGesture =
-        _verticalGestureKindForX(details.globalPosition.dx, screenWidth);
+    _activeVerticalGesture = _verticalGestureKindForX(
+      details.globalPosition.dx,
+      screenWidth,
+    );
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details, double screenWidth) {
@@ -506,7 +522,10 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   KeyEventResult _onTvKey(FocusNode node, KeyEvent event) {
-    if (!isTvSurface || event is! KeyDownEvent) return KeyEventResult.ignored;
+    if (!tvTransportKeysEnabled(widget.state.isFullscreen()) ||
+        event is! KeyDownEvent) {
+      return KeyEventResult.ignored;
+    }
 
     final key = event.logicalKey;
     if (key == LogicalKeyboardKey.arrowLeft) {
@@ -546,6 +565,46 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     return KeyEventResult.ignored;
   }
 
+  Widget _tvRoundIcon(IconData icon) {
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.55),
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Icon(icon, color: Colors.white, size: 22),
+    );
+  }
+
+  Widget _tvWindowActions() {
+    return Positioned(
+      right: 12,
+      bottom: 12,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_tvWindowPlaybackEngaged) ...[
+            TvFocusable(
+              onActivate: () => player.playOrPause(),
+              borderRadius: 24,
+              focusedScale: 1.04,
+              child: _tvRoundIcon(_playing ? Icons.pause : Icons.play_arrow),
+            ),
+            const SizedBox(width: 8),
+          ],
+          TvFocusable(
+            onActivate: () => widget.state.enterFullscreen(),
+            borderRadius: 24,
+            focusedScale: 1.04,
+            child: _tvRoundIcon(Icons.fullscreen),
+          ),
+        ],
+      ),
+    );
+  }
+
   String _formatDuration(Duration duration) {
     final hours = duration.inHours;
     final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
@@ -557,394 +616,438 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   Widget build(BuildContext context) {
     final primaryColor = Theme.of(context).colorScheme.primary;
     final screenWidth = MediaQuery.of(context).size.width;
-    final sliderValue = (_isScrubbing
-            ? _scrubTarget.inMilliseconds.toDouble()
-            : _position.inMilliseconds.toDouble())
-        .clamp(
-          0.0,
-          _duration.inMilliseconds.toDouble() > 0
-              ? _duration.inMilliseconds.toDouble()
-              : 1.0,
-        );
+    final sliderValue =
+        (_isScrubbing
+                ? _scrubTarget.inMilliseconds.toDouble()
+                : _position.inMilliseconds.toDouble())
+            .clamp(
+              0.0,
+              _duration.inMilliseconds.toDouble() > 0
+                  ? _duration.inMilliseconds.toDouble()
+                  : 1.0,
+            );
+
+    final transport = tvTransportKeysEnabled(widget.state.isFullscreen());
+    if (transport && !_tvTransportLatched) {
+      _tvTransportLatched = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && tvTransportKeysEnabled(widget.state.isFullscreen())) {
+          _tvTransportFocus.requestFocus();
+        }
+      });
+    } else if (!transport) {
+      _tvTransportLatched = false;
+    }
 
     return Focus(
-      autofocus: isTvSurface,
+      focusNode: _tvTransportFocus,
+      autofocus: transport,
+      canRequestFocus: transport,
+      skipTraversal: !transport,
+      descendantsAreFocusable: !transport,
       onKeyEvent: _onTvKey,
       child: MouseRegion(
-      onEnter: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
-      onHover: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
-      onExit: isDesktopPlatform ? (_) => _hideControlsImmediate() : null,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: GestureDetector(
-              onTap: _onSurfaceTap,
-              onDoubleTapDown: (details) =>
-                  _onDoubleTapDown(details, screenWidth),
-              onVerticalDragStart: (details) =>
-                  _onVerticalDragStart(details, screenWidth),
-              onVerticalDragUpdate: (details) =>
-                  _onVerticalDragUpdate(details, screenWidth),
-              onVerticalDragEnd: _onVerticalDragEnd,
-              behavior: HitTestBehavior.opaque,
-            ),
-          ),
-
-        if (_showIndicator)
-          Center(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(12),
+        onEnter: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
+        onHover: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
+        onExit: isDesktopPlatform ? (_) => _hideControlsImmediate() : null,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: _onSurfaceTap,
+                onDoubleTapDown: (details) =>
+                    _onDoubleTapDown(details, screenWidth),
+                onVerticalDragStart: (details) =>
+                    _onVerticalDragStart(details, screenWidth),
+                onVerticalDragUpdate: (details) =>
+                    _onVerticalDragUpdate(details, screenWidth),
+                onVerticalDragEnd: _onVerticalDragEnd,
+                behavior: HitTestBehavior.opaque,
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_indicatorIcon != null)
-                    Icon(_indicatorIcon, color: Colors.white, size: 36),
-                  const SizedBox(height: 8),
-                  Text(
-                    _indicatorText,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+            ),
+
+            if (_showIndicator)
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 16,
                   ),
-                ],
-              ),
-            ),
-          ),
-
-        // 偏下避开中心播控；控件显示时转圈+速度不再压在播放按钮上。
-        if (_isBuffering && !_isScrubbing)
-          Align(
-            alignment: const Alignment(0, 0.42),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 40,
-                  height: 40,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 3,
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white70),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_indicatorIcon != null)
+                        Icon(_indicatorIcon, color: Colors.white, size: 36),
+                      const SizedBox(height: 8),
+                      Text(
+                        _indicatorText,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                if (_showBufferSpeed) ...[
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.65),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '加载中 ${_cacheSpeedText ?? '—'}',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
+              ),
+
+            // 偏下避开中心播控；控件显示时转圈+速度不再压在播放按钮上。
+            if (_isBuffering && !_isScrubbing)
+              Align(
+                alignment: const Alignment(0, 0.42),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 3,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Colors.white70,
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-        AnimatedOpacity(
-          opacity: _showControls ? 1.0 : 0.0,
-          duration: const Duration(milliseconds: 300),
-          child: IgnorePointer(
-            ignoring: !_showControls,
-            child: Stack(
-              children: [
-                // 中间播控在下层；全屏顶栏必须更高 z-order，否则安卓上返回键点击被吞。
-                // 拖进度条时彻底去掉中心键（勿仅靠叠层遮挡）。
-                if (!_isScrubbing)
-                  Center(
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (widget.state.isFullscreen()) ...[
-                          IconButton(
-                            icon: const Icon(Icons.replay_10,
-                                color: Colors.white, size: 48),
-                            onPressed: () {
-                              _startHideTimer();
-                              final target =
-                                  _position - const Duration(seconds: 10);
-                              player.seek(
-                                target < Duration.zero ? Duration.zero : target,
-                              );
-                            },
-                          ),
-                          const SizedBox(width: 40),
-                        ],
-                        GestureDetector(
-                          onTap: () {
-                            _startHideTimer();
-                            player.playOrPause();
-                          },
-                          child: Container(
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: primaryColor.withOpacity(0.8),
-                            ),
-                            padding: const EdgeInsets.all(16),
-                            child: Icon(
-                              _playing ? Icons.pause : Icons.play_arrow,
-                              color: Colors.white,
-                              size: 48,
-                            ),
+                    if (_showBufferSpeed) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 7,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.65),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Text(
+                          '加载中 ${_cacheSpeedText ?? '—'}',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 13,
                           ),
                         ),
-                        if (widget.state.isFullscreen()) ...[
-                          const SizedBox(width: 40),
-                          IconButton(
-                            icon: const Icon(Icons.forward_10,
-                                color: Colors.white, size: 48),
-                            onPressed: () {
-                              _startHideTimer();
-                              final target =
-                                  _position + const Duration(seconds: 10);
-                              player.seek(
-                                target > _duration ? _duration : target,
-                              );
-                            },
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    padding: EdgeInsets.only(
-                      top: 8,
-                      bottom: MediaQuery.of(context).padding.bottom + 8,
-                      left: 16,
-                      right: 16,
-                    ),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.bottomCenter,
-                        end: Alignment.topCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.8),
-                          Colors.transparent,
-                        ],
                       ),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_isScrubbing) ...[
-                          Text(
-                            _formatDuration(_scrubTarget),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                              letterSpacing: 1.2,
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                        Row(
-                          children: [
-                            // 拖动时只保留上方大号时间，左侧不再重复同一时刻。
-                            SizedBox(
-                              width: 48,
-                              child: _isScrubbing
-                                  ? const SizedBox.shrink()
-                                  : Text(
-                                      _formatDuration(_position),
-                                      style:
-                                          const TextStyle(color: Colors.white),
-                                    ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: SliderTheme(
-                                data: SliderThemeData(
-                                  activeTrackColor: primaryColor,
-                                  inactiveTrackColor: Colors.white24,
-                                  thumbColor: primaryColor,
-                                  trackHeight: 4.0,
-                                  // 关掉系统拖动气泡，避免与上方大号时间重复。
-                                  showValueIndicator: ShowValueIndicator.never,
-                                  thumbShape: const RoundSliderThumbShape(
-                                    enabledThumbRadius: 6.0,
+                    ],
+                  ],
+                ),
+              ),
+
+            ExcludeFocus(
+              excluding: !_showControls || transport,
+              child: AnimatedOpacity(
+                opacity: _showControls ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 300),
+                child: IgnorePointer(
+                  ignoring: !_showControls,
+                  child: Stack(
+                    children: [
+                      // 中间播控在下层；全屏顶栏必须更高 z-order，否则安卓上返回键点击被吞。
+                      // 拖进度条时彻底去掉中心键（勿仅靠叠层遮挡）。
+                      if (!_isScrubbing)
+                        Center(
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              if (widget.state.isFullscreen()) ...[
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.replay_10,
+                                    color: Colors.white,
+                                    size: 48,
                                   ),
-                                  overlayShape: const RoundSliderOverlayShape(
-                                    overlayRadius: 14.0,
-                                  ),
-                                ),
-                                child: Slider(
-                                  value: sliderValue,
-                                  min: 0.0,
-                                  max: _duration.inMilliseconds.toDouble() > 0
-                                      ? _duration.inMilliseconds.toDouble()
-                                      : 1.0,
-                                  onChangeStart: _onScrubStart,
-                                  onChanged: _onScrubUpdate,
-                                  onChangeEnd: (_) {
-                                    unawaited(_onScrubEnd());
+                                  onPressed: () {
+                                    _startHideTimer();
+                                    final target =
+                                        _position - const Duration(seconds: 10);
+                                    player.seek(
+                                      target < Duration.zero
+                                          ? Duration.zero
+                                          : target,
+                                    );
                                   },
                                 ),
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Text(
-                              _formatDuration(_duration),
-                              style: const TextStyle(color: Colors.white70),
-                            ),
-                            const SizedBox(width: 8),
-                            IconButton(
-                              icon: Icon(
-                                widget.state.isFullscreen()
-                                    ? Icons.fullscreen_exit
-                                    : Icons.fullscreen,
-                                color: Colors.white,
-                              ),
-                              onPressed: () {
-                                _startHideTimer();
-                                if (widget.state.isFullscreen()) {
-                                  widget.state.exitFullscreen();
-                                } else {
-                                  widget.state.enterFullscreen();
-                                }
-                              },
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                if (widget.state.isFullscreen())
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: Container(
-                      padding: EdgeInsets.only(
-                        top: MediaQuery.of(context).padding.top + 4,
-                        bottom: 8,
-                        left: 8,
-                        right: 16,
-                      ),
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.black.withOpacity(0.7),
-                            Colors.transparent,
-                          ],
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
-                          // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
-                          // opaque 热区避免点在图标边缘时被渐变条吞掉且无回调。
-                          GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () {
-                              _startHideTimer();
-                              if (widget.state.isFullscreen()) {
-                                widget.state.exitFullscreen();
-                              }
-                            },
-                            child: const SizedBox(
-                              width: 48,
-                              height: 48,
-                              child: Icon(
-                                Icons.arrow_back_ios_new,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ),
-                          if (widget.title != null) ...[
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                widget.title!,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
+                                const SizedBox(width: 40),
+                              ],
+                              GestureDetector(
+                                onTap: () {
+                                  _startHideTimer();
+                                  player.playOrPause();
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: primaryColor.withOpacity(0.8),
+                                  ),
+                                  padding: const EdgeInsets.all(16),
+                                  child: Icon(
+                                    _playing ? Icons.pause : Icons.play_arrow,
+                                    color: Colors.white,
+                                    size: 48,
+                                  ),
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
                               ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-
-        if (_showReturnTip && _anchorPosition != null)
-          Positioned(
-            top: widget.state.isFullscreen()
-                ? MediaQuery.of(context).padding.top + 56
-                : 16,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: GestureDetector(
-                onTap: _returnToAnchor,
-                child: Material(
-                  color: Colors.transparent,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.75),
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(
-                        color: primaryColor.withOpacity(0.6),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.undo, color: primaryColor, size: 18),
-                        const SizedBox(width: 8),
-                        Text(
-                          '回到 ${_formatDuration(_anchorPosition!)}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
+                              if (widget.state.isFullscreen()) ...[
+                                const SizedBox(width: 40),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.forward_10,
+                                    color: Colors.white,
+                                    size: 48,
+                                  ),
+                                  onPressed: () {
+                                    _startHideTimer();
+                                    final target =
+                                        _position + const Duration(seconds: 10);
+                                    player.seek(
+                                      target > _duration ? _duration : target,
+                                    );
+                                  },
+                                ),
+                              ],
+                            ],
                           ),
                         ),
-                      ],
-                    ),
+
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        child: Container(
+                          padding: EdgeInsets.only(
+                            top: 8,
+                            bottom: MediaQuery.of(context).padding.bottom + 8,
+                            left: 16,
+                            right: 16,
+                          ),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.bottomCenter,
+                              end: Alignment.topCenter,
+                              colors: [
+                                Colors.black.withOpacity(0.8),
+                                Colors.transparent,
+                              ],
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_isScrubbing) ...[
+                                Text(
+                                  _formatDuration(_scrubTarget),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 28,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 1.2,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                              ],
+                              Row(
+                                children: [
+                                  // 拖动时只保留上方大号时间，左侧不再重复同一时刻。
+                                  SizedBox(
+                                    width: 48,
+                                    child: _isScrubbing
+                                        ? const SizedBox.shrink()
+                                        : Text(
+                                            _formatDuration(_position),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: SliderTheme(
+                                      data: SliderThemeData(
+                                        activeTrackColor: primaryColor,
+                                        inactiveTrackColor: Colors.white24,
+                                        thumbColor: primaryColor,
+                                        trackHeight: 4.0,
+                                        // 关掉系统拖动气泡，避免与上方大号时间重复。
+                                        showValueIndicator:
+                                            ShowValueIndicator.never,
+                                        thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 6.0,
+                                        ),
+                                        overlayShape:
+                                            const RoundSliderOverlayShape(
+                                              overlayRadius: 14.0,
+                                            ),
+                                      ),
+                                      child: Slider(
+                                        value: sliderValue,
+                                        min: 0.0,
+                                        max:
+                                            _duration.inMilliseconds
+                                                    .toDouble() >
+                                                0
+                                            ? _duration.inMilliseconds
+                                                  .toDouble()
+                                            : 1.0,
+                                        onChangeStart: _onScrubStart,
+                                        onChanged: _onScrubUpdate,
+                                        onChangeEnd: (_) {
+                                          unawaited(_onScrubEnd());
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Text(
+                                    _formatDuration(_duration),
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: Icon(
+                                      widget.state.isFullscreen()
+                                          ? Icons.fullscreen_exit
+                                          : Icons.fullscreen,
+                                      color: Colors.white,
+                                    ),
+                                    onPressed: () {
+                                      _startHideTimer();
+                                      if (widget.state.isFullscreen()) {
+                                        widget.state.exitFullscreen();
+                                      } else {
+                                        widget.state.enterFullscreen();
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+
+                      if (widget.state.isFullscreen())
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: Container(
+                            padding: EdgeInsets.only(
+                              top: MediaQuery.of(context).padding.top + 4,
+                              bottom: 8,
+                              left: 8,
+                              right: 16,
+                            ),
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.black.withOpacity(0.7),
+                                  Colors.transparent,
+                                ],
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
+                                // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
+                                // opaque 热区避免点在图标边缘时被渐变条吞掉且无回调。
+                                GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () {
+                                    _startHideTimer();
+                                    if (widget.state.isFullscreen()) {
+                                      widget.state.exitFullscreen();
+                                    }
+                                  },
+                                  child: const SizedBox(
+                                    width: 48,
+                                    height: 48,
+                                    child: Icon(
+                                      Icons.arrow_back_ios_new,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                                if (widget.title != null) ...[
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      widget.title!,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
             ),
-          ),
-        ],
-      ),
+
+            if (isTvSurface && !transport) _tvWindowActions(),
+
+            if (_showReturnTip && _anchorPosition != null)
+              Positioned(
+                top: widget.state.isFullscreen()
+                    ? MediaQuery.of(context).padding.top + 56
+                    : 16,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: GestureDetector(
+                    onTap: _returnToAnchor,
+                    child: Material(
+                      color: Colors.transparent,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.75),
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(
+                            color: primaryColor.withOpacity(0.6),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.undo, color: primaryColor, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              '回到 ${_formatDuration(_anchorPosition!)}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
