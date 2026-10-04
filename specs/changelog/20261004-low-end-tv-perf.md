@@ -11,6 +11,13 @@
 - TV 清单同时声明 `LEANBACK_LAUNCHER` 与 `LAUNCHER`。
 - 未接入对方的播放遥控键位和 ABI 打包（当前分支已有另一套）。
 
+## 审查修复
+- 软解回退和换集的 `open` 走同一条队列，旧任务在换源后跳过
+- 看门狗不再把视频宽度当成已经出帧
+- 切后台只在 `hidden` / `paused` 暂停，通知栏一类的 `inactive` 不停
+- TV 清单不再重复声明 `LAUNCHER`；Leanback 横幅改为 16:9
+- 遥控焦点只画红框，不再缩放，避免密排芯片叠在一起
+
 ## 验证
 - [x] `flutter test`：`device_profile` / `hwdec_policy` / `hwdec_watchdog` / `tv_remote_focus` 通过
 - [ ] 1GB 电视实机冒烟未做
