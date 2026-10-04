@@ -11,12 +11,43 @@ import 'jp_log.dart';
 ///
 /// 引导用 [HttpClient] 必须在 [HttpOverrides.global] 赋值**之前**创建并
 /// 经 [install] 注入，否则会递归进入 overrides。
+/// 单个 DoH 端点的结果。传输失败用异常表示，不进这个类型。
+class DohEndpointResult {
+  DohEndpointResult._(this.addresses, this.ttl, this.definitiveMiss);
+
+  factory DohEndpointResult.hit(
+    List<InternetAddress> addresses, {
+    Duration ttl = const Duration(seconds: 120),
+  }) {
+    return DohEndpointResult._(addresses, ttl, false);
+  }
+
+  factory DohEndpointResult.miss({
+    Duration ttl = const Duration(seconds: 60),
+  }) {
+    return DohEndpointResult._(const <InternetAddress>[], ttl, true);
+  }
+
+  final List<InternetAddress> addresses;
+  final Duration ttl;
+
+  /// Status != 0，或 HTTP 成功但没有 A/AAAA。
+  final bool definitiveMiss;
+}
+
+typedef DohEndpointQuery = Future<DohEndpointResult> Function(
+  DohEndpoint endpoint,
+  String host,
+);
+
 class DohDns {
   DohDns({
     required HttpClient bootstrapClient,
     List<DohEndpoint>? endpoints,
     this.minTtl = const Duration(seconds: 60),
     this.maxTtl = const Duration(seconds: 600),
+    this.queryOverride,
+    this.systemLookup,
   })  : _client = bootstrapClient,
         _endpoints = endpoints ?? DohEndpoint.defaults;
 
@@ -40,6 +71,12 @@ class DohDns {
   final Duration minTtl;
   final Duration maxTtl;
 
+  /// 测试注入。生产路径走 [_queryEndpoint]。
+  final DohEndpointQuery? queryOverride;
+
+  /// 测试注入。生产路径走 [InternetAddress.lookup]。
+  final Future<List<InternetAddress>> Function(String host)? systemLookup;
+
   final Map<String, _CacheEntry> _cache = {};
   final Map<String, Future<List<InternetAddress>>> _inflight = {};
 
@@ -55,6 +92,11 @@ class DohDns {
 
     final cached = _cache[key];
     if (cached != null && cached.expires.isAfter(DateTime.now())) {
+      if (cached.negative) {
+        return Future.error(
+          SocketException('Failed host lookup: \'$key\''),
+        );
+      }
       return Future.value(List<InternetAddress>.from(cached.addrs));
     }
 
@@ -71,40 +113,115 @@ class DohDns {
   }
 
   Future<List<InternetAddress>> _lookupUncached(String host) async {
-    Object? lastError;
-    for (final ep in _endpoints) {
-      try {
-        final result = await _queryEndpoint(ep, host);
-        if (result.addrs.isEmpty) continue;
-        final ttl = _clampTtl(result.ttl);
-        _cache[host] = _CacheEntry(
-          addrs: result.addrs,
-          expires: DateTime.now().add(ttl),
-        );
-        jpLog(
-          'DNS',
-          'DoH hit $host → ${result.addrs} via ${ep.uri.host} ttl=${ttl.inSeconds}s',
-        );
-        return List<InternetAddress>.from(result.addrs);
-      } catch (e) {
-        lastError = e;
-        jpLog('DNS', 'DoH miss ${ep.uri} for $host: $e');
-      }
+    final results = await _queryAll(host);
+
+    DohEndpointResult? chosen;
+    String? via;
+    for (var i = 0; i < results.length; i++) {
+      final result = results[i];
+      if (result == null || result.addresses.isEmpty) continue;
+      chosen = result;
+      via = _endpoints[i].uri.host;
+      break;
+    }
+    if (chosen != null) {
+      final ttl = _clampTtl(chosen.ttl);
+      _cache[host] = _CacheEntry(
+        addrs: chosen.addresses,
+        expires: DateTime.now().add(ttl),
+      );
+      jpLog(
+        'DNS',
+        'DoH hit $host → ${chosen.addresses} via $via ttl=${ttl.inSeconds}s',
+      );
+      return List<InternetAddress>.from(chosen.addresses);
     }
 
-    jpLog('DNS', 'DoH all failed for $host, fallback system lookup ($lastError)');
-    final sys = await InternetAddress.lookup(host);
-    if (sys.isEmpty) {
+    final allDefinitive = results.isNotEmpty &&
+        results.every((result) => result != null && result.definitiveMiss);
+    jpLog('DNS', 'DoH all failed for $host, fallback system lookup');
+    try {
+      final sys = await (systemLookup ?? InternetAddress.lookup)(host);
+      if (sys.isEmpty) {
+        throw SocketException('Failed host lookup: \'$host\'');
+      }
+      _cache[host] = _CacheEntry(
+        addrs: sys,
+        expires: DateTime.now().add(minTtl),
+      );
+      return sys;
+    } catch (e) {
+      if (allDefinitive) {
+        _cache[host] = _CacheEntry(
+          addrs: const <InternetAddress>[],
+          expires: DateTime.now().add(minTtl),
+          negative: true,
+        );
+        jpLog('DNS', 'DoH negative cache $host for ${minTtl.inSeconds}s');
+      }
+      if (e is SocketException) rethrow;
       throw SocketException('Failed host lookup: \'$host\'');
     }
-    _cache[host] = _CacheEntry(
-      addrs: sys,
-      expires: DateTime.now().add(minTtl),
-    );
-    return sys;
   }
 
-  Future<({List<InternetAddress> addrs, Duration ttl})> _queryEndpoint(
+  /// 按端点顺序收结果。前面的端点已经给出地址时，不再等后面的端点。
+  Future<List<DohEndpointResult?>> _queryAll(String host) async {
+    if (_endpoints.isEmpty) return const [];
+    final completer = Completer<List<DohEndpointResult?>>();
+    final results = List<DohEndpointResult?>.filled(_endpoints.length, null);
+    final done = List<bool>.filled(_endpoints.length, false);
+
+    void consider() {
+      if (completer.isCompleted) return;
+      final settled = <DohEndpointResult?>[];
+      for (var i = 0; i < results.length; i++) {
+        if (!done[i]) return;
+        settled.add(results[i]);
+        final result = results[i];
+        if (result != null && result.addresses.isNotEmpty) {
+          completer.complete(settled);
+          return;
+        }
+      }
+      completer.complete(List<DohEndpointResult?>.from(results));
+    }
+
+    for (var i = 0; i < _endpoints.length; i++) {
+      final index = i;
+      final endpoint = _endpoints[i];
+      () async {
+        DohEndpointResult? result;
+        try {
+          final query = queryOverride;
+          result = query != null
+              ? await query(endpoint, host)
+              : await _queryEndpoint(endpoint, host);
+        } catch (e) {
+          jpLog('DNS', 'DoH miss ${endpoint.uri} for $host: $e');
+        }
+        if (completer.isCompleted) return;
+        results[index] = result;
+        done[index] = true;
+        consider();
+      }();
+    }
+    return completer.future;
+  }
+
+  /// Status != 0 或没有地址 → 确定性失败；其它解析错误继续抛。
+  static DohEndpointResult classifyDnsJson(String body) {
+    try {
+      final parsed = parseDnsJson(body);
+      if (parsed.addrs.isEmpty) {
+        return DohEndpointResult.miss(ttl: parsed.ttl);
+      }
+      return DohEndpointResult.hit(parsed.addrs, ttl: parsed.ttl);
+    } on SocketException {
+      return DohEndpointResult.miss();
+    }
+  }
+
+  Future<DohEndpointResult> _queryEndpoint(
     DohEndpoint ep,
     String host,
   ) async {
@@ -122,7 +239,7 @@ class DohDns {
     if (resp.statusCode != 200) {
       throw HttpException('DoH HTTP ${resp.statusCode}', uri: uri);
     }
-    return parseDnsJson(body);
+    return classifyDnsJson(body);
   }
 
   /// 解析 Cloudflare / Google / Aliyun 风格的 DNS JSON。
@@ -277,7 +394,12 @@ class DohEndpoint {
 }
 
 class _CacheEntry {
-  _CacheEntry({required this.addrs, required this.expires});
+  _CacheEntry({
+    required this.addrs,
+    required this.expires,
+    this.negative = false,
+  });
   final List<InternetAddress> addrs;
   final DateTime expires;
+  final bool negative;
 }

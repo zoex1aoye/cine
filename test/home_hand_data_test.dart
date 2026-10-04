@@ -32,6 +32,21 @@ void main() {
     expect(out, same(tpl));
   });
 
+  test('feed publishes a section before hand data, then remakes it', () {
+    final feed = HomeTagFeed(count: 3);
+    feed.setRaw(10, [v(2), v(3), v(4)]);
+    expect(feed.videosFor(10)!.map((e) => e.id).toList(), [2, 3, 4]);
+    expect(feed.videosFor(11), isNull);
+
+    feed.setHand({
+      10: [v(1), v(2)],
+    });
+    expect(feed.videosFor(10)!.map((e) => e.id).toList(), [1, 2, 3]);
+
+    feed.setRaw(11, [v(8)]);
+    expect(feed.videosFor(11)!.map((e) => e.id).toList(), [8]);
+  });
+
   test('missing tag keeps tpl list', () {
     final tpl = [v(5)];
     final out = mergeHomeHandFirstPage(

@@ -1,6 +1,7 @@
-import 'package:flutter/material.dart';
-
+import 'dart:async';
 import 'dart:ui';
+
+import 'package:flutter/material.dart';
 
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
@@ -1401,6 +1402,9 @@ class _TagSection extends StatefulWidget {
   final List<VideoItem>? initialVideos;
   final int initialRequestedCount;
 
+  /// 父级按板块逐步灌入 [initialVideos]。为 true 时自己不再请求。
+  final bool suppliedByParent;
+
   const _TagSection({
     super.key,
     required this.tag,
@@ -1411,6 +1415,7 @@ class _TagSection extends StatefulWidget {
     required this.onSeeAll,
     this.initialVideos,
     this.initialRequestedCount = 0,
+    this.suppliedByParent = false,
   });
 
   @override
@@ -1434,6 +1439,10 @@ class _TagSectionState extends State<_TagSection> {
   @override
   void initState() {
     super.initState();
+    if (widget.suppliedByParent) {
+      _ingestParentVideos(widget.initialVideos);
+      return;
+    }
     _applyInitialVideos(widget.initialVideos, widget.initialRequestedCount);
     if (_videos.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1445,6 +1454,13 @@ class _TagSectionState extends State<_TagSection> {
   @override
   void didUpdateWidget(covariant _TagSection oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.suppliedByParent) {
+      if (oldWidget.tag.id != widget.tag.id ||
+          widget.initialVideos != oldWidget.initialVideos) {
+        _ingestParentVideos(widget.initialVideos);
+      }
+      return;
+    }
     if (oldWidget.tag.id != widget.tag.id ||
         oldWidget.tag.template != widget.tag.template) {
       _lastRequestedCount = 0;
@@ -1465,6 +1481,18 @@ class _TagSectionState extends State<_TagSection> {
         widget.initialVideos != oldWidget.initialVideos) {
       _applyInitialVideos(widget.initialVideos, widget.initialRequestedCount);
     }
+  }
+
+  void _ingestParentVideos(List<VideoItem>? videos) {
+    if (videos == null) {
+      _videos = [];
+      _loading = true;
+      _error = null;
+      return;
+    }
+    _videos = videos;
+    _loading = false;
+    _error = null;
   }
 
   void _applyInitialVideos(List<VideoItem>? videos, int requestedCount) {
@@ -1807,6 +1835,18 @@ class _CategoryContentViewState extends State<CategoryContentView>
     super.dispose();
   }
 
+  Map<int, List<VideoItem>> _snapshotFeed(
+    HomeTagFeed feed,
+    List<TagItem> tags,
+  ) {
+    final out = <int, List<VideoItem>>{};
+    for (final tag in tags) {
+      if (!feed.hasRaw(tag.id)) continue;
+      out[tag.id] = feed.videosFor(tag.id) ?? const [];
+    }
+    return out;
+  }
+
   void _onTabChanged() {
     if (widget.tabController.index == widget.index &&
         _tags.isEmpty &&
@@ -1831,47 +1871,56 @@ class _CategoryContentViewState extends State<CategoryContentView>
       final tags = await tagsFuture;
       if (!mounted || session != _currentLoadSession) return;
 
-      var handData = <int, List<VideoItem>>{};
-      try {
-        handData = await handFuture;
-      } catch (_) {
-        handData = {};
-      }
-      if (!mounted || session != _currentLoadSession) return;
-
-      final tagVideos = <int, List<VideoItem>>{};
       var requestedCount = 0;
       if (tags.isNotEmpty) {
         requestedCount = MovieSliverGrid.homeTagRowFetchCount(
           _homeTagContentWidth(context),
         );
-        final count = requestedCount;
-        final entries = await Future.wait(
-          tags.map((tag) async {
-            final vids = await widget.api.getTagVideos(
-              tag.id,
-              tpl: tag.template,
-              count: count,
-            );
-            return MapEntry(
-              tag.id,
-              mergeHomeHandFirstPage(
-                tagId: tag.id,
-                page: 1,
-                count: count,
-                tplVideos: vids,
-                handData: handData,
-              ),
-            );
-          }),
-        );
-        if (!mounted || session != _currentLoadSession) return;
-        tagVideos.addEntries(entries);
       }
-
+      final feed = HomeTagFeed(count: requestedCount > 0 ? requestedCount : 12);
       setState(() {
         _tags = tags;
-        _tagVideos = tagVideos;
+        _tagVideos = {};
+        _loading = false;
+      });
+
+      unawaited(() async {
+        Map<int, List<VideoItem>> handData = {};
+        try {
+          handData = await handFuture;
+        } catch (_) {
+          handData = {};
+        }
+        if (!mounted || session != _currentLoadSession) return;
+        feed.setHand(handData);
+        setState(() {
+          _tagVideos = _snapshotFeed(feed, tags);
+        });
+      }());
+
+      await Future.wait(
+        tags.map((tag) async {
+          List<VideoItem> vids = const [];
+          try {
+            vids = await widget.api.getTagVideos(
+              tag.id,
+              tpl: tag.template,
+              count: requestedCount > 0 ? requestedCount : 12,
+            );
+          } catch (_) {
+            vids = const [];
+          }
+          if (!mounted || session != _currentLoadSession) return;
+          feed.setRaw(tag.id, vids);
+          setState(() {
+            _tagVideos = _snapshotFeed(feed, tags);
+          });
+        }),
+      );
+
+      if (!mounted || session != _currentLoadSession) return;
+      setState(() {
+        _tagVideos = _snapshotFeed(feed, tags);
         _tagRequestedCount = requestedCount;
         _loading = false;
       });
@@ -1946,7 +1995,9 @@ class _CategoryContentViewState extends State<CategoryContentView>
               imgDomain: widget.api.imgDomain,
               onPlay: widget.onPlay,
               onInfo: widget.onInfo,
-              initialVideos: _tagVideos[tag.id],
+              suppliedByParent: true,
+              initialVideos:
+                  _tagVideos.containsKey(tag.id) ? _tagVideos[tag.id] : null,
               initialRequestedCount: _tagRequestedCount,
               onSeeAll: () {
                 Navigator.push(

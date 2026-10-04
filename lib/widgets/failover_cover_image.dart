@@ -9,6 +9,7 @@ class CoverDomainSessionCache {
   CoverDomainSessionCache._();
 
   static final Map<String, String> _pathToDomain = {};
+  static final Set<String> _deadDomains = {};
 
   static String? domainFor(String coverPath) {
     if (coverPath.isEmpty) return null;
@@ -21,9 +22,25 @@ class CoverDomainSessionCache {
     _pathToDomain[coverPath] = d;
   }
 
+  static bool isDead(String domain) {
+    final d = normalizeImgDomain(domain);
+    if (d.isEmpty) return false;
+    return _deadDomains.contains(d);
+  }
+
+  /// 整域失败后，后续封面不再从该域打起。
+  static void markDead(String domain) {
+    final d = normalizeImgDomain(domain);
+    if (d.isEmpty) return;
+    _deadDomains.add(d);
+  }
+
   /// 仅测试用。
   @visibleForTesting
-  static void clear() => _pathToDomain.clear();
+  static void clear() {
+    _pathToDomain.clear();
+    _deadDomains.clear();
+  }
 }
 
 /// 封面加载：主域失败后按候选顺序换域；全失败走 [errorBuilder]。
@@ -67,6 +84,7 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
   bool _exhausted = false;
   bool _failoverScheduled = false;
   int _attempt = 0;
+  bool _jumpScheduled = false;
 
   @override
   void initState() {
@@ -123,7 +141,7 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
     return mergeImgDomainCandidates(
       primary: primary,
       fromPackage: package,
-    );
+    ).where((domain) => !CoverDomainSessionCache.isDead(domain)).toList();
   }
 
   void _bootstrap() {
@@ -150,24 +168,34 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
   }
 
   void _advanceOrExhaust() {
-    final next = nextCoverCandidate(
-      coverPath: widget.coverPath,
-      candidates: _candidates,
-      afterIndex: _index,
-    );
-    if (next == null) {
-      _exhausted = true;
-      _url = '';
+    while (true) {
+      final next = nextCoverCandidate(
+        coverPath: widget.coverPath,
+        candidates: _candidates,
+        afterIndex: _index,
+      );
+      if (next == null) {
+        _exhausted = true;
+        _url = '';
+        return;
+      }
+      _index = next.index;
+      if (CoverDomainSessionCache.isDead(next.domain)) continue;
+      _url = next.url;
+      _exhausted = false;
       return;
     }
-    _index = next.index;
-    _url = next.url;
   }
 
-  void _onLoadFailed() {
-    if (!mounted || _exhausted) return;
-    setState(() {
-      _advanceOrExhaust();
+  void _scheduleSkipIfCurrentDead() {
+    if (_exhausted || _jumpScheduled) return;
+    if (_index < 0 || _index >= _candidates.length) return;
+    if (!CoverDomainSessionCache.isDead(_candidates[_index])) return;
+    _jumpScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _jumpScheduled = false;
+      if (!mounted || _exhausted) return;
+      setState(_advanceOrExhaust);
     });
     if (_exhausted) _scheduleRetry();
   }
@@ -181,6 +209,17 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
       if (!mounted) return;
       setState(_bootstrap);
     });
+  }
+
+  void _onLoadFailed(Object? error) {
+    if (!mounted || _exhausted) return;
+    if (error != null &&
+        _index >= 0 &&
+        _index < _candidates.length &&
+        coverFailureMarksDomainDead(error)) {
+      CoverDomainSessionCache.markDead(_candidates[_index]);
+    }
+    setState(_advanceOrExhaust);
   }
 
   void _onLoadSuccess() {
@@ -219,6 +258,7 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
 
   @override
   Widget build(BuildContext context) {
+    _scheduleSkipIfCurrentDead();
     if (widget.coverPath.isEmpty || _exhausted || _url.isEmpty) {
       return (widget.errorBuilder ?? _defaultError)(context);
     }
@@ -234,12 +274,12 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
       memCacheHeight: widget.memCacheHeight,
       placeholder: (_, __) =>
           (widget.placeholderBuilder ?? _defaultPlaceholder)(context),
-      errorWidget: (_, __, ___) {
+      errorWidget: (_, __, error) {
         if (!_failoverScheduled && !_exhausted) {
           _failoverScheduled = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _failoverScheduled = false;
-            _onLoadFailed();
+            _onLoadFailed(error);
           });
         }
         return (widget.placeholderBuilder ?? _defaultPlaceholder)(context);

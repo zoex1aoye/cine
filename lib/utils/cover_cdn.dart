@@ -62,6 +62,45 @@ List<String> mergeImgDomainCandidates({
   return out;
 }
 
+/// 测速图只看状态和类型，不把整张图下完。缺 Content-Type 的 200 仍算可用。
+bool imageProbeAccepts({required int statusCode, String? mimeType}) {
+  if (statusCode != 200) return false;
+  if (mimeType == null || mimeType.isEmpty) return true;
+  return mimeType.toLowerCase().startsWith('image/');
+}
+
+/// 整域不可用：解析/超时/403/非图片。单对象 404 不拉黑域名。
+bool coverFailureMarksDomainDead(Object error) {
+  final text = error.toString().toLowerCase();
+  if (RegExp(r'status(?:\s*code)?\s*[:=]\s*404\b').hasMatch(text)) {
+    return false;
+  }
+  if (text.contains('failed host lookup') ||
+      text.contains('nodename nor servname') ||
+      text.contains('socketexception') ||
+      text.contains('network is unreachable') ||
+      text.contains('connection refused') ||
+      text.contains('connection reset') ||
+      text.contains('timed out') ||
+      text.contains('timeout')) {
+    return true;
+  }
+  if (text.contains('403') || text.contains('accessdenied')) return true;
+  if (text.contains('invalid image') ||
+      text.contains('image codec') ||
+      text.contains('encodeimage') ||
+      text.contains('exception: could not decompress')) {
+    return true;
+  }
+  final code = RegExp(r'status(?:\s*code)?\s*[:=]\s*(\d{3})').firstMatch(text);
+  if (code != null) {
+    final value = int.tryParse(code.group(1)!);
+    if (value == null || value == 404) return false;
+    return value >= 400;
+  }
+  return false;
+}
+
 bool _isAbsoluteUrl(String path) =>
     path.startsWith('http://') || path.startsWith('https://');
 
