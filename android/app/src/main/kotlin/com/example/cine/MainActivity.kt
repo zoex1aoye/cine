@@ -10,33 +10,51 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channelName = "com.example.cine/device"
+    private var methodChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "getMemoryInfo" -> {
-                        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                        val info = ActivityManager.MemoryInfo()
-                        am.getMemoryInfo(info)
-                        result.success(
-                            mapOf(
-                                "totalMem" to info.totalMem,
-                                "availMem" to info.availMem,
-                                "lowRam" to am.isLowRamDevice,
-                            ),
-                        )
-                    }
-                    "hasHardwareVideoDecoder" -> {
-                        result.success(hardwareVideoProbe)
-                    }
-                    else -> result.notImplemented()
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        methodChannel = channel
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getMemoryInfo" -> {
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val info = ActivityManager.MemoryInfo()
+                    am.getMemoryInfo(info)
+                    result.success(
+                        mapOf(
+                            "totalMem" to info.totalMem,
+                            "availMem" to info.availMem,
+                            "lowRam" to am.isLowRamDevice,
+                        ),
+                    )
                 }
+                "hasHardwareVideoDecoder" -> {
+                    result.success(hardwareVideoProbe)
+                }
+                else -> result.notImplemented()
             }
+        }
     }
 
-    /** 枚举 MediaCodecList 较慢（低端 TV 上可达上百毫秒），只在首次调用时扫描。 */
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        methodChannel?.setMethodCallHandler(null)
+        methodChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        methodChannel?.invokeMethod("onTrimMemory", level)
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        methodChannel?.invokeMethod("onLowMemory", null)
+    }
+
+    /** 枚举 MediaCodecList 较慢，只在首次调用时扫描。 */
     private val hardwareVideoProbe: Map<String, Boolean> by lazy {
         val avc = probeDecoderDetail("video/avc")
         val hevc = probeDecoderDetail("video/hevc")

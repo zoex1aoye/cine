@@ -30,8 +30,9 @@ class HwdecPolicy {
 
   static Future<void> _probe() async {
     try {
-      final raw = await _channel
-          .invokeMapMethod<String, dynamic>('hasHardwareVideoDecoder');
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'hasHardwareVideoDecoder',
+      );
       if (raw != null) {
         _h264Hw = raw['h264'] as bool? ?? false;
         _hevcHw = raw['hevc'] as bool? ?? false;
@@ -49,7 +50,7 @@ class HwdecPolicy {
     return 'amediacodec,mediacodec';
   }
 
-  /// 用户是否手动选择过软解（持久化在 config box）。
+  /// 用户是否手动选择过软解（持久化在 config box）。当前没有设置入口，读到才会生效。
   static bool get userPrefersSoft {
     try {
       if (!Hive.isBoxOpen('config')) return false;
@@ -72,11 +73,7 @@ class HwdecPolicy {
   }
 
   @visibleForTesting
-  static void debugReset({
-    bool? h264,
-    bool? hevc,
-    bool probed = true,
-  }) {
+  static void debugReset({bool? h264, bool? hevc, bool probed = true}) {
     _probed = probed;
     _h264Hw = h264;
     _hevcHw = hevc;
@@ -87,7 +84,7 @@ class HwdecPolicy {
 /// mpv 日志中「硬解初始化/运行期失败」的特征（已转小写）。
 ///
 /// 刻意不匹配泛化的 `mediacodec` + `error`：HLS 中单个坏包的
-/// `error while decoding` 之类日志很常见，不应触发整条流重开。
+/// `error while decoding` 很常见，不应触发整条流重开。
 bool looksLikeHwdecFailure(String lowerCasedText) {
   final text = lowerCasedText;
   return text.contains('could not open hwdec') ||

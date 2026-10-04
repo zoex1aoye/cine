@@ -30,9 +30,11 @@ class DeviceProfile {
   static Future<void> ensureInitialized() async {
     if (_initialized) return;
     _initialized = true;
+    _channel.setMethodCallHandler(_handleNativeCall);
     try {
-      final raw =
-          await _channel.invokeMapMethod<String, dynamic>('getMemoryInfo');
+      final raw = await _channel.invokeMapMethod<String, dynamic>(
+        'getMemoryInfo',
+      );
       if (raw != null) {
         _totalMemBytes = (raw['totalMem'] as num?)?.toInt();
         _availMemBytes = (raw['availMem'] as num?)?.toInt();
@@ -46,6 +48,30 @@ class DeviceProfile {
     }
   }
 
+  static void handleTrimMemory(int level) {
+    // TRIM_MEMORY_RUNNING_CRITICAL(15) 及以上，以及 UI_HIDDEN(20)。
+    if (level >= 15) {
+      PaintingBinding.instance.imageCache.clear();
+    }
+  }
+
+  static void handleLowMemory() {
+    PaintingBinding.instance.imageCache.clear();
+  }
+
+  static Future<dynamic> _handleNativeCall(MethodCall call) async {
+    if (call.method == 'onTrimMemory') {
+      final level = call.arguments as int? ?? 0;
+      handleTrimMemory(level);
+      return null;
+    }
+    if (call.method == 'onLowMemory') {
+      handleLowMemory();
+      return null;
+    }
+    return null;
+  }
+
   static void applyImageCacheLimits() {
     if (!isConstrained) return;
     final cache = PaintingBinding.instance.imageCache;
@@ -55,10 +81,8 @@ class DeviceProfile {
 
   /// 进入播放页时释放首页不再展示的封面，给视频解码留物理内存。
   ///
-  /// 只做 `clear()`：它驱逐未被任何 Widget 引用的缓存项；仍在屏幕下层显示的
-  /// 封面是 live image，不受影响，返回首页不会整屏重解码。
-  /// 不用 `clearLiveImages()`——Flutter 文档明确它不会缓解内存压力，反而会让
-  /// 仍在使用的图片失去缓存追踪。
+  /// 只做 `clear()`：驱逐未被任何 Widget 引用的缓存项。仍在屏幕下层显示的
+  /// 封面是 live image，不受影响。不用 `clearLiveImages()`。
   static void trimImageCacheOnPlayerEnter() {
     if (!isConstrained) return;
     PaintingBinding.instance.imageCache.clear();

@@ -3,8 +3,10 @@ import 'package:flutter/foundation.dart';
 /// Compile-time product surface from `--dart-define=CINE_SURFACE=mobile|tv`.
 enum CineSurface { mobile, tv }
 
-const String _kCineSurfaceRaw =
-    String.fromEnvironment('CINE_SURFACE', defaultValue: 'mobile');
+const String _kCineSurfaceRaw = String.fromEnvironment(
+  'CINE_SURFACE',
+  defaultValue: 'mobile',
+);
 
 CineSurface? _debugOverrideSurface;
 
@@ -12,7 +14,15 @@ CineSurface get cineSurface =>
     _debugOverrideSurface ??
     (_kCineSurfaceRaw == 'tv' ? CineSurface.tv : CineSurface.mobile);
 
-bool get isTvSurface => cineSurface == CineSurface.tv;
+/// Test-only override. Production builds leave this null.
+@visibleForTesting
+bool? debugIsTvSurfaceOverride;
+
+bool get isTvSurface =>
+    debugIsTvSurfaceOverride ?? cineSurface == CineSurface.tv;
+
+/// 详情页方向键走焦点遍历。仅内部全屏把方向键交给 seek / 音量。
+bool tvTransportKeysEnabled(bool isFullscreen) => isTvSurface && isFullscreen;
 
 @visibleForTesting
 void debugOverrideSurface(CineSurface? surface) {

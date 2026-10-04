@@ -12,6 +12,8 @@
 - [x] `totalMem < 2GB`（或等价探测）进入 constrained：demux 缓冲下调、封面 memCache 约束、imageCache 上限下调、首页 KeepAlive 收敛
 - [x] Android：MediaCodec 探测无硬解则 `hwdec=no`；有则尝试硬解，失败最多 reopen 软解一次
 - [x] TV：浏览态可用方向键聚焦导航与影片卡并激活；播放页左右 seek、上下音量、OK 播放暂停、Back 退出
+- [x] TV 包同时产出 `armeabi-v7a` 与 `arm64-v8a`；手机包仍仅 arm64
+- [x] 分类筛选与播放详情（未内部全屏）方向键走焦点；seek/音量只在内部全屏
 - [x] `flutter analyze` 无 error
 
 ## ATDD
@@ -32,12 +34,14 @@
 | 4 | 入口 | 单 main + dart-define | 防双入口漂移 | 2026-10-02 |
 | 5 | 受限档作用域 | 两线共用运行时探测 | 低端手机也受益 | 2026-10-02 |
 | 6 | 硬解开关系列 | 本期不做用户开关 | 防范围膨胀 | 2026-10-02 |
+| 7 | TV ABI | 32 位与 64 位都打包；手机仍仅 arm64 | 电视实机确认可装 32 位应用；手机避免多 ABI 抽到 v7a | 2026-10-04 |
+| 8 | TV 遥控分区 | 详情页方向键走焦点；seek/音量仅内部全屏 | 否则无法选分类、剧集和线路 | 2026-10-04 |
 
 ## 范围
 | 含 | 不含 |
 |---|---|
 | Android flavors + Manifest | iOS/桌面 flavor |
-| DeviceProfile + 内存收缩 | armeabi-v7a（除非实机非 arm64） |
+| DeviceProfile + 内存收缩 | 手机包的 32 位 ABI |
 | hwdec 探测与一次回退 | 商店上架/EPG/推荐行重做 |
 | TV 浏览+播放焦点键位 | 设置页「强制软解」 |
 
@@ -53,4 +57,4 @@
 ## 不做的事
 - 完整 Google TV 认证与商店物料
 - 用户设置里的强制软解开关
-- 回补 32-bit ABI（无实机证据前）
+- 手机包回补 32 位 ABI

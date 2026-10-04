@@ -37,26 +37,22 @@
 Android 使用 `mobile` / `tv` 两个 **flavor**（dimension `surface`）。构建或 `flutter run` **必须**带 `--flavor`，并同步传入 `--dart-define=CINE_SURFACE=…`（与 flavor 同名），否则 UI/焦点策略会与包体不一致。
 
 ```bash
-# 手机 / 平板
+# 手机 / 平板（仅 arm64）
 flutter build apk --release --flavor mobile \
   --dart-define=CINE_SURFACE=mobile \
   --target-platform android-arm64
 
-# TV / 投影（遥控器优先；Leanback required=false，支持非 Google 商店侧载与 1GB 内存优化）
+# TV / 投影：32 位与 64 位各一个 APK（遥控器优先；Leanback required=false）
 flutter build apk --release --flavor tv \
   --dart-define=CINE_SURFACE=tv \
-  --target-platform android-arm64
-
-# 若针对 32位 固件的 1GB 低端电视/投影仪（armeabi-v7a）：
-flutter build apk --release --flavor tv \
-  --dart-define=CINE_SURFACE=tv \
-  --target-platform android-arm
+  --target-platform android-arm,android-arm64 \
+  --split-per-abi
 
 # 开发运行示例
 flutter run --flavor mobile --dart-define=CINE_SURFACE=mobile -d <deviceId>
 ```
 
-产物命名形如：`mubu_<version>_mobile_arm64-v8a.apk` / `mubu_<version>_tv_arm64-v8a.apk`。tv 包 `applicationId` 后缀为 `.tv`。
+产物命名形如：`mubu_<version>_mobile_arm64-v8a.apk`、`mubu_<version>_tv_arm64-v8a.apk`、`mubu_<version>_tv_armeabi-v7a.apk`。tv 包 `applicationId` 后缀为 `.tv`。手机包不打 32 位，避免多 ABI 包在部分机型上抽到兼容库。
 
 > **注意**：如果遇到 Kotlin 编译错误，通常是因为 pub.dev 上的插件使用了更新的 Kotlin 版本。请同步升级 `android/settings.gradle.kts` 中的 Kotlin 插件版本和 Gradle 版本，参见 [Kotlin 版本列表](https://kotlinlang.org/docs/releases.html)。
 
@@ -82,6 +78,11 @@ flutter run --flavor mobile --dart-define=CINE_SURFACE=mobile -d <deviceId>
 * `Right (右方向键)`：快进 10 秒。
 * `Up (上方向键)`：音量调大。
 * `Down (下方向键)`：音量调小。
+
+### 电视遥控器
+* **首页 / 分类筛选**：方向键在分类轨、分类芯片、筛选条件和影片卡之间移动；OK 激活。隐藏的 Tab 不参与焦点。
+* **播放详情（未内部全屏）**：方向键在返回、收藏、播放、全屏、线路和剧集之间移动；OK 激活；Back 退出页面。
+* **内部全屏**：左/右快退快进 10 秒，上/下调节音量，OK 播放暂停，Back 退出全屏。
 
 ---
 

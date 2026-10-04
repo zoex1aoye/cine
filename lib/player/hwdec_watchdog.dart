@@ -2,10 +2,9 @@ import 'dart:async';
 
 /// 硬解静默假死看门狗。
 ///
-/// 只在「硬解生效 + 有视频轨 + 正在播放 + 未在缓冲」期间累计时间，
+/// 只在「硬解生效 + 有视频轨 + 正在播放 + 未在缓冲」期间累计时间。
 /// 弱网缓冲、暂停都会清零计时，避免把网络问题误判成解码器假死。
-/// 到点后用 [hasRenderedFrame] 实测解码输出；探测不可用（抛错/返回 null）时
-/// 一律视为正常，宁可漏判也不误切软解。
+/// 到点后用 [hasRenderedFrame] 实测解码输出；探测不可用时视为正常。
 class HwdecWatchdog {
   HwdecWatchdog({
     required this.hasRenderedFrame,
@@ -28,7 +27,7 @@ class HwdecWatchdog {
 
   bool get isRunning => _timer != null;
 
-  /// 硬解是否生效（软解、用户强制软解时关闭）。
+  /// 硬解是否生效（软解时关闭）。
   void setEnabled(bool value) => _update(() => _enabled = value);
   void setHasVideoTrack(bool value) => _update(() => _hasVideoTrack = value);
   void setPlaying(bool value) => _update(() => _playing = value);
@@ -81,11 +80,7 @@ class HwdecWatchdog {
       rendered = null;
     }
     if (!_shouldRun) return;
-    if (rendered == false) {
-      _satisfied = true;
-      onStall();
-    } else {
-      _satisfied = true;
-    }
+    _satisfied = true;
+    if (rendered == false) onStall();
   }
 }

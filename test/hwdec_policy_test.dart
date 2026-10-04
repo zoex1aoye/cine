@@ -40,8 +40,11 @@ void main() {
       final b = HwdecPolicy.ensureProbed();
       expect(identical(a, b), isTrue);
       await Future.wait([a, b]);
-      expect(HwdecPolicy.hasAnyHardwareVideo, isTrue,
-          reason: '无 channel 时保持乐观默认');
+      expect(
+        HwdecPolicy.hasAnyHardwareVideo,
+        isTrue,
+        reason: '无 channel 时保持乐观默认',
+      );
     });
 
     test('未打开 Hive config box 时偏好读写不抛错', () async {

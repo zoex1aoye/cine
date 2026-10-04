@@ -23,8 +23,7 @@ class DeviceBudget {
   final String streamBuffer;
   final String hwdecExtraFrames;
 
-  /// Flutter ImageCache 上限。封面已按 memCacheWidth 缩小，字节数才是真正的预算，
-  /// 张数只做兜底，不应成为瓶颈。
+  /// Flutter ImageCache 上限。封面已按 memCacheWidth 缩小，字节数才是真正的预算。
   final int imageCacheCount;
   final int imageCacheBytes;
 
@@ -58,7 +57,7 @@ class DeviceBudget {
   );
 
   /// 1GB 级（totalMem <= 1.2GB 或系统标记 low-ram）。
-  /// 后向缓冲保留 4MB：按 5–8Mbps 约 4–6 秒，再小则 TV「左键 -10s」必然回源。
+  /// 后向缓冲保留 4MB：按 5–8Mbps 约 4–6 秒，再小则 TV 快退 10 秒必然回源。
   static const ultra = DeviceBudget(
     demuxFwdBytes: '8388608', // 8 MB
     demuxBackBytes: '4194304', // 4 MB
@@ -72,7 +71,6 @@ class DeviceBudget {
   );
 
   /// 封面 memCacheWidth（物理像素）：布局宽 × dpr，夹在 [64, coverDecodeMaxWidth]。
-  /// 布局宽未知（无限）时按上限处理。
   int coverDecodeWidth({required double logicalWidth, required double dpr}) {
     if (!logicalWidth.isFinite || dpr <= 0) return coverDecodeMaxWidth;
     return (logicalWidth * dpr).round().clamp(64, coverDecodeMaxWidth);
@@ -92,7 +90,7 @@ class DeviceBudget {
   /// totalMem <= 1.2GiB 视为 ultra。
   static const ultraMaxTotalMem = 1288490188;
 
-  /// totalMem < 2GiB 视为 constrained（标称 2GB 的设备实际上报 ~1.9GiB）。
+  /// totalMem < 2GiB 视为 constrained（标称 2GB 的设备实际上报约 1.9GiB）。
   static const constrainedMaxTotalMem = 2 << 30;
 
   /// 由内存与系统 low-ram 标记推导档位。

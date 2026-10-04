@@ -1,23 +1,29 @@
 // lib/pages/player_page.dart
 import 'dart:async';
 import 'dart:ui';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+
 import '../models/mubu_models.dart';
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
 import '../api/mubu_ui_adapt.dart';
+import '../utils/cine_surface.dart';
 import '../utils/platform_utils.dart';
 import '../utils/device_profile.dart';
+import '../utils/tv_focus.dart';
 import '../utils/episode_utils.dart';
 import '../utils/source_picker.dart';
 import '../utils/source_quality.dart';
 import '../utils/stream_probe.dart';
 import '../widgets/mubu_dialog.dart';
 import '../widgets/failover_cover_image.dart';
+
 import 'package:hive/hive.dart';
+
 import '../models/mubu_hive.dart';
 import '../player/media_kit_player.dart';
 import '../widgets/concentric_hud.dart';
@@ -89,6 +95,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   int? _savedDurationMs;
   String? _savedEpisodeName;
   String? _savedLineName;
+
   /// User tapped an episode in the grid — stop preferring saved episode scope.
   bool _userPickedEpisode = false;
 
@@ -104,14 +111,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   // 防止并行测速期间多次并发 init；切后台后用于判断是否可重试
   Future<void>? _initPlayerFuture;
+  bool _wasPlayingBeforeBackground = false;
 
   @override
   void initState() {
     super.initState();
-    // 进播放页先主动修剪图片缓存，为视频解码内核腾出宝贵的物理内存
+    // 进播放页先主动修剪图片缓存，为视频解码内核腾出物理内存。
     DeviceProfile.trimImageCacheOnPlayerEnter();
-    _innerAspectRatio =
-        PlayerSlotLayout.defaultInnerAspectRatio(isShortDrama: _isShortDramaPage);
+    _innerAspectRatio = PlayerSlotLayout.defaultInnerAspectRatio(
+      isShortDrama: _isShortDramaPage,
+    );
     WidgetsBinding.instance.addObserver(this);
     _checkBookmarkStatus();
     _loadAndPrepare();
@@ -120,13 +129,39 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      // 切后台时关闭测速 HTTP，避免挂起的请求阻塞恢复后的加载流程
+    final background =
+        state == AppLifecycleState.paused || state == AppLifecycleState.hidden;
+    if (background) {
+      // 只在真正不可见时停。inactive 含通知栏和过渡动画，不能把正在播的片子停掉。
       _client?.close();
       _client = null;
+      final isPlaying = _player?.isPlayingNotifier.value ?? false;
+      if (!isDesktopPlatform && _player != null && isPlaying) {
+        _wasPlayingBeforeBackground = true;
+        _player?.pause();
+      }
     } else if (state == AppLifecycleState.resumed) {
+      if (!isDesktopPlatform &&
+          _wasPlayingBeforeBackground &&
+          _player != null) {
+        _wasPlayingBeforeBackground = false;
+        _player?.play();
+      }
       _recoverStuckLoading();
     }
+  }
+
+  /// Android 与受限档不用实时高斯模糊，避免低端 GPU 离屏合成。
+  Widget _staticOrBlurOverlay({required double sigma, required Color color}) {
+    if (!isDesktopPlatform || DeviceProfile.isConstrained) {
+      return ColoredBox(color: color);
+    }
+    return ClipRect(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: sigma, sigmaY: sigma),
+        child: ColoredBox(color: color),
+      ),
+    );
   }
 
   /// 切回前台时：若播放器已就绪但 stage 未更新，或 init 在后台挂起，则恢复/重试
@@ -169,7 +204,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 从历史记录中加载上次播放进度
   Future<void> _loadSavedProgress() async {
     final history = await MubuStorage.getHistory();
-    final saved = history.where((item) => item.id == widget.video.id).firstOrNull;
+    final saved =
+        history.where((item) => item.id == widget.video.id).firstOrNull;
     if (saved != null && mounted && !_disposed) {
       setState(() {
         _savedPositionMs = saved.lastPositionMs;
@@ -194,7 +230,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // Load saved progress first to avoid race condition
     await _loadSavedProgress();
     try {
-      final detail = await MubuApiClient.instance.getVideoDetail(widget.video.id, isShort: widget.video.isShortDrama);
+      final detail = await MubuApiClient.instance.getVideoDetail(
+        widget.video.id,
+        isShort: widget.video.isShortDrama,
+      );
       if (detail == null || detail.sources.isEmpty) {
         throw Exception('暂无可用播放源');
       }
@@ -221,10 +260,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             _savedEpisodeName!.isNotEmpty &&
             !_startPlayRequested &&
             _sources.isNotEmpty &&
-            !matchesEpisode(
-              _sources[_selectedSource],
-              _savedEpisodeName!,
-            )) {
+            !matchesEpisode(_sources[_selectedSource], _savedEpisodeName!)) {
           _applySavedEpisodeSelection(requireProbed: true, switchIfInit: true);
         }
         if (mounted && _stage != LoadingStage.ready) {
@@ -233,21 +269,29 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       } else if (_savedEpisodeName != null && _savedEpisodeName!.isNotEmpty) {
         _applySavedEpisodeSelection();
         if (mounted) {
-          setState(() { _stage = LoadingStage.initPlayer; });
+          setState(() {
+            _stage = LoadingStage.initPlayer;
+          });
         }
         await _initPlayer();
         if (_disposed) return;
         if (mounted) {
-          setState(() { _stage = LoadingStage.ready; });
+          setState(() {
+            _stage = LoadingStage.ready;
+          });
         }
       } else {
         if (mounted) {
-          setState(() { _stage = LoadingStage.initPlayer; });
+          setState(() {
+            _stage = LoadingStage.initPlayer;
+          });
         }
         await _initPlayer();
         if (_disposed) return;
         if (mounted) {
-          setState(() { _stage = LoadingStage.ready; });
+          setState(() {
+            _stage = LoadingStage.ready;
+          });
         }
       }
     } catch (e) {
@@ -272,8 +316,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     MediaKitPlayerImpl? player;
     try {
       if (_player != null) {
-        if (_widthListener != null) _player!.videoWidthNotifier.removeListener(_widthListener!);
-        if (_heightListener != null) _player!.videoHeightNotifier.removeListener(_heightListener!);
+        if (_widthListener != null)
+          _player!.videoWidthNotifier.removeListener(_widthListener!);
+        if (_heightListener != null)
+          _player!.videoHeightNotifier.removeListener(_heightListener!);
         await _player!.dispose();
         _player = null;
         _playerInitialized = false;
@@ -295,18 +341,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (activePlayer.durationNotifier.value <= Duration.zero) {
         final completer = Completer<void>();
         void listener() {
-          if (activePlayer.durationNotifier.value > Duration.zero && !completer.isCompleted) {
+          if (activePlayer.durationNotifier.value > Duration.zero &&
+              !completer.isCompleted) {
             completer.complete();
             activePlayer.durationNotifier.removeListener(listener);
           }
         }
+
         activePlayer.durationNotifier.addListener(listener);
-        await completer.future.timeout(const Duration(seconds: 10), onTimeout: () {
-          if (!completer.isCompleted) {
-            activePlayer.durationNotifier.removeListener(listener);
-            completer.complete();
-          }
-        });
+        await completer.future.timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            if (!completer.isCompleted) {
+              activePlayer.durationNotifier.removeListener(listener);
+              completer.complete();
+            }
+          },
+        );
       }
       _widthListener = () => _updateAspectRatio(activePlayer);
       _heightListener = () => _updateAspectRatio(activePlayer);
@@ -341,8 +392,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (_bufferingListener != null) {
       _player?.isBufferingNotifier.removeListener(_bufferingListener!);
     }
-    if (_widthListener != null) _player?.videoWidthNotifier.removeListener(_widthListener!);
-    if (_heightListener != null) _player?.videoHeightNotifier.removeListener(_heightListener!);
+    if (_widthListener != null)
+      _player?.videoWidthNotifier.removeListener(_widthListener!);
+    if (_heightListener != null)
+      _player?.videoHeightNotifier.removeListener(_heightListener!);
     // Save final playback position
     _saveProgress();
     _client?.close();
@@ -370,8 +423,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _setInnerAspectRatio(double ratio) {
-    final next =
-        PlayerSlotLayout.normalizeAspectRatio(ratio);
+    final next = PlayerSlotLayout.normalizeAspectRatio(ratio);
     if (!PlayerSlotLayout.shouldReplaceInnerRatio(
       _innerAspectRatio,
       next,
@@ -409,8 +461,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void _saveProgress() {
     final pos = _player?.positionNotifier.value;
     final dur = _player?.durationNotifier.value;
-    if (pos != null && dur != null && dur > Duration.zero && pos > Duration.zero &&
-        _selectedSource >= 0 && _selectedSource < _sources.length) {
+    if (pos != null &&
+        dur != null &&
+        dur > Duration.zero &&
+        pos > Duration.zero &&
+        _selectedSource >= 0 &&
+        _selectedSource < _sources.length) {
       final posMs = pos.inMilliseconds;
       // Skip save if position hasn't changed since last save (e.g. video is paused)
       if (posMs == _lastSavedPositionMs) return;
@@ -433,7 +489,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _abortSpeedTest = true;
     _client?.close();
     _client = null;
-    debugPrint('SPEED: aborted — playback started, yielding bandwidth to main player');
+    debugPrint(
+      'SPEED: aborted — playback started, yielding bandwidth to main player',
+    );
   }
 
   /// 弱网看门狗：开始监听缓冲状态，播放启动后调用一次
@@ -445,7 +503,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         // 已在计时中，不重复启动
         if (_bufferingWatchdog?.isActive == true) return;
         // 12 秒仍在缓冲 → 触发弱网逻辑
-        _bufferingWatchdog = Timer(const Duration(seconds: 12), _onBufferingTimeout);
+        _bufferingWatchdog = Timer(
+          const Duration(seconds: 12),
+          _onBufferingTimeout,
+        );
       } else {
         _bufferingWatchdog?.cancel();
         _bufferingWatchdog = null;
@@ -462,7 +523,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 逐步放大重新恢复播放所需的缓冲时间（最高 8s），减少反复暂停
     final newWait = (_weakNetworkCount + 3).clamp(4, 8);
     _player?.setMpvProperty('cache-pause-wait', '$newWait');
-    debugPrint('PLAYER: weak-network #$_weakNetworkCount → cache-pause-wait=${newWait}s');
+    debugPrint(
+      'PLAYER: weak-network #$_weakNetworkCount → cache-pause-wait=${newWait}s',
+    );
 
     // 防止 30s 内重复自动切换
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -482,7 +545,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     if (fallback != null) {
       final idx = _sources.indexOf(fallback);
-      debugPrint('PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.playlistMs}ms)');
+      debugPrint(
+        'PLAYER: buffering watchdog — auto-switch to ${fallback.name} (${fallback.playlistMs}ms)',
+      );
       _lastAutoSwitchMs = now;
       _switchSource(idx);
     }
@@ -516,9 +581,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       withinResolution: film ? null : resolution,
     );
 
-    final shouldUpgrade = _playerInitialized &&
-        !_startPlayRequested &&
-        idx != _selectedSource;
+    final shouldUpgrade =
+        _playerInitialized && !_startPlayRequested && idx != _selectedSource;
 
     if (autoInit && !_playerInitialized) {
       _selectedSource = idx;
@@ -527,10 +591,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         'PLAYER: auto-pick ${resolution ?? _sources[idx].name} '
         '(${_sources[idx].playlistMs}ms) scope=${film ? "film-global" : episode}',
       );
-      if (mounted) setState(() { _stage = LoadingStage.initPlayer; });
+      if (mounted)
+        setState(() {
+          _stage = LoadingStage.initPlayer;
+        });
       await _initPlayer();
     } else if (shouldUpgrade) {
-      debugPrint('PLAYER: upgrade to recommended ${resolution ?? _sources[idx].name}');
+      debugPrint(
+        'PLAYER: upgrade to recommended ${resolution ?? _sources[idx].name}',
+      );
       _switchSource(idx);
     } else if (!_playerInitialized) {
       _selectedSource = idx;
@@ -588,8 +657,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   String get _episodeScopeRef {
-    final firstRef =
-        _sources.isNotEmpty ? episodeRef(_sources.first) : '';
+    final firstRef = _sources.isNotEmpty ? episodeRef(_sources.first) : '';
     return resolveEpisodeScopeRef(
       currentEpisodeRef: _currentEpisodeRef,
       savedEpisodeName: _savedEpisodeName,
@@ -709,7 +777,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       final episodeArg = episode.isEmpty ? null : episode;
 
       int? championIdx;
-      championIdx = SourcePicker.pickMainIndex(_sources, episodeName: episodeArg);
+      championIdx = SourcePicker.pickMainIndex(
+        _sources,
+        episodeName: episodeArg,
+      );
       if (championIdx != null) {
         final latency = _sources[championIdx].playlistMs;
         if (latency == null || latency >= SourcePicker.latencyGood) {
@@ -732,7 +803,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             _sources[repIdx].playlistMs! < SourcePicker.latencyGood) {
           final playIdx =
               SourcePicker.pickMainIndex(_sources, episodeName: episodeArg) ??
-                  championIdx;
+              championIdx;
           _selectedSource = playIdx;
           _currentUrl = _sources[playIdx].url;
           _recommendedLineName = _sources[playIdx].name;
@@ -751,12 +822,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 3. 本轮新测（无 playlistMs）分批：先并行前 3 条早开播，其余后台续测可升级。
     // 缓存命中已有指标，不算进「前 3」。
     const earlyBatchSizeDefault = 3;
-    final earlyBatchSize = DeviceProfile.isConstrained
-        ? DeviceProfile.constrainedProbeEarlyBatch
-        : earlyBatchSizeDefault;
-    final pending = indices
-        .where((idx) => idx >= 0 && _sources[idx].playlistMs == null)
-        .toList();
+    final earlyBatchSize =
+        DeviceProfile.isConstrained
+            ? DeviceProfile.constrainedProbeEarlyBatch
+            : earlyBatchSizeDefault;
+    final pending =
+        indices
+            .where((idx) => idx >= 0 && _sources[idx].playlistMs == null)
+            .toList();
 
     Future<void> testOne(int idx) async {
       if (_disposed || _abortSpeedTest) return;
@@ -848,7 +921,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // 收尾：仍未 init 则再试；已 init 且未点播放则最终 upgrade
     await _applyRecommendedSource(autoInit: !_playerInitialized);
 
-    final usable = _sources.where((s) => s.usable && s.playlistMs != null).length;
+    final usable =
+        _sources.where((s) => s.usable && s.playlistMs != null).length;
     debugPrint(
       'SPEED: done | tested=$_testedCount usable=$usable recommended=$_recommendedLineName',
     );
@@ -887,8 +961,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           playlistMs: result.playlistMs > 0 ? result.playlistMs : 999999,
           probeWidth: result.width > 0 ? result.width : null,
           probeHeight: result.height > 0 ? result.height : null,
-          probeBitrateKbps:
-              result.bitrateKbps > 0 ? result.bitrateKbps : null,
+          probeBitrateKbps: result.bitrateKbps > 0 ? result.bitrateKbps : null,
           firstFrameMs: result.firstFrameMs > 0 ? result.firstFrameMs : null,
           probedTier: result.effectiveTier,
           probeDurationSec: result.durationSec > 0 ? result.durationSec : null,
@@ -911,6 +984,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       debugPrint('SPEED: [$index] $lineName ERROR: $e');
     }
   }
+
   void _switchSource(int index) {
     _saveProgress();
     final src = _sources[index];
@@ -918,7 +992,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _currentUrl = src.url;
     _syncInnerRatioFromSource(src);
 
-    final shouldAutoPlay = _startPlayRequested && (_player?.isPlayingNotifier.value == true);
+    final shouldAutoPlay =
+        _startPlayRequested && (_player?.isPlayingNotifier.value == true);
     _player?.setSource(_currentUrl, autoPlay: shouldAutoPlay);
     setState(() {});
   }
@@ -984,12 +1059,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               placeholderBuilder: (_) => const SizedBox.shrink(),
             ),
           ),
-          ClipRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-              child: Container(color: Colors.black.withOpacity(0.2)),
-            ),
-          ),
+          _staticOrBlurOverlay(sigma: 24, color: Colors.black.withOpacity(0.2)),
         ],
       ),
     );
@@ -1070,6 +1140,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Widget _buildEpisodeGrid(
     List<int> epIndices, {
     bool closeOnTap = false,
+    bool autofocusActive = false,
   }) {
     void onTap(int sourceIdx) {
       _userPickedEpisode = true;
@@ -1077,8 +1148,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (closeOnTap) Navigator.pop(context);
     }
 
-    final hasLongLabel =
-        epIndices.any((i) => _sources[i].sourceName.length > 4);
+    final hasLongLabel = epIndices.any(
+      (i) => _sources[i].sourceName.length > 4,
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1104,9 +1176,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             final sourceIdx = epIndices[index];
             final s = _sources[sourceIdx];
             return _EpisodeButton(
+              key: ValueKey('ep-$sourceIdx'),
               label: s.sourceName,
               duration: SourceQuality.formatDurationMmSs(s),
               active: sourceIdx == _selectedSource,
+              autofocus: autofocusActive && sourceIdx == _selectedSource,
               onTap: () => onTap(sourceIdx),
             );
           },
@@ -1138,7 +1212,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
       }
     }
-    
+
     if (targetIdx == -1) {
       targetIdx = _sources.indexWhere((s) => s.name == newLineName);
     }
@@ -1158,102 +1232,113 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       canPop: true,
       child: CallbackShortcuts(
         bindings: {
-          const SingleActivator(LogicalKeyboardKey.escape): () =>
-              Navigator.pop(context),
-          const SingleActivator(LogicalKeyboardKey.goBack): () =>
-              Navigator.pop(context),
+          const SingleActivator(LogicalKeyboardKey.escape):
+              () => Navigator.pop(context),
+          const SingleActivator(LogicalKeyboardKey.goBack):
+              () => Navigator.pop(context),
         },
         child: Scaffold(
           backgroundColor: Colors.black,
           body: SafeArea(
             child: Stack(
               children: [
-              // 1. Blurred Movie Poster Background
-              _buildBackgroundPoster(),
+                // 1. Blurred Movie Poster Background
+                _buildBackgroundPoster(),
 
-              // 2. Main split UI
-              Column(
-                children: [
-                  _buildTopHeader(),
-                  Expanded(
-                    child: useRowLayout
-                        ? Padding(
-                            padding: EdgeInsets.all(isWide ? 28 : 12),
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                // Left video panel — always 16:9
-                                Expanded(
-                                  flex: isWide ? 65 : 66,
-                                  child: _buildFixedPlayerSlot(
-                                    child: _buildVideoPlayerContainer(),
+                // 2. Main split UI
+                Column(
+                  children: [
+                    _buildTopHeader(),
+                    Expanded(
+                      child:
+                          useRowLayout
+                              ? Padding(
+                                padding: EdgeInsets.all(isWide ? 28 : 12),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    // Left video panel — always 16:9
+                                    Expanded(
+                                      flex: isWide ? 65 : 66,
+                                      child: _buildFixedPlayerSlot(
+                                        child: _buildVideoPlayerContainer(),
+                                      ),
+                                    ),
+                                    SizedBox(width: isWide ? 28 : 12),
+                                    // Right detail / episodes panel
+                                    Expanded(
+                                      flex: isWide ? 35 : 34,
+                                      child: SingleChildScrollView(
+                                        physics: const BouncingScrollPhysics(),
+                                        child: _buildMovieInfoAndEpisodes(
+                                          useRowLayout,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                              : Column(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      12,
+                                      12,
+                                      12,
+                                      0,
+                                    ),
+                                    child: _buildFixedPlayerSlot(
+                                      child: _buildVideoPlayerContainer(),
+                                    ),
                                   ),
-                                ),
-                                SizedBox(width: isWide ? 28 : 12),
-                                // Right detail / episodes panel
-                                Expanded(
-                                  flex: isWide ? 35 : 34,
-                                  child: SingleChildScrollView(
-                                    physics: const BouncingScrollPhysics(),
-                                    child: _buildMovieInfoAndEpisodes(useRowLayout),
+                                  Expanded(
+                                    child: SingleChildScrollView(
+                                      physics: const BouncingScrollPhysics(),
+                                      child: _buildMovieInfoAndEpisodes(false),
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          )
-                        : Column(
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                                child: _buildFixedPlayerSlot(
-                                  child: _buildVideoPlayerContainer(),
-                                ),
+                                ],
                               ),
-                              Expanded(
-                                child: SingleChildScrollView(
-                                  physics: const BouncingScrollPhysics(),
-                                  child: _buildMovieInfoAndEpisodes(false),
-                                ),
-                              ),
-                            ],
-                          ),
-                  ),
-                ],
-              ),
-
-              // 3. Dropdown click-outside mask
-              if (_expanded)
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: () => setState(() => _expanded = false),
-                    child: Container(color: Colors.transparent),
-                  ),
+                    ),
+                  ],
                 ),
 
-              // 4. Floating line dropdown card (anchored below line label)
-              if (_expanded && _sources.isNotEmpty)
-                CompositedTransformFollower(
-                  link: _lineLink,
-                  offset: const Offset(0, 8),
-                  targetAnchor: useRowLayout ? Alignment.bottomRight : Alignment.bottomLeft,
-                  followerAnchor: useRowLayout ? Alignment.topRight : Alignment.topLeft,
-                  child: _buildLineDropdownCard(),
-                ),
+                // 3. Dropdown click-outside mask
+                if (_expanded)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: () => setState(() => _expanded = false),
+                      child: Container(color: Colors.transparent),
+                    ),
+                  ),
 
-              // 5. Full-screen error overlay — last child = on top of everything
-              if (_stage == LoadingStage.error)
-                _buildFullScreenError(),
-            ],
+                // 4. Floating line dropdown card (anchored below line label)
+                if (_expanded && _sources.isNotEmpty)
+                  CompositedTransformFollower(
+                    link: _lineLink,
+                    offset: const Offset(0, 8),
+                    targetAnchor:
+                        useRowLayout
+                            ? Alignment.bottomRight
+                            : Alignment.bottomLeft,
+                    followerAnchor:
+                        useRowLayout ? Alignment.topRight : Alignment.topLeft,
+                    child: _buildLineDropdownCard(),
+                  ),
+
+                // 5. Full-screen error overlay — last child = on top of everything
+                if (_stage == LoadingStage.error) _buildFullScreenError(),
+              ],
+            ),
           ),
         ),
       ),
-    ),
-  );
+    );
   }
 
   /// 搜索页同款玻璃态圆形图标按钮
   Widget _glassIconButton(IconData icon, {required VoidCallback onTap}) {
-    return GestureDetector(
+    final btn = GestureDetector(
       onTap: onTap,
       child: MouseRegion(
         cursor: SystemMouseCursors.click,
@@ -1268,6 +1353,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         ),
       ),
     );
+    return TvFocusable(onActivate: onTap, borderRadius: 22, child: btn);
   }
 
   /// 构建播放页的顶部导航与状态栏
@@ -1276,12 +1362,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       height: 64,
       decoration: BoxDecoration(
         color: kGlass.withOpacity(0.85),
-        border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+        border: Border(
+          bottom: BorderSide(color: Colors.white.withOpacity(0.05)),
+        ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Row(
         children: [
-          _glassIconButton(Icons.arrow_back_ios_new, onTap: () => Navigator.pop(context)),
+          _glassIconButton(
+            Icons.arrow_back_ios_new,
+            onTap: () => Navigator.pop(context),
+          ),
           const SizedBox(width: 16),
           Expanded(
             child: Text(
@@ -1295,51 +1386,61 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             ),
           ),
           // 收藏胶囊按钮
-          GestureDetector(
-            onTap: _toggleBookmark,
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                decoration: BoxDecoration(
-                  color: _isBookmarked
-                      ? _primaryRed
-                      : Colors.white.withOpacity(0.06),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: _isBookmarked
-                        ? _primaryRed
-                        : Colors.white.withOpacity(0.08),
+          TvFocusable(
+            onActivate: _toggleBookmark,
+            borderRadius: 20,
+            child: GestureDetector(
+              onTap: _toggleBookmark,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 7,
                   ),
-                  boxShadow: _isBookmarked
-                      ? [
-                          BoxShadow(
-                            color: _primaryRed.withOpacity(0.35),
-                            blurRadius: 10,
-                            offset: const Offset(0, 2),
-                          ),
-                        ]
-                      : null,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.bookmark,
-                      color: _isBookmarked ? Colors.white : Colors.white70,
-                      size: 16,
+                  decoration: BoxDecoration(
+                    color:
+                        _isBookmarked
+                            ? _primaryRed
+                            : Colors.white.withOpacity(0.06),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color:
+                          _isBookmarked
+                              ? _primaryRed
+                              : Colors.white.withOpacity(0.08),
                     ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '收藏',
-                      style: TextStyle(
+                    boxShadow:
+                        _isBookmarked
+                            ? [
+                              BoxShadow(
+                                color: _primaryRed.withOpacity(0.35),
+                                blurRadius: 10,
+                                offset: const Offset(0, 2),
+                              ),
+                            ]
+                            : null,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.bookmark,
                         color: _isBookmarked ? Colors.white : Colors.white70,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                        size: 16,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 6),
+                      Text(
+                        '收藏',
+                        style: TextStyle(
+                          color: _isBookmarked ? Colors.white : Colors.white70,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -1350,7 +1451,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   String? _getFastPreviewUrl() {
-    if (_sources.isEmpty || _selectedSource < 0 || _selectedSource >= _sources.length) return null;
+    if (_sources.isEmpty ||
+        _selectedSource < 0 ||
+        _selectedSource >= _sources.length)
+      return null;
     final currentEpisode = _currentEpisodeRef;
     final currentUrl = _sources[_selectedSource].url;
     return SourcePicker.pickPreview(
@@ -1387,13 +1491,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           errorBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
           placeholderBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
         ),
-        ClipRect(
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-            child: Container(
-              color: const Color(0xFF070708).withOpacity(0.55),
-            ),
-          ),
+        _staticOrBlurOverlay(
+          sigma: 24,
+          color: const Color(0xFF070708).withOpacity(0.55),
         ),
       ],
     );
@@ -1404,7 +1504,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final hasCover = widget.video.coverPath.isNotEmpty && imgDomain.isNotEmpty;
     final showForegroundOverlay =
         _stage == LoadingStage.ready && !_startPlayRequested;
-    final showVideo = _stage == LoadingStage.ready &&
+    final showVideo =
+        _stage == LoadingStage.ready &&
         _playerInitialized &&
         _player != null &&
         _startPlayRequested;
@@ -1474,11 +1575,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     duration: const Duration(milliseconds: 600),
                     opacity: showForegroundOverlay ? 1.0 : 0.0,
                     curve: Curves.easeOutCubic,
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                      child: Container(
-                        color: const Color(0xFF070708).withOpacity(0.45),
-                      ),
+                    child: _staticOrBlurOverlay(
+                      sigma: 20,
+                      color: const Color(0xFF070708).withOpacity(0.45),
                     ),
                   ),
                 ),
@@ -1494,47 +1593,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 ),
 
               Positioned.fill(
-                child: IgnorePointer(
-                  ignoring: !showForegroundOverlay,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 600),
-                    opacity: showForegroundOverlay ? 1.0 : 0.0,
-                    curve: Curves.easeOutCubic,
-                    child: Center(
-                      child: BreathingPlayPulse(
-                        onTap: () {
-                          setState(() {
-                            _startPlayRequested = true;
-                          });
-                          _abortBackgroundSpeedTest();
-                          _player?.play().then((_) {
-                            final episodeName = _sources.isNotEmpty
-                                ? _sources[_selectedSource].sourceName
-                                : null;
-                            final lineName = _sources.isNotEmpty
-                                ? _sources[_selectedSource].name
-                                : null;
-                            MubuStorage.recordWatch(
-                              widget.video,
-                              positionMs: _savedPositionMs,
-                              durationMs: _savedDurationMs,
-                              episodeName: episodeName,
-                              lineName: lineName,
-                            );
-                            final startMs = _playbackStartPositionMs();
-                            if (startMs != null) {
-                              _player?.seek(Duration(milliseconds: startMs));
-                            }
-                            _startBufferingWatchdog();
-                          }).catchError((e) {
-                            debugPrint('PLAYER: play() failed: $e');
-                          });
-                          _progressTimer?.cancel();
-                          _progressTimer = Timer.periodic(
-                            const Duration(seconds: 10),
-                            (_) => _saveProgress(),
-                          );
-                        },
+                child: ExcludeFocus(
+                  excluding: !showForegroundOverlay,
+                  child: IgnorePointer(
+                    ignoring: !showForegroundOverlay,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 600),
+                      opacity: showForegroundOverlay ? 1.0 : 0.0,
+                      curve: Curves.easeOutCubic,
+                      child: Center(
+                        child: TvFocusable(
+                          autofocus: isTvSurface && showForegroundOverlay,
+                          onActivate: _beginPlayback,
+                          borderRadius: 48,
+                          child: BreathingPlayPulse(onTap: _beginPlayback),
+                        ),
                       ),
                     ),
                   ),
@@ -1607,7 +1680,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         ),
                       ),
                       IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        icon: const Icon(
+                          Icons.close,
+                          color: Colors.white54,
+                          size: 20,
+                        ),
                         onPressed: () => Navigator.pop(context),
                       ),
                     ],
@@ -1617,7 +1694,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     child: SingleChildScrollView(
                       controller: scrollController,
                       physics: const BouncingScrollPhysics(),
-                      child: _buildEpisodeGrid(epIndices, closeOnTap: true),
+                      child: _buildEpisodeGrid(
+                        epIndices,
+                        closeOnTap: true,
+                        autofocusActive: isTvSurface,
+                      ),
                     ),
                   ),
                 ],
@@ -1638,7 +1719,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     ].join(' • ');
 
     return Container(
-      padding: isWide ? const EdgeInsets.all(8) : const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      padding:
+          isWide
+              ? const EdgeInsets.all(8)
+              : const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1648,44 +1732,64 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               if (_sources.isNotEmpty)
                 CompositedTransformTarget(
                   link: _lineLink,
-                  child: GestureDetector(
-                    onTap: _showAdaptiveLineSelector,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: _expanded ? _primaryRed.withOpacity(0.15) : Colors.white.withOpacity(0.06),
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(
-                          color: _expanded ? _primaryRed.withOpacity(0.4) : Colors.white.withOpacity(0.12),
+                  child: TvFocusable(
+                    onActivate: _showAdaptiveLineSelector,
+                    borderRadius: 4,
+                    child: GestureDetector(
+                      onTap: _showAdaptiveLineSelector,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
                         ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _speedDot(_sources.isNotEmpty ? _sources[_selectedSource].playlistMs : null),
-                          const SizedBox(width: 6),
-                          Text(
-                            '${_selectedLineName.isNotEmpty ? _selectedLineName : '清晰度'} · ${_speedLabel(_sources[_selectedSource].playlistMs)}',
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
+                        decoration: BoxDecoration(
+                          color:
+                              _expanded
+                                  ? _primaryRed.withOpacity(0.15)
+                                  : Colors.white.withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(4),
+                          border: Border.all(
+                            color:
+                                _expanded
+                                    ? _primaryRed.withOpacity(0.4)
+                                    : Colors.white.withOpacity(0.12),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _speedDot(
+                              _sources.isNotEmpty
+                                  ? _sources[_selectedSource].playlistMs
+                                  : null,
                             ),
-                          ),
-                          const SizedBox(width: 3),
-                          const Icon(
-                            Icons.keyboard_arrow_down_rounded,
-                            color: Colors.white38,
-                            size: 12,
-                          ),
-                        ],
+                            const SizedBox(width: 6),
+                            Text(
+                              '${_selectedLineName.isNotEmpty ? _selectedLineName : '清晰度'} · ${_speedLabel(_sources[_selectedSource].playlistMs)}',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(width: 3),
+                            const Icon(
+                              Icons.keyboard_arrow_down_rounded,
+                              color: Colors.white38,
+                              size: 12,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 )
               else
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.06),
                     borderRadius: BorderRadius.circular(4),
@@ -1704,7 +1808,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               Expanded(
                 child: Text(
                   metaString,
-                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12, fontWeight: FontWeight.w600),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.4),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
@@ -1713,18 +1821,30 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           const SizedBox(height: 12),
           Text(
             widget.video.title,
-            style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+            ),
           ),
           const SizedBox(height: 12),
           Text(
             widget.video.score.isNotEmpty ? '评分：${widget.video.score}' : '暂无评分',
-            style: const TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold),
+            style: const TextStyle(
+              color: kRed,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
           ),
           if (_description.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text(
               _description,
-              style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 13, height: 1.5),
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.6),
+                fontSize: 13,
+                height: 1.5,
+              ),
               maxLines: _isShortDramaPage ? 2 : 4,
               overflow: TextOverflow.ellipsis,
             ),
@@ -1744,7 +1864,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 icon: const Icon(Icons.playlist_play_rounded, size: 22),
                 label: Text(
                   '选集 (当前：${_sources.isNotEmpty ? _sources[_selectedSource].sourceName : '1'})',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white.withOpacity(0.06),
@@ -1759,15 +1882,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           ] else ...[
             Text(
               '剧集列表 (${epIndices.length})',
-              style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 12),
             if (_stage != LoadingStage.ready && _stage != LoadingStage.error)
               _buildEpisodeSkeleton()
             else if (epIndices.isEmpty)
-              const Text('暂无剧集数据', style: TextStyle(color: Colors.white24, fontSize: 12))
+              const Text(
+                '暂无剧集数据',
+                style: TextStyle(color: Colors.white24, fontSize: 12),
+              )
             else
-              _buildEpisodeGrid(epIndices),
+              _buildEpisodeGrid(
+                epIndices,
+                autofocusActive: isTvSurface && _startPlayRequested,
+              ),
           ],
         ],
       ),
@@ -1777,8 +1910,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   /// 加载中显示的剧集骨架屏
   Widget _buildEpisodeSkeleton() {
     final epIndices = _currentLineSourceIndices;
-    final hasLongLabel =
-        epIndices.any((i) => _sources[i].sourceName.length > 4);
+    final hasLongLabel = epIndices.any(
+      (i) => _sources[i].sourceName.length > 4,
+    );
     return LayoutBuilder(
       builder: (context, constraints) {
         final screenWidth = MediaQuery.sizeOf(context).width;
@@ -1804,6 +1938,41 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
   }
 
+  void _beginPlayback() {
+    setState(() {
+      _startPlayRequested = true;
+    });
+    _abortBackgroundSpeedTest();
+    _player
+        ?.play()
+        .then((_) {
+          final episodeName =
+              _sources.isNotEmpty ? _sources[_selectedSource].sourceName : null;
+          final lineName =
+              _sources.isNotEmpty ? _sources[_selectedSource].name : null;
+          MubuStorage.recordWatch(
+            widget.video,
+            positionMs: _savedPositionMs,
+            durationMs: _savedDurationMs,
+            episodeName: episodeName,
+            lineName: lineName,
+          );
+          final startMs = _playbackStartPositionMs();
+          if (startMs != null) {
+            _player?.seek(Duration(milliseconds: startMs));
+          }
+          _startBufferingWatchdog();
+        })
+        .catchError((e) {
+          debugPrint('PLAYER: play() failed: $e');
+        });
+    _progressTimer?.cancel();
+    _progressTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _saveProgress(),
+    );
+  }
+
   void _showAdaptiveLineSelector() {
     if (isDesktopPlatform) {
       setState(() => _expanded = !_expanded);
@@ -1813,15 +1982,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         // TV / Pad landscape: Center Dialog
         MubuDialog.showCustom(
           context: context,
-          builder: (ctx) => Center(
-            child: Material(
-              color: Colors.transparent,
-              child: MubuDialogContainer(
-                maxWidth: 360,
-                child: _buildLineSelectorContent(isDialog: true),
+          builder:
+              (ctx) => Center(
+                child: Material(
+                  color: Colors.transparent,
+                  child: MubuDialogContainer(
+                    maxWidth: 360,
+                    child: _buildLineSelectorContent(isDialog: true),
+                  ),
+                ),
               ),
-            ),
-          ),
         );
       } else {
         // Mobile: BottomSheet
@@ -1829,17 +1999,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           context: context,
           backgroundColor: Colors.transparent,
           isScrollControlled: true,
-          builder: (ctx) => Container(
-            decoration: BoxDecoration(
-              color: const Color(0xFF16161A).withOpacity(0.95),
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-              border: Border(top: BorderSide(color: Colors.white.withOpacity(0.08))),
-            ),
-            child: SafeArea(
-              top: false,
-              child: _buildLineSelectorContent(isBottomSheet: true),
-            ),
-          ),
+          builder:
+              (ctx) => Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF16161A).withOpacity(0.95),
+                  borderRadius: const BorderRadius.vertical(
+                    top: Radius.circular(24),
+                  ),
+                  border: Border(
+                    top: BorderSide(color: Colors.white.withOpacity(0.08)),
+                  ),
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: _buildLineSelectorContent(isBottomSheet: true),
+                ),
+              ),
         );
       }
     }
@@ -1847,7 +2022,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Widget _buildLineDropdownCard() {
     final screenWidth = MediaQuery.of(context).size.width;
-    final dropdownMaxWidth = (screenWidth - 48).clamp(200.0, 320.0); // 左右各留24px安全边距
+    final dropdownMaxWidth = (screenWidth - 48).clamp(
+      200.0,
+      320.0,
+    ); // 左右各留24px安全边距
 
     return Material(
       color: Colors.transparent,
@@ -1860,12 +2038,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildLineSelectorContent({bool isBottomSheet = false, bool isDialog = false}) {
-    final lines = _uniqueLineNames.toList()
-      ..sort((a, b) => _compareLineForSelector(a, b));
+  Widget _buildLineSelectorContent({
+    bool isBottomSheet = false,
+    bool isDialog = false,
+  }) {
+    final lines =
+        _uniqueLineNames.toList()
+          ..sort((a, b) => _compareLineForSelector(a, b));
     final screenHeight = MediaQuery.of(context).size.height;
     final isSmallHeight = screenHeight < 500 && !isBottomSheet;
-    
+
     return Padding(
       padding: EdgeInsets.all(isBottomSheet ? 24 : (isSmallHeight ? 10 : 16)),
       child: Column(
@@ -1876,27 +2058,50 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             children: [
               const Icon(Icons.shuffle, color: Colors.white38, size: 15),
               const SizedBox(width: 8),
-              const Text('切换线路', style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.bold)),
+              const Text(
+                '切换线路',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
               const Spacer(),
               if (!isDialog && !isBottomSheet)
                 GestureDetector(
                   onTap: () => setState(() => _expanded = false),
-                  child: const Icon(Icons.close, color: Colors.white38, size: 18),
+                  child: const Icon(
+                    Icons.close,
+                    color: Colors.white38,
+                    size: 18,
+                  ),
                 )
               else if (isBottomSheet)
                 GestureDetector(
                   onTap: () => Navigator.pop(context),
                   child: Container(
                     padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(color: Colors.white.withOpacity(0.05), shape: BoxShape.circle),
-                    child: const Icon(Icons.close, color: Colors.white54, size: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.05),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close,
+                      color: Colors.white54,
+                      size: 16,
+                    ),
                   ),
                 ),
             ],
           ),
           SizedBox(height: isSmallHeight ? 8 : 16),
           ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: isBottomSheet ? screenHeight * 0.5 : (isSmallHeight ? 100 : 300)),
+            constraints: BoxConstraints(
+              maxHeight:
+                  isBottomSheet
+                      ? screenHeight * 0.5
+                      : (isSmallHeight ? 100 : 300),
+            ),
             child: ListView.builder(
               shrinkWrap: true,
               physics: const BouncingScrollPhysics(),
@@ -1907,91 +2112,131 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 final speed = _lineSpeed(name);
                 final usable = _isLineUsable(name);
                 final isRecommended =
-                    _recommendedLineName != null && name == _recommendedLineName;
-                final isFastest = _fastestLineName != null &&
+                    _recommendedLineName != null &&
+                    name == _recommendedLineName;
+                final isFastest =
+                    _fastestLineName != null &&
                     name == _fastestLineName &&
                     !isRecommended;
                 if (!usable && !active) return const SizedBox.shrink();
 
-                return GestureDetector(
-                  onTap: () {
-                    _switchLine(name);
-                    if (isDesktopPlatform && _expanded) {
-                      setState(() => _expanded = false);
-                    } else if (isBottomSheet || isDialog) {
-                      Navigator.pop(context);
-                    }
-                  },
-                  child: Container(
-                    margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
-                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: isSmallHeight ? 8 : 12),
-                    decoration: BoxDecoration(
-                      color: active ? _primaryRed : Colors.white.withOpacity(0.04),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: active ? _primaryRed : Colors.white.withOpacity(0.05)),
-                    ),
-                    child: Row(
-                      children: [
-                        _speedDot(speed),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                void selectLine() {
+                  _switchLine(name);
+                  if (isDesktopPlatform && _expanded) {
+                    setState(() => _expanded = false);
+                  } else if (isBottomSheet || isDialog) {
+                    Navigator.pop(context);
+                  }
+                }
+
+                return TvFocusable(
+                  autofocus: isTvSurface && active,
+                  onActivate: selectLine,
+                  borderRadius: 12,
+                  child: GestureDetector(
+                    onTap: selectLine,
+                    child: Container(
+                      margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: isSmallHeight ? 8 : 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color:
+                            active
+                                ? _primaryRed
+                                : Colors.white.withOpacity(0.04),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color:
+                              active
+                                  ? _primaryRed
+                                  : Colors.white.withOpacity(0.05),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          _speedDot(speed),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  name,
+                                  style: TextStyle(
+                                    color:
+                                        active
+                                            ? Colors.white
+                                            : Colors.white.withOpacity(0.85),
+                                    fontSize: 14,
+                                    fontWeight:
+                                        active
+                                            ? FontWeight.bold
+                                            : FontWeight.w500,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _lineQualityCaption(name),
+                                  style: TextStyle(
+                                    color: _lineQualityColor(
+                                      name,
+                                    ).withOpacity(0.9),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                name,
+                                _speedLabel(speed),
                                 style: TextStyle(
-                                  color: active ? Colors.white : Colors.white.withOpacity(0.85),
-                                  fontSize: 14,
-                                  fontWeight: active ? FontWeight.bold : FontWeight.w500,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                _lineQualityCaption(name),
-                                style: TextStyle(
-                                  color: _lineQualityColor(name).withOpacity(0.9),
-                                  fontSize: 11,
+                                  color:
+                                      active
+                                          ? Colors.white70
+                                          : _speedColor(speed),
+                                  fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              _speedLabel(speed),
-                              style: TextStyle(
-                                color: active ? Colors.white70 : _speedColor(speed),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            if (isRecommended || isFastest) ...[
-                              const SizedBox(height: 4),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: (isRecommended ? _primaryRed : Colors.green).withOpacity(0.2),
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: Text(
-                                  isRecommended ? '推荐' : '最快',
-                                  style: TextStyle(
-                                    color: isRecommended ? _primaryRed : Colors.greenAccent,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
+                              if (isRecommended || isFastest) ...[
+                                const SizedBox(height: 4),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: (isRecommended
+                                            ? _primaryRed
+                                            : Colors.green)
+                                        .withOpacity(0.2),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    isRecommended ? '推荐' : '最快',
+                                    style: TextStyle(
+                                      color:
+                                          isRecommended
+                                              ? _primaryRed
+                                              : Colors.greenAccent,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                                   ),
                                 ),
-                              ),
+                              ],
                             ],
-                          ],
-                        ),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 );
@@ -2010,7 +2255,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: _speedColor(ms),
-        boxShadow: [BoxShadow(color: _speedColor(ms).withAlpha(80), blurRadius: 4)],
+        boxShadow: [
+          BoxShadow(color: _speedColor(ms).withAlpha(80), blurRadius: 4),
+        ],
       ),
     );
   }
@@ -2026,11 +2273,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           children: [
             // Semi-transparent dark backdrop with blur
             Positioned.fill(
-              child: ClipRect(
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
-                  child: Container(color: Colors.black.withOpacity(0.65)),
-                ),
+              child: _staticOrBlurOverlay(
+                sigma: 6,
+                color: Colors.black.withOpacity(0.65),
               ),
             ),
             // Centered error card
@@ -2039,91 +2284,95 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                 padding: EdgeInsets.symmetric(horizontal: isMobile ? 24 : 32),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(18),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Container(
-                      constraints: BoxConstraints(
-                        maxWidth: isMobile ? double.infinity : 420,
-                      ),
-                      padding: EdgeInsets.all(isMobile ? 24 : 36),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF16161A).withOpacity(0.95),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: Colors.white.withOpacity(0.08)),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.85),
-                            blurRadius: 50,
-                            offset: const Offset(0, 25),
+                  child: Container(
+                    constraints: BoxConstraints(
+                      maxWidth: isMobile ? double.infinity : 420,
+                    ),
+                    padding: EdgeInsets.all(isMobile ? 24 : 36),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF16161A).withOpacity(0.95),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: Colors.white.withOpacity(0.08)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.85),
+                          blurRadius: 50,
+                          offset: const Offset(0, 25),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Close button (with hover animation)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: HoverCloseButton(
+                            onTap: () => Navigator.pop(context),
+                            size: 18,
                           ),
-                        ],
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          // Close button (with hover animation)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: HoverCloseButton(
-                              onTap: () => Navigator.pop(context),
-                              size: 18,
-                            ),
+                        ),
+                        SizedBox(height: isMobile ? 4 : 8),
+                        // Video title
+                        Text(
+                          widget.video.title,
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isMobile ? 17 : 20,
+                            fontWeight: FontWeight.w700,
                           ),
-                          SizedBox(height: isMobile ? 4 : 8),
-                          // Video title
-                          Text(
-                            widget.video.title,
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: isMobile ? 17 : 20,
-                              fontWeight: FontWeight.w700,
-                            ),
+                        ),
+                        SizedBox(height: isMobile ? 10 : 14),
+                        // Error message
+                        Text(
+                          _errorMessage?.replaceFirst('Exception: ', '') ??
+                              '播放出错',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.45),
+                            fontSize: isMobile ? 13 : 15,
+                            height: 1.5,
                           ),
-                          SizedBox(height: isMobile ? 10 : 14),
-                          // Error message
-                          Text(
-                            _errorMessage?.replaceFirst('Exception: ', '') ?? '播放出错',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.45),
-                              fontSize: isMobile ? 13 : 15,
-                              height: 1.5,
-                            ),
-                          ),
-                          SizedBox(height: isMobile ? 28 : 36),
-                          // Retry button
-                          SizedBox(
-                            width: double.infinity,
-                            height: isMobile ? 46 : 52,
-                            child: ElevatedButton.icon(
-                              onPressed: _loadAndPrepare,
-                              icon: const Icon(Icons.refresh_rounded, size: 20),
-                              label: const Text(
-                                '重试',
-                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: _primaryRed,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                              ).copyWith(
-                                backgroundColor: WidgetStateProperty.resolveWith((states) {
-                                  if (states.contains(WidgetState.hovered)) {
-                                    return const Color(0xFFF40F1D);
-                                  }
-                                  return _primaryRed;
-                                }),
+                        ),
+                        SizedBox(height: isMobile ? 28 : 36),
+                        // Retry button
+                        SizedBox(
+                          width: double.infinity,
+                          height: isMobile ? 46 : 52,
+                          child: ElevatedButton.icon(
+                            autofocus: isTvSurface,
+                            onPressed: _loadAndPrepare,
+                            icon: const Icon(Icons.refresh_rounded, size: 20),
+                            label: const Text(
+                              '重试',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: _primaryRed,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ).copyWith(
+                              backgroundColor: WidgetStateProperty.resolveWith((
+                                states,
+                              ) {
+                                if (states.contains(WidgetState.hovered)) {
+                                  return const Color(0xFFF40F1D);
+                                }
+                                return _primaryRed;
+                              }),
+                            ),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -2146,7 +2395,8 @@ class BreathingPlayPulse extends StatefulWidget {
   State<BreathingPlayPulse> createState() => _BreathingPlayPulseState();
 }
 
-class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTickerProviderStateMixin {
+class _BreathingPlayPulseState extends State<BreathingPlayPulse>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -2189,8 +2439,9 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
                     height: m.coreSize + m.pulseRange * _controller.value,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: const Color(0xFFE50914)
-                          .withOpacity(0.10 * (1.0 - _controller.value)),
+                      color: const Color(
+                        0xFFE50914,
+                      ).withOpacity(0.10 * (1.0 - _controller.value)),
                     ),
                   ),
                   Container(
@@ -2198,8 +2449,9 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse> with SingleTick
                     height: m.coreSize + m.pulseRange2 * _controller.value,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: const Color(0xFFE50914)
-                          .withOpacity(0.18 * (1.0 - _controller.value)),
+                      color: const Color(
+                        0xFFE50914,
+                      ).withOpacity(0.18 * (1.0 - _controller.value)),
                     ),
                   ),
                   Container(
@@ -2236,12 +2488,15 @@ class _EpisodeButton extends StatefulWidget {
   final String label;
   final String? duration;
   final bool active;
+  final bool autofocus;
   final VoidCallback onTap;
 
   const _EpisodeButton({
+    super.key,
     required this.label,
     this.duration,
     required this.active,
+    this.autofocus = false,
     required this.onTap,
   });
 
@@ -2263,7 +2518,7 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
     final durationSize = UIAdapt.fontSize(context, 10);
     final gap = UIAdapt.px(context, 4);
 
-    return MouseRegion(
+    final button = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -2273,33 +2528,35 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
           padding: EdgeInsets.symmetric(horizontal: hPad, vertical: vPad),
-          transform: _hovered
-              ? (Matrix4.identity()..scale(1.02))
-              : Matrix4.identity(),
+          transform:
+              _hovered ? (Matrix4.identity()..scale(1.02)) : Matrix4.identity(),
           transformAlignment: Alignment.center,
           decoration: BoxDecoration(
-            color: active
-                ? primaryRed
-                : (_hovered
-                    ? Colors.white.withOpacity(0.1)
-                    : Colors.white.withOpacity(0.05)),
+            color:
+                active
+                    ? primaryRed
+                    : (_hovered
+                        ? Colors.white.withOpacity(0.1)
+                        : Colors.white.withOpacity(0.05)),
             borderRadius: BorderRadius.circular(radius),
             border: Border.all(
-              color: active
-                  ? primaryRed
-                  : (_hovered
-                      ? Colors.white.withOpacity(0.18)
-                      : Colors.white.withOpacity(0.08)),
+              color:
+                  active
+                      ? primaryRed
+                      : (_hovered
+                          ? Colors.white.withOpacity(0.18)
+                          : Colors.white.withOpacity(0.08)),
             ),
-            boxShadow: active
-                ? [
-                    BoxShadow(
-                      color: primaryRed.withOpacity(_hovered ? 0.5 : 0.32),
-                      blurRadius: _hovered ? 10 : 6,
-                      offset: Offset(0, _hovered ? 2 : 1),
-                    ),
-                  ]
-                : null,
+            boxShadow:
+                active
+                    ? [
+                      BoxShadow(
+                        color: primaryRed.withOpacity(_hovered ? 0.5 : 0.32),
+                        blurRadius: _hovered ? 10 : 6,
+                        offset: Offset(0, _hovered ? 2 : 1),
+                      ),
+                    ]
+                    : null,
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
@@ -2311,9 +2568,10 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: active
-                      ? Colors.white
-                      : (_hovered ? Colors.white : Colors.white60),
+                  color:
+                      active
+                          ? Colors.white
+                          : (_hovered ? Colors.white : Colors.white60),
                   fontSize: labelSize,
                   height: 1.25,
                   fontWeight: active ? FontWeight.bold : FontWeight.w500,
@@ -2328,22 +2586,23 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
                       vertical: UIAdapt.px(context, 2),
                     ),
                     decoration: BoxDecoration(
-                      color: active
-                          ? Colors.white.withOpacity(0.18)
-                          : Colors.white.withOpacity(0.06),
-                      borderRadius:
-                          BorderRadius.circular(UIAdapt.px(context, 4)),
+                      color:
+                          active
+                              ? Colors.white.withOpacity(0.18)
+                              : Colors.white.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(
+                        UIAdapt.px(context, 4),
+                      ),
                     ),
                     child: Text(
                       widget.duration!,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        color: active
-                            ? Colors.white.withOpacity(0.92)
-                            : (_hovered
-                                ? Colors.white54
-                                : Colors.white38),
+                        color:
+                            active
+                                ? Colors.white.withOpacity(0.92)
+                                : (_hovered ? Colors.white54 : Colors.white38),
                         fontSize: durationSize,
                         fontWeight: FontWeight.w600,
                         letterSpacing: 0.2,
@@ -2356,6 +2615,12 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
           ),
         ),
       ),
+    );
+    return TvFocusable(
+      autofocus: widget.autofocus,
+      onActivate: widget.onTap,
+      borderRadius: radius,
+      child: button,
     );
   }
 }

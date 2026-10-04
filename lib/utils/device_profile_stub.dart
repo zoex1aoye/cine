@@ -23,6 +23,10 @@ class DeviceProfile {
 
   static void trimImageCacheOnPlayerEnter() {}
 
+  static void handleTrimMemory(int level) {}
+
+  static void handleLowMemory() {}
+
   @visibleForTesting
   static void debugOverride({
     DeviceProfileTier? tier,

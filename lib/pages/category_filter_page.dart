@@ -1,6 +1,8 @@
 // lib/pages/category_filter_page.dart
 import 'dart:ui';
+
 import 'package:flutter/material.dart';
+
 import '../api/mubu_api_client.dart';
 import '../widgets/hover_close_button.dart';
 import '../api/mubu_constants.dart';
@@ -10,6 +12,8 @@ import '../widgets/movie_sliver_grid.dart';
 import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
+import '../utils/cine_surface.dart';
+import '../utils/tv_focus.dart';
 import '../widgets/load_more_button.dart';
 
 const _kPrimaryRed = Color(0xFFE50914);
@@ -21,13 +25,18 @@ const _kChipHover = Color(0x1AFFFFFF);
 
 class CategoryFilterPage extends StatefulWidget {
   final int? initialCategoryId;
+
   /// 可选：由父级预加载的分类列表，传入后跳过 API 请求
   final List<CategoryItem>? preloadedCategories;
+
+  /// TV：本页成为当前 Tab 时，把焦点交给选中的分类芯片。
+  final bool tvFocusActive;
 
   const CategoryFilterPage({
     super.key,
     this.initialCategoryId,
     this.preloadedCategories,
+    this.tvFocusActive = false,
   });
 
   @override
@@ -105,9 +114,12 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         _categories = MubuConstants.filterNavigableCategories(cats);
       }
       if (_categories.isNotEmpty) {
-        final hasInitial = widget.initialCategoryId != null &&
+        final hasInitial =
+            widget.initialCategoryId != null &&
             _categories.any((c) => c.id == widget.initialCategoryId);
-        _activeCategoryId = hasInitial ? widget.initialCategoryId : _categories.first.id;
+        _activeCategoryId = hasInitial
+            ? widget.initialCategoryId
+            : _categories.first.id;
       }
       if (_activeCategoryId != null) {
         await _loadFiltersAndVideos(_activeCategoryId!);
@@ -254,9 +266,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     debugPrint('FILTER: click video | id=${video.id} title="${video.title}"');
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => PlayerPage(video: video),
-      ),
+      MaterialPageRoute(builder: (_) => PlayerPage(video: video)),
     );
   }
 
@@ -275,19 +285,37 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
     try {
       final group = _filterGroups.firstWhere((g) => g.key == groupKey);
       final currentId = _selectedFilters[groupKey] ?? '';
-      showModalBottomSheet(
-        context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
-        builder: (ctx) => _SingleFilterSheet(
-          group: group,
-          selectedId: currentId,
-          onChanged: (id, name) {
-            _applySingleFilter(groupKey, id, name);
-          },
-          onClose: () => Navigator.pop(ctx),
-        ),
-      );
+      final sheet = (BuildContext ctx, {required bool asDialog}) =>
+          _SingleFilterSheet(
+            group: group,
+            selectedId: currentId,
+            asDialog: asDialog,
+            onChanged: (id, name) {
+              _applySingleFilter(groupKey, id, name);
+            },
+            onClose: () => Navigator.pop(ctx),
+          );
+      if (isTvSurface) {
+        showDialog(
+          context: context,
+          builder: (ctx) => Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Material(
+                color: Colors.transparent,
+                child: sheet(ctx, asDialog: true),
+              ),
+            ),
+          ),
+        );
+      } else {
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (ctx) => sheet(ctx, asDialog: false),
+        );
+      }
     } catch (_) {}
   }
 
@@ -320,7 +348,10 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
             controller: _scrollController,
             slivers: [
               SliverPadding(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
                 sliver: _buildVideosGrid(),
               ),
               SliverToBoxAdapter(child: _buildFooter()),
@@ -375,41 +406,29 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
   Widget _buildCategorySelector() {
     if (_categories.isEmpty) return const SizedBox.shrink();
     return Container(
-      height: 40,
+      height: 52,
       margin: const EdgeInsets.only(bottom: 12),
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        itemCount: _categories.length,
-        itemBuilder: (context, index) {
-          final cat = _categories[index];
-          final isSelected = cat.id == _activeCategoryId;
-          return Padding(
-            padding: const EdgeInsets.only(right: 10),
-            child: ChoiceChip(
-              label: Text(
-                cat.name,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.white60,
-                  fontSize: 13,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
+      child: FocusTraversalGroup(
+        policy: OrderedTraversalPolicy(),
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          clipBehavior: Clip.none,
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          itemCount: _categories.length,
+          itemBuilder: (context, index) {
+            final cat = _categories[index];
+            final isSelected = cat.id == _activeCategoryId;
+            return Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: _CategoryChip(
+                label: cat.name,
+                selected: isSelected,
+                autofocus: widget.tvFocusActive && isSelected,
+                onTap: () => _changeCategory(cat.id),
               ),
-              selected: isSelected,
-              onSelected: (selected) {
-                if (selected) {
-                  _changeCategory(cat.id);
-                }
-              },
-              selectedColor: _kPrimaryRed,
-              backgroundColor: _kGlassPanel,
-              side: BorderSide(
-                color: isSelected ? _kPrimaryRed : Colors.white.withOpacity(0.08),
-              ),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
@@ -419,9 +438,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       return const SliverToBoxAdapter(
         child: Padding(
           padding: EdgeInsets.symmetric(vertical: 80),
-          child: Center(
-            child: CircularProgressIndicator(color: _kPrimaryRed),
-          ),
+          child: Center(child: CircularProgressIndicator(color: _kPrimaryRed)),
         ),
       );
     }
@@ -437,7 +454,11 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
           child: Center(
             child: Column(
               children: [
-                Icon(Icons.movie_creation_outlined, size: 52, color: Colors.white24),
+                Icon(
+                  Icons.movie_creation_outlined,
+                  size: 52,
+                  color: Colors.white24,
+                ),
                 SizedBox(height: 14),
                 Text(
                   '没有找到符合条件的视频',
@@ -468,7 +489,10 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
           child: SizedBox(
             width: 24,
             height: 24,
-            child: CircularProgressIndicator(color: _kPrimaryRed, strokeWidth: 2),
+            child: CircularProgressIndicator(
+              color: _kPrimaryRed,
+              strokeWidth: 2,
+            ),
           ),
         ),
       );
@@ -490,11 +514,13 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 24),
         child: Center(
-          child: LoadMoreButton(onTap: () {
-            if (_activeCategoryId != null) {
-              _loadVideos(_activeCategoryId!, reset: false);
-            }
-          }),
+          child: LoadMoreButton(
+            onTap: () {
+              if (_activeCategoryId != null) {
+                _loadVideos(_activeCategoryId!, reset: false);
+              }
+            },
+          ),
         ),
       );
     }
@@ -507,15 +533,24 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.error_outline_rounded, size: 48, color: Colors.white38),
+          const Icon(
+            Icons.error_outline_rounded,
+            size: 48,
+            color: Colors.white38,
+          ),
           const SizedBox(height: 16),
-          Text(_error ?? '出错了', style: const TextStyle(color: Colors.white54, fontSize: 14)),
+          Text(
+            _error ?? '出错了',
+            style: const TextStyle(color: Colors.white54, fontSize: 14),
+          ),
           const SizedBox(height: 20),
           ElevatedButton(
             onPressed: () => _loadInitialData(),
             style: ElevatedButton.styleFrom(
               backgroundColor: _kPrimaryRed,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
             ),
             child: const Text('重试', style: TextStyle(color: Colors.white)),
           ),
@@ -533,7 +568,8 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         children: [
           // Icon skeleton
           Container(
-            width: 16, height: 16,
+            width: 16,
+            height: 16,
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.06),
               borderRadius: BorderRadius.circular(4),
@@ -542,7 +578,8 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
           const SizedBox(width: 6),
           // Text skeleton
           Container(
-            width: 28, height: 14,
+            width: 28,
+            height: 14,
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.06),
               borderRadius: BorderRadius.circular(4),
@@ -550,17 +587,20 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
           ),
           const SizedBox(width: 10),
           // Chip skeletons
-          ...List.generate(3, (i) => Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Container(
-              width: i == 0 ? 72 : (i == 1 ? 60 : 48),
-              height: 28,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
-                borderRadius: BorderRadius.circular(16),
+          ...List.generate(
+            3,
+            (i) => Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Container(
+                width: i == 0 ? 72 : (i == 1 ? 60 : 48),
+                height: 28,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.04),
+                  borderRadius: BorderRadius.circular(16),
+                ),
               ),
             ),
-          )),
+          ),
         ],
       ),
     );
@@ -594,13 +634,53 @@ class _FilterLabel extends StatelessWidget {
 }
 
 // ─── Active Filter Chip (click to edit) ─────────────────────────
+class _CategoryChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final bool autofocus;
+  final VoidCallback onTap;
+
+  const _CategoryChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.autofocus = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final chip = AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: selected ? _kPrimaryRed : _kGlassPanel,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: selected ? _kPrimaryRed : Colors.white.withOpacity(0.08),
+        ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: selected ? Colors.white : Colors.white60,
+          fontSize: 13,
+          fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+        ),
+      ),
+    );
+    return TvFocusable(
+      autofocus: autofocus,
+      borderRadius: 20,
+      onActivate: onTap,
+      child: GestureDetector(onTap: onTap, child: chip),
+    );
+  }
+}
+
 class _ActiveFilterChip extends StatefulWidget {
   final String label;
   final VoidCallback onTap;
-  const _ActiveFilterChip({
-    required this.label,
-    required this.onTap,
-  });
+  const _ActiveFilterChip({required this.label, required this.onTap});
 
   @override
   State<_ActiveFilterChip> createState() => _ActiveFilterChipState();
@@ -611,7 +691,7 @@ class _ActiveFilterChipState extends State<_ActiveFilterChip> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
+    final chip = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -629,7 +709,7 @@ class _ActiveFilterChipState extends State<_ActiveFilterChip> {
           ),
           child: Text(
             widget.label,
-            style: TextStyle(
+            style: const TextStyle(
               color: _kPrimaryRed,
               fontSize: 12,
               fontWeight: FontWeight.w600,
@@ -638,6 +718,11 @@ class _ActiveFilterChipState extends State<_ActiveFilterChip> {
         ),
       ),
     );
+    return TvFocusable(
+      onActivate: widget.onTap,
+      borderRadius: 16,
+      child: chip,
+    );
   }
 }
 
@@ -645,6 +730,7 @@ class _ActiveFilterChipState extends State<_ActiveFilterChip> {
 class _SingleFilterSheet extends StatefulWidget {
   final FilterGroup group;
   final String selectedId;
+  final bool asDialog;
   final void Function(String id, String name) onChanged;
   final VoidCallback onClose;
 
@@ -653,6 +739,7 @@ class _SingleFilterSheet extends StatefulWidget {
     required this.selectedId,
     required this.onChanged,
     required this.onClose,
+    this.asDialog = false,
   });
 
   @override
@@ -674,12 +761,17 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
 
     return Container(
       constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.65,
+        maxHeight:
+            MediaQuery.of(context).size.height * (widget.asDialog ? 0.7 : 0.65),
       ),
-      margin: const EdgeInsets.only(top: 80),
-      decoration: const BoxDecoration(
+      margin: widget.asDialog
+          ? EdgeInsets.zero
+          : const EdgeInsets.only(top: 80),
+      decoration: BoxDecoration(
         color: _kBackground,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: widget.asDialog
+            ? BorderRadius.circular(20)
+            : const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -688,7 +780,8 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
           Padding(
             padding: const EdgeInsets.only(top: 12, bottom: 4),
             child: Container(
-              width: 36, height: 4,
+              width: 36,
+              height: 4,
               decoration: BoxDecoration(
                 color: Colors.white.withOpacity(0.15),
                 borderRadius: BorderRadius.circular(2),
@@ -703,18 +796,29 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
                 Text(
                   label,
                   style: const TextStyle(
-                    color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
                 const Spacer(),
-                GestureDetector(
-                  onTap: widget.onClose,
-                  child: Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.06), shape: BoxShape.circle,
+                TvFocusable(
+                  onActivate: widget.onClose,
+                  borderRadius: 20,
+                  child: GestureDetector(
+                    onTap: widget.onClose,
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.06),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 20,
+                        color: Colors.white.withOpacity(0.6),
+                      ),
                     ),
-                    child: Icon(Icons.close_rounded, size: 20, color: Colors.white.withOpacity(0.6)),
                   ),
                 ),
               ],
@@ -728,18 +832,26 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
               child: Wrap(
                 spacing: 10,
                 runSpacing: 10,
-                children: widget.group.items.map((item) {
-                  final isSelected = item.id == _selectedId;
-                  return _FilterChip(
-                    label: item.name,
-                    isSelected: isSelected,
-                    onTap: () {
-                      setState(() => _selectedId = item.id);
-                      widget.onChanged(item.id, item.name);
-                      widget.onClose();
-                    },
-                  );
-                }).toList(),
+                children: [
+                  for (var i = 0; i < widget.group.items.length; i++)
+                    _FilterChip(
+                      label: widget.group.items[i].name,
+                      isSelected: widget.group.items[i].id == _selectedId,
+                      autofocus:
+                          isTvSurface &&
+                          (widget.group.items[i].id == _selectedId ||
+                              (!widget.group.items.any(
+                                    (item) => item.id == _selectedId,
+                                  ) &&
+                                  i == 0)),
+                      onTap: () {
+                        final item = widget.group.items[i];
+                        setState(() => _selectedId = item.id);
+                        widget.onChanged(item.id, item.name);
+                        widget.onClose();
+                      },
+                    ),
+                ],
               ),
             ),
           ),
@@ -806,7 +918,7 @@ class _InfoErrorDialog extends StatelessWidget {
                         // Close button (with hover animation)
                         Align(
                           alignment: Alignment.centerRight,
-                            child: HoverCloseButton(
+                          child: HoverCloseButton(
                             onTap: () => Navigator.pop(context),
                             size: 18,
                           ),
@@ -842,21 +954,25 @@ class _InfoErrorDialog extends StatelessWidget {
                           height: isMobile ? 46 : 52,
                           child: ElevatedButton(
                             onPressed: () => Navigator.pop(context),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: _kPrimaryRed,
-                              foregroundColor: Colors.white,
-                              elevation: 0,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                            ).copyWith(
-                              backgroundColor: WidgetStateProperty.resolveWith((states) {
-                                if (states.contains(WidgetState.hovered)) {
-                                  return const Color(0xFFF40F1D);
-                                }
-                                return _kPrimaryRed;
-                              }),
-                            ),
+                            style:
+                                ElevatedButton.styleFrom(
+                                  backgroundColor: _kPrimaryRed,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ).copyWith(
+                                  backgroundColor:
+                                      WidgetStateProperty.resolveWith((states) {
+                                        if (states.contains(
+                                          WidgetState.hovered,
+                                        )) {
+                                          return const Color(0xFFF40F1D);
+                                        }
+                                        return _kPrimaryRed;
+                                      }),
+                                ),
                             child: const Text(
                               '知道了',
                               style: TextStyle(
@@ -883,12 +999,14 @@ class _InfoErrorDialog extends StatelessWidget {
 class _FilterChip extends StatefulWidget {
   final String label;
   final bool isSelected;
+  final bool autofocus;
   final VoidCallback onTap;
 
   const _FilterChip({
     required this.label,
     required this.isSelected,
     required this.onTap,
+    this.autofocus = false,
   });
 
   @override
@@ -903,10 +1021,10 @@ class _FilterChipState extends State<_FilterChip> {
     final bg = widget.isSelected
         ? _kPrimaryRed
         : _hovered
-            ? _kChipHover
-            : _kChipInactive;
+        ? _kChipHover
+        : _kChipInactive;
 
-    return MouseRegion(
+    final chip = MouseRegion(
       cursor: SystemMouseCursors.click,
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -929,6 +1047,12 @@ class _FilterChipState extends State<_FilterChip> {
           ),
         ),
       ),
+    );
+    return TvFocusable(
+      autofocus: widget.autofocus,
+      onActivate: widget.onTap,
+      borderRadius: 50,
+      child: chip,
     );
   }
 }

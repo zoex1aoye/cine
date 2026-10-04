@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+
 import 'dart:ui';
+
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
 import '../models/mubu_models.dart';
@@ -18,6 +20,7 @@ import 'tag_videos_page.dart';
 import '../api/mubu_ui_adapt.dart';
 import '../api/mubu_constants.dart';
 import '../utils/home_hand_data.dart';
+import '../utils/cine_surface.dart';
 import '../utils/device_profile.dart';
 import '../utils/tv_focus.dart';
 import '../widgets/load_more_button.dart';
@@ -118,7 +121,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       final cats = await _api.getHomeCategorys();
       if (!mounted) return;
       _categories = cats;
-      
+
       if (cats.isNotEmpty) {
         _tabController?.dispose();
         _tabController = TabController(length: cats.length, vsync: this);
@@ -134,12 +137,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             }
           }
         });
-        
+
         final navCats = MubuConstants.filterNavigableCategories(cats);
-        _filterCategoryId = navCats.isNotEmpty ? navCats.first.id : cats.first.id;
+        _filterCategoryId = navCats.isNotEmpty
+            ? navCats.first.id
+            : cats.first.id;
         _selectedHomeCategoryId = cats.first.id;
       }
-      
+
       if (mounted) {
         setState(() {
           _loadingCategories = false;
@@ -210,9 +215,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   void _playVideo(VideoItem video) {
     Navigator.push(
       context,
-      MaterialPageRoute(
-        builder: (_) => PlayerPage(video: video),
-      ),
+      MaterialPageRoute(builder: (_) => PlayerPage(video: video)),
     ).then((_) => _loadBookmarksAndHistory());
   }
 
@@ -233,13 +236,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ).then((_) => _loadBookmarksAndHistory());
   }
 
-
-
   @override
   Widget build(BuildContext context) {
     final w = MediaQuery.of(context).size.width;
     final isDesktop = w >= 800;
-    final isLandscape = MediaQuery.of(context).orientation == Orientation.landscape;
+    final isLandscape =
+        MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
       backgroundColor: kBg,
@@ -258,64 +260,90 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   });
                 },
                 onSearch: () {
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchPage()));
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SearchPage()),
+                  );
                 },
               ),
             Expanded(
-            child: Row(
-              children: [
-                if (isDesktop)
-                  _LeftNavRail(
-                    categories: _categories,
-                    currentTabIndex: _currentTabIndex,
-                    selectedHomeCategoryId: _selectedHomeCategoryId,
-                    isLoading: _loadingCategories,
-                    onCategoryTap: (cat) {
-                      final idx = _categories.indexWhere((c) => c.id == cat.id);
-                      if (idx != -1 && _tabController != null) {
-                        _tabController!.animateTo(idx);
-                      }
-                      setState(() {
-                        _currentTabIndex = 0;
-                        _selectedHomeCategoryId = cat.id;
-                      });
-                    },
-                    onFilterTap: () {
-                      if (_currentTabIndex == 1) return;
-                      setState(() {
-                        _currentTabIndex = 1;
-                      });
-                    },
+              child: Row(
+                children: [
+                  if (isDesktop)
+                    _LeftNavRail(
+                      categories: _categories,
+                      currentTabIndex: _currentTabIndex,
+                      selectedHomeCategoryId: _selectedHomeCategoryId,
+                      isLoading: _loadingCategories,
+                      onCategoryTap: (cat) {
+                        final idx = _categories.indexWhere(
+                          (c) => c.id == cat.id,
+                        );
+                        if (idx != -1 && _tabController != null) {
+                          _tabController!.animateTo(idx);
+                        }
+                        setState(() {
+                          _currentTabIndex = 0;
+                          _selectedHomeCategoryId = cat.id;
+                        });
+                      },
+                      onFilterTap: () {
+                        if (_currentTabIndex == 1) return;
+                        setState(() {
+                          _currentTabIndex = 1;
+                        });
+                      },
+                    ),
+                  Expanded(
+                    child: IndexedStack(
+                      index: _currentTabIndex,
+                      children: [
+                        ExcludeFocus(
+                          excluding: _currentTabIndex != 0,
+                          child: _buildMainContent(),
+                        ),
+                        ExcludeFocus(
+                          excluding: _currentTabIndex != 1,
+                          child: CategoryFilterPage(
+                            key: ValueKey(_filterCategoryId),
+                            initialCategoryId: _filterCategoryId,
+                            preloadedCategories:
+                                MubuConstants.filterNavigableCategories(
+                                  _categories,
+                                ),
+                            tvFocusActive: isTvSurface && _currentTabIndex == 1,
+                          ),
+                        ),
+                        ExcludeFocus(
+                          excluding: _currentTabIndex != 2,
+                          child: _buildBookmarksView(),
+                        ),
+                        ExcludeFocus(
+                          excluding: _currentTabIndex != 3,
+                          child: _buildHistoryView(),
+                        ),
+                      ],
+                    ),
                   ),
-                Expanded(
-                  child: IndexedStack(
-                    index: _currentTabIndex,
-                    children: [
-                      _buildMainContent(), // 0: Home/Hot
-                      CategoryFilterPage(
-                        key: ValueKey(_filterCategoryId),
-                        initialCategoryId: _filterCategoryId,
-                        preloadedCategories: MubuConstants.filterNavigableCategories(_categories),
-                      ), // 1: Discover
-                      _buildBookmarksView(), // 2: Bookmarks
-                      _buildHistoryView(), // 3: History
-                    ],
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
       ),
       bottomNavigationBar: isDesktop
           ? null
           : BottomNavigationBar(
-              currentIndex: _currentTabIndex >= 2 ? _currentTabIndex + 1 : _currentTabIndex,
+              currentIndex: _currentTabIndex >= 2
+                  ? _currentTabIndex + 1
+                  : _currentTabIndex,
               onTap: (i) {
                 if (i == 2) {
                   // Search button in the middle
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchPage()));
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const SearchPage()),
+                  );
                   return;
                 }
                 final adjustedIndex = i > 2 ? i - 1 : i;
@@ -331,7 +359,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 BottomNavigationBarItem(icon: Icon(Icons.home), label: '首页'),
                 BottomNavigationBarItem(icon: Icon(Icons.tune), label: '筛选'),
                 BottomNavigationBarItem(icon: Icon(Icons.search), label: '搜索'),
-                BottomNavigationBarItem(icon: Icon(Icons.bookmark), label: '收藏'),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.bookmark),
+                  label: '收藏',
+                ),
                 BottomNavigationBarItem(icon: Icon(Icons.history), label: '历史'),
               ],
             ),
@@ -340,15 +371,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   Widget _buildMainContent() {
     if (_loadingCategories || _error != null) {
-      return _MubuSplashScreen(
-        error: _error,
-        onRetry: _initAndLoad,
-      );
+      return _MubuSplashScreen(error: _error, onRetry: _initAndLoad);
     }
     if (_categories.isEmpty) {
-      return const Center(child: Text('没有分类数据', style: TextStyle(color: Colors.white54)));
+      return const Center(
+        child: Text('没有分类数据', style: TextStyle(color: Colors.white54)),
+      );
     }
-    if (_tabController == null || _tabController!.length != _categories.length) {
+    if (_tabController == null ||
+        _tabController!.length != _categories.length) {
       return const Center(child: CircularProgressIndicator(color: kRed));
     }
 
@@ -358,17 +389,21 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       children: [
         TabBarView(
           controller: _tabController,
+          physics: isTvSurface ? const NeverScrollableScrollPhysics() : null,
           children: _categories.asMap().entries.map((entry) {
             final idx = entry.key;
             final cat = entry.value;
-            return CategoryContentView(
-              category: cat,
-              api: _api,
-              onPlay: _playVideo,
-              onInfo: _showVideoInfo,
-              hasTopPadding: !isDesktop,
-              tabController: _tabController!,
-              index: idx,
+            return ExcludeFocus(
+              excluding: _tabController!.index != idx,
+              child: CategoryContentView(
+                category: cat,
+                api: _api,
+                onPlay: _playVideo,
+                onInfo: _showVideoInfo,
+                hasTopPadding: !isDesktop,
+                tabController: _tabController!,
+                index: idx,
+              ),
             );
           }).toList(),
         ),
@@ -394,7 +429,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     labelColor: Colors.white,
                     unselectedLabelColor: Colors.white30,
                     dividerColor: Colors.transparent,
-                    labelStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                    labelStyle: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
                     unselectedLabelStyle: const TextStyle(fontSize: 14),
                     tabAlignment: TabAlignment.start,
                     tabs: _categories.map((cat) {
@@ -419,7 +457,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           children: [
             Icon(Icons.bookmark_outline, size: 52, color: Colors.white24),
             const SizedBox(height: 14),
-            const Text('暂无收藏影片', style: TextStyle(color: Colors.white38, fontSize: 14)),
+            const Text(
+              '暂无收藏影片',
+              style: TextStyle(color: Colors.white38, fontSize: 14),
+            ),
           ],
         ),
       );
@@ -440,13 +481,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               children: [
                 const Text(
                   '我的收藏',
-                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const Spacer(),
-                const SizedBox(
-                  width: 100,
-                  height: 40,
-                ),
+                const SizedBox(width: 100, height: 40),
               ],
             ),
           ),
@@ -509,7 +551,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           children: [
             Icon(Icons.history, size: 52, color: Colors.white24),
             const SizedBox(height: 14),
-            const Text('暂无播放历史', style: TextStyle(color: Colors.white38, fontSize: 14)),
+            const Text(
+              '暂无播放历史',
+              style: TextStyle(color: Colors.white38, fontSize: 14),
+            ),
           ],
         ),
       );
@@ -530,7 +575,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               children: [
                 const Text(
                   '播放历史',
-                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const Spacer(),
                 SizedBox(
@@ -548,7 +597,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       alignment: Alignment.centerRight,
                     ),
                     icon: const Icon(Icons.delete_sweep, color: kRed, size: 18),
-                    label: const Text('清空', style: TextStyle(color: kRed, fontSize: 13, fontWeight: FontWeight.bold)),
+                    label: const Text(
+                      '清空',
+                      style: TextStyle(
+                        color: kRed,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -611,10 +667,7 @@ class _TopBar extends StatelessWidget {
   final ValueChanged<int> onNavTap;
   final VoidCallback onSearch;
 
-  const _TopBar({
-    required this.onNavTap,
-    required this.onSearch,
-  });
+  const _TopBar({required this.onNavTap, required this.onSearch});
 
   @override
   Widget build(BuildContext context) {
@@ -627,7 +680,9 @@ class _TopBar extends StatelessWidget {
           height: 64,
           decoration: BoxDecoration(
             color: kGlass.withOpacity(0.8),
-            border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
+            border: Border(
+              bottom: BorderSide(color: Colors.white.withOpacity(0.05)),
+            ),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Row(
@@ -640,7 +695,11 @@ class _TopBar extends StatelessWidget {
               else
                 IconButton(
                   onPressed: onSearch,
-                  icon: Icon(Icons.search, color: Colors.white.withOpacity(0.6), size: 22),
+                  icon: Icon(
+                    Icons.search,
+                    color: Colors.white.withOpacity(0.6),
+                    size: 22,
+                  ),
                 ),
 
               const SizedBox(width: 16),
@@ -687,7 +746,7 @@ class _TopBar extends StatelessWidget {
   }
 
   Widget _buildSearchBar() {
-    return MouseRegion(
+    final bar = MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
         onTap: onSearch,
@@ -705,15 +764,23 @@ class _TopBar extends StatelessWidget {
               Expanded(
                 child: Text(
                   '搜索电影、电视剧、动漫...',
-                  style: TextStyle(color: Colors.white.withOpacity(0.25), fontSize: 13),
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.25),
+                    fontSize: 13,
+                  ),
                 ),
               ),
-              Icon(Icons.search, size: 16, color: Colors.white.withOpacity(0.3)),
+              Icon(
+                Icons.search,
+                size: 16,
+                color: Colors.white.withOpacity(0.3),
+              ),
             ],
           ),
         ),
       ),
     );
+    return TvFocusable(onActivate: onSearch, borderRadius: 99, child: bar);
   }
 
   Widget _buildAvatar(BuildContext context) {
@@ -743,7 +810,11 @@ class _TopBar extends StatelessWidget {
               padding: EdgeInsets.symmetric(horizontal: 16),
               child: Row(
                 children: [
-                  Icon(Icons.bookmark_outline_rounded, size: 16, color: Colors.white70),
+                  Icon(
+                    Icons.bookmark_outline_rounded,
+                    size: 16,
+                    color: Colors.white70,
+                  ),
                   SizedBox(width: 8),
                   Text(
                     '收藏夹',
@@ -789,7 +860,11 @@ class _TopBar extends StatelessWidget {
                   color: const Color(0xFF2A2A2E),
                   border: Border.all(color: Colors.white.withOpacity(0.1)),
                 ),
-                child: Icon(Icons.person, size: 16, color: Colors.white.withOpacity(0.5)),
+                child: Icon(
+                  Icons.person,
+                  size: 16,
+                  color: Colors.white.withOpacity(0.5),
+                ),
               ),
               if (MediaQuery.sizeOf(context).width >= 800) ...[
                 const SizedBox(width: 8),
@@ -802,7 +877,11 @@ class _TopBar extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 4),
-                Icon(Icons.arrow_drop_down, size: 16, color: Colors.white.withOpacity(0.5)),
+                Icon(
+                  Icons.arrow_drop_down,
+                  size: 16,
+                  color: Colors.white.withOpacity(0.5),
+                ),
               ],
             ],
           ),
@@ -834,7 +913,8 @@ class _LeftNavRail extends StatefulWidget {
   State<_LeftNavRail> createState() => _LeftNavRailState();
 }
 
-class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderStateMixin {
+class _LeftNavRailState extends State<_LeftNavRail>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -894,7 +974,9 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
       width: 80,
       decoration: BoxDecoration(
         color: kSurface,
-        border: Border(right: BorderSide(color: Colors.white.withOpacity(0.05))),
+        border: Border(
+          right: BorderSide(color: Colors.white.withOpacity(0.05)),
+        ),
       ),
       child: SingleChildScrollView(
         physics: const BouncingScrollPhysics(),
@@ -947,11 +1029,18 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
                 final isHot = cat.name == '推荐' || cat.id == 88;
                 final label = isHot ? '热门' : cat.name;
                 final icon = _getCategoryIcon(cat.name);
-                final active = widget.currentTabIndex == 0 && widget.selectedHomeCategoryId == cat.id;
+                final active =
+                    widget.currentTabIndex == 0 &&
+                    widget.selectedHomeCategoryId == cat.id;
 
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: _railBtn(icon, label, active, () => widget.onCategoryTap(cat)),
+                  child: _railBtn(
+                    icon,
+                    label,
+                    active,
+                    () => widget.onCategoryTap(cat),
+                  ),
                 );
               }),
 
@@ -968,7 +1057,12 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
     );
   }
 
-  Widget _railBtn(IconData icon, String label, bool active, VoidCallback onTap) {
+  Widget _railBtn(
+    IconData icon,
+    String label,
+    bool active,
+    VoidCallback onTap,
+  ) {
     final btn = MouseRegion(
       cursor: SystemMouseCursors.click,
       child: GestureDetector(
@@ -1011,7 +1105,11 @@ class _LeftNavRailState extends State<_LeftNavRail> with SingleTickerProviderSta
         ),
       ),
     );
-    return TvFocusable(onActivate: onTap, child: btn);
+    return TvFocusable(
+      onActivate: onTap,
+      autofocus: isTvSurface && active && widget.currentTabIndex == 0,
+      child: btn,
+    );
   }
 }
 
@@ -1128,11 +1226,7 @@ class _HeroBannerState extends State<_HeroBanner> {
                 gradient: RadialGradient(
                   center: Alignment.topRight,
                   radius: 1.5,
-                  colors: [
-                    Colors.transparent,
-                    kBg.withOpacity(0.3),
-                    kBg,
-                  ],
+                  colors: [Colors.transparent, kBg.withOpacity(0.3), kBg],
                   stops: const [0.3, 0.7, 1.0],
                 ),
               ),
@@ -1194,7 +1288,11 @@ class _HeroBannerState extends State<_HeroBanner> {
                 Row(
                   children: [
                     if (widget.video.score.isNotEmpty) ...[
-                      Icon(Icons.star, color: Colors.amber, size: UIAdapt.px(context, 14)),
+                      Icon(
+                        Icons.star,
+                        color: Colors.amber,
+                        size: UIAdapt.px(context, 14),
+                      ),
                       SizedBox(width: UIAdapt.px(context, 4)),
                       Text(
                         widget.video.score,
@@ -1219,7 +1317,9 @@ class _HeroBannerState extends State<_HeroBanner> {
                 if (_detail != null && _detail!.description.isNotEmpty) ...[
                   SizedBox(height: UIAdapt.px(context, 12)),
                   SizedBox(
-                    width: isSmall ? double.infinity : MediaQuery.of(context).size.width * 0.5,
+                    width: isSmall
+                        ? double.infinity
+                        : MediaQuery.of(context).size.width * 0.5,
                     child: Text(
                       _detail!.description,
                       maxLines: 2,
@@ -1235,7 +1335,9 @@ class _HeroBannerState extends State<_HeroBanner> {
                 ] else if (_loadingDetail) ...[
                   SizedBox(height: UIAdapt.px(context, 12)),
                   Container(
-                    width: isSmall ? double.infinity : MediaQuery.of(context).size.width * 0.35,
+                    width: isSmall
+                        ? double.infinity
+                        : MediaQuery.of(context).size.width * 0.35,
                     height: UIAdapt.px(context, 14),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
@@ -1244,7 +1346,9 @@ class _HeroBannerState extends State<_HeroBanner> {
                   ),
                   SizedBox(height: UIAdapt.px(context, 4)),
                   Container(
-                    width: isSmall ? double.infinity : MediaQuery.of(context).size.width * 0.25,
+                    width: isSmall
+                        ? double.infinity
+                        : MediaQuery.of(context).size.width * 0.25,
                     height: UIAdapt.px(context, 14),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.05),
@@ -1371,7 +1475,9 @@ class _TagSectionState extends State<_TagSection> {
       );
       var handData = <int, List<VideoItem>>{};
       try {
-        handData = await MubuApiClient.instance.getHomeHandData(widget.categoryId);
+        handData = await MubuApiClient.instance.getHomeHandData(
+          widget.categoryId,
+        );
       } catch (_) {}
       if (!mounted || generation != _loadGeneration || widget.tag.id != tagId) {
         return;
@@ -1421,15 +1527,29 @@ class _TagSectionState extends State<_TagSection> {
             children: [
               Text(
                 widget.tag.name,
-                style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const Spacer(),
               TextButton(
                 onPressed: widget.onSeeAll,
                 child: Row(
                   children: [
-                    Text('查看全部', style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12)),
-                    Icon(Icons.chevron_right, size: 16, color: Colors.white.withOpacity(0.4)),
+                    Text(
+                      '查看全部',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.4),
+                        fontSize: 12,
+                      ),
+                    ),
+                    Icon(
+                      Icons.chevron_right,
+                      size: 16,
+                      color: Colors.white.withOpacity(0.4),
+                    ),
                   ],
                 ),
               ),
@@ -1442,7 +1562,8 @@ class _TagSectionState extends State<_TagSection> {
                 spacing: 14,
                 runSpacing: 14,
                 children: displayVideos.map((v) {
-                  final cardWidth = (constraints.maxWidth - (cols - 1) * 14) / cols;
+                  final cardWidth =
+                      (constraints.maxWidth - (cols - 1) * 14) / cols;
                   return SizedBox(
                     width: cardWidth,
                     child: MovieCard(
@@ -1491,7 +1612,8 @@ class _SkeletonGrid extends StatefulWidget {
   State<_SkeletonGrid> createState() => _SkeletonGridState();
 }
 
-class _SkeletonGridState extends State<_SkeletonGrid> with SingleTickerProviderStateMixin {
+class _SkeletonGridState extends State<_SkeletonGrid>
+    with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
   @override
@@ -1518,7 +1640,9 @@ class _SkeletonGridState extends State<_SkeletonGrid> with SingleTickerProviderS
           opacity: 0.25 + 0.45 * _controller.value,
           child: LayoutBuilder(
             builder: (ctx, constraints) {
-              final cols = MovieSliverGrid.calculateColumns(constraints.maxWidth);
+              final cols = MovieSliverGrid.calculateColumns(
+                constraints.maxWidth,
+              );
               final cardWidth = (constraints.maxWidth - (cols - 1) * 14) / cols;
               return Wrap(
                 spacing: 14,
@@ -1594,7 +1718,8 @@ class CategoryContentView extends StatefulWidget {
   State<CategoryContentView> createState() => _CategoryContentViewState();
 }
 
-class _CategoryContentViewState extends State<CategoryContentView> with AutomaticKeepAliveClientMixin {
+class _CategoryContentViewState extends State<CategoryContentView>
+    with AutomaticKeepAliveClientMixin {
   List<TagItem> _tags = [];
   Map<int, List<VideoItem>> _tagVideos = {};
   bool _loading = true;
@@ -1624,7 +1749,10 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
   }
 
   void _onTabChanged() {
-    if (widget.tabController.index == widget.index && _tags.isEmpty && !_loading && _error == null) {
+    if (widget.tabController.index == widget.index &&
+        _tags.isEmpty &&
+        !_loading &&
+        _error == null) {
       _loadContent();
     }
   }
@@ -1695,10 +1823,13 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    
+
     // If we haven't loaded anything yet because we were lazy-loaded (and are now the active tab),
     // we trigger the load. Just a fallback safety check.
-    if (widget.tabController.index == widget.index && _tags.isEmpty && !_loading && _error == null) {
+    if (widget.tabController.index == widget.index &&
+        _tags.isEmpty &&
+        !_loading &&
+        _error == null) {
       // Defer state mutation to next frame to avoid build phase setState crashes
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _loadContent();
@@ -1727,9 +1858,10 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
       slivers: [
         if (widget.hasTopPadding)
           const SliverPadding(padding: EdgeInsets.only(top: 60)),
-        
+
         // Hero banner
-        if (_tags.isNotEmpty && (_tagVideos[_tags.first.id]?.isNotEmpty ?? false))
+        if (_tags.isNotEmpty &&
+            (_tagVideos[_tags.first.id]?.isNotEmpty ?? false))
           SliverToBoxAdapter(
             child: _HeroBanner(
               tag: _tags.first,
@@ -1755,10 +1887,8 @@ class _CategoryContentViewState extends State<CategoryContentView> with Automati
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => TagVideosPage(
-                      tag: tag,
-                      categoryId: widget.category.id,
-                    ),
+                    builder: (_) =>
+                        TagVideosPage(tag: tag, categoryId: widget.category.id),
                   ),
                 );
               },
@@ -1784,8 +1914,18 @@ class _InfoErrorDialog extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(color: Colors.white.withOpacity(0.08)),
       ),
-      title: const Text('加载失败', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-      content: Text('无法获取影片 "$title" 的详细信息，请稍后重试。', style: const TextStyle(color: Colors.white70, fontSize: 14)),
+      title: const Text(
+        '加载失败',
+        style: TextStyle(
+          color: Colors.white,
+          fontWeight: FontWeight.bold,
+          fontSize: 16,
+        ),
+      ),
+      content: Text(
+        '无法获取影片 "$title" 的详细信息，请稍后重试。',
+        style: const TextStyle(color: Colors.white70, fontSize: 14),
+      ),
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
@@ -1801,16 +1941,14 @@ class _MubuSplashScreen extends StatefulWidget {
   final String? error;
   final VoidCallback? onRetry;
 
-  const _MubuSplashScreen({
-    this.error,
-    this.onRetry,
-  });
+  const _MubuSplashScreen({this.error, this.onRetry});
 
   @override
   State<_MubuSplashScreen> createState() => _MubuSplashScreenState();
 }
 
-class _MubuSplashScreenState extends State<_MubuSplashScreen> with SingleTickerProviderStateMixin {
+class _MubuSplashScreenState extends State<_MubuSplashScreen>
+    with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   late Animation<double> _fadeAnimation;
   late Animation<double> _scaleAnimation;
@@ -1895,7 +2033,10 @@ class _MubuSplashScreenState extends State<_MubuSplashScreen> with SingleTickerP
                 children: [
                   // Logo container
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 12,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.white.withOpacity(0.03),
                       borderRadius: BorderRadius.circular(16),
@@ -1961,5 +2102,3 @@ class _MubuSplashScreenState extends State<_MubuSplashScreen> with SingleTickerP
     );
   }
 }
-
-

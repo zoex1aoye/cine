@@ -65,20 +65,22 @@ void main() {
   });
 
   testWidgets('暂停起播不计时', (tester) async {
-    final h = _Harness(probeResult: false)
-      ..dog.setEnabled(true)
-      ..dog.setHasVideoTrack(true)
-      ..dog.setPlaying(false);
+    final h =
+        _Harness(probeResult: false)
+          ..dog.setEnabled(true)
+          ..dog.setHasVideoTrack(true)
+          ..dog.setPlaying(false);
     await tester.pump(const Duration(seconds: 30));
     expect(h.probeCalls, 0);
     expect(h.stalls, 0);
   });
 
   testWidgets('纯音频（无视频轨）不计时', (tester) async {
-    final h = _Harness(probeResult: false)
-      ..dog.setEnabled(true)
-      ..dog.setHasVideoTrack(false)
-      ..dog.setPlaying(true);
+    final h =
+        _Harness(probeResult: false)
+          ..dog.setEnabled(true)
+          ..dog.setHasVideoTrack(false)
+          ..dog.setPlaying(true);
     await tester.pump(const Duration(seconds: 30));
     expect(h.stalls, 0);
   });
@@ -104,9 +106,10 @@ void main() {
     await tester.pump(const Duration(seconds: 6));
     expect(unknown.stalls, 0);
 
-    final broken = _Harness()
-      ..throwOnProbe()
-      ..startHealthyPlayback();
+    final broken =
+        _Harness()
+          ..throwOnProbe()
+          ..startHealthyPlayback();
     await tester.pump(const Duration(seconds: 6));
     expect(broken.stalls, 0);
   });
