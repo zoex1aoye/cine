@@ -12,6 +12,7 @@ import '../utils/device_profile.dart';
 import 'cine_video_controls.dart';
 import 'hwdec_policy.dart';
 import 'hwdec_watchdog.dart';
+import 'playback_open_gate.dart';
 
 /// 基于 `media_kit` 实现的原生桌面/移动端播放控制器实现类
 ///
@@ -50,6 +51,8 @@ class MediaKitPlayerImpl implements JpPlayer {
   final ValueNotifier<int?> _videoWidth = ValueNotifier(null);
   final ValueNotifier<int?> _videoHeight = ValueNotifier(null);
   final ValueNotifier<bool> _isHardwareDecode = ValueNotifier(true);
+
+  final PlaybackOpenGate _openGate = PlaybackOpenGate();
 
   late final HwdecWatchdog _watchdog = HwdecWatchdog(
     hasRenderedFrame: _probeRenderedFrame,
@@ -347,8 +350,8 @@ class MediaKitPlayerImpl implements JpPlayer {
     );
     _subscriptions.add(
       _player.stream.width.listen((w) {
+        // 宽度可能来自封装信息，不能当成已经出帧。看门狗只信 estimated-vf-fps。
         _videoWidth.value = w;
-        if (w != null && w > 0) _watchdog.markFrameRendered();
       }),
     );
     _subscriptions.add(
@@ -449,8 +452,11 @@ class MediaKitPlayerImpl implements JpPlayer {
     }
   }
 
-  /// 切换解码模式并重开当前源，保留进度与暂停态。
-  Future<void> _reopenWithDecode({required bool hardware}) async {
+  /// 切换解码模式并重开 [url]，保留进度与暂停态。必须在 [_openGate] 里调用。
+  Future<void> _reopenWithDecode({
+    required bool hardware,
+    required String url,
+  }) async {
     final native = _player.platform;
     if (native is! NativePlayer) return;
     final pos = _player.state.position;
@@ -471,23 +477,33 @@ class MediaKitPlayerImpl implements JpPlayer {
       );
       _startOverridden = true;
     }
-    await _player.open(Media(_currentUrl), play: wasPlaying);
+    _currentUrl = url;
+    await _player.open(Media(url), play: wasPlaying);
+  }
+
+  Future<void> _waitInitialOpen() async {
+    final initial = _initialOpenDone;
+    if (initial != null && !initial.isCompleted) {
+      await initial.future;
+    }
   }
 
   Future<void> _fallbackToSoftwareDecode() async {
     if (!Platform.isAndroid || _decodeReopenInFlight) return;
     if (_softFallbackUsed || !_isHardwareDecode.value) return;
+    final generation = _openGate.generation;
+    final url = _currentUrl;
     _softFallbackUsed = true;
     _decodeReopenInFlight = true;
     _watchdog.setEnabled(false);
     jpLog('PLAYER', 'Android hwdec failed → reopen once with hwdec=no');
     try {
-      final initial = _initialOpenDone;
-      if (initial != null && !initial.isCompleted) {
-        await initial.future;
-      }
-      _autoFellBack = true;
-      await _reopenWithDecode(hardware: false);
+      await _openGate.run(generation, () async {
+        await _waitInitialOpen();
+        if (generation != _openGate.generation) return;
+        _autoFellBack = true;
+        await _reopenWithDecode(hardware: false, url: url);
+      });
     } catch (e) {
       jpLog('PLAYER', 'soft-decode reopen failed: $e');
     } finally {
@@ -507,24 +523,29 @@ class MediaKitPlayerImpl implements JpPlayer {
   @override
   Future<void> setSource(String url, {bool autoPlay = true}) async {
     jpLog('PLAYER', 'MediaKitPlayerImpl: 热切换播放源至 $url');
+    final generation = _openGate.bump();
     _softFallbackUsed = false;
     _watchdog.resetForNewSource();
-    _currentUrl = url;
-    final native = _player.platform;
-    if (native is NativePlayer) {
-      if (_startOverridden) {
-        await native.setProperty('start', '0');
-        _startOverridden = false;
+    await _openGate.run(generation, () async {
+      await _waitInitialOpen();
+      if (generation != _openGate.generation) return;
+      _currentUrl = url;
+      final native = _player.platform;
+      if (native is NativePlayer) {
+        if (_startOverridden) {
+          await native.setProperty('start', '0');
+          _startOverridden = false;
+        }
+        if (Platform.isAndroid && _autoFellBack && !_userForcedSoft) {
+          _autoFellBack = false;
+          await native.setProperty('hwdec', HwdecPolicy.initialHwdecProperty());
+          await _applyDecodeTuning(native, hardware: true);
+          _isHardwareDecode.value = true;
+        }
+        _watchdog.setEnabled(Platform.isAndroid && _isHardwareDecode.value);
       }
-      if (Platform.isAndroid && _autoFellBack && !_userForcedSoft) {
-        _autoFellBack = false;
-        await native.setProperty('hwdec', HwdecPolicy.initialHwdecProperty());
-        await _applyDecodeTuning(native, hardware: true);
-        _isHardwareDecode.value = true;
-      }
-      _watchdog.setEnabled(Platform.isAndroid && _isHardwareDecode.value);
-    }
-    await _player.open(Media(url), play: autoPlay);
+      await _player.open(Media(url), play: autoPlay);
+    });
   }
 
   /// 运行时动态调整 MPV 属性（用于弱网自适应，如调整 cache-pause-wait）

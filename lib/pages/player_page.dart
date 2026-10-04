@@ -128,9 +128,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      // 切后台时关闭测速 HTTP，避免挂起的请求阻塞恢复后的加载流程
+    final background =
+        state == AppLifecycleState.paused || state == AppLifecycleState.hidden;
+    if (background) {
+      // 只在真正不可见时停。inactive 含通知栏和过渡动画，不能把正在播的片子停掉。
       _client?.close();
       _client = null;
       final isPlaying = _player?.isPlayingNotifier.value ?? false;
@@ -1351,12 +1352,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         ),
       ),
     );
-    return TvFocusable(
-      onActivate: onTap,
-      borderRadius: 22,
-      focusedScale: 1.04,
-      child: btn,
-    );
+    return TvFocusable(onActivate: onTap, borderRadius: 22, child: btn);
   }
 
   /// 构建播放页的顶部导航与状态栏
@@ -1392,7 +1388,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           TvFocusable(
             onActivate: _toggleBookmark,
             borderRadius: 20,
-            focusedScale: 1.04,
             child: GestureDetector(
               onTap: _toggleBookmark,
               child: MouseRegion(
@@ -1610,7 +1605,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                           autofocus: isTvSurface && showForegroundOverlay,
                           onActivate: _beginPlayback,
                           borderRadius: 48,
-                          focusedScale: 1.04,
                           child: BreathingPlayPulse(onTap: _beginPlayback),
                         ),
                       ),
@@ -1740,7 +1734,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   child: TvFocusable(
                     onActivate: _showAdaptiveLineSelector,
                     borderRadius: 4,
-                    focusedScale: 1.04,
                     child: GestureDetector(
                       onTap: _showAdaptiveLineSelector,
                       child: Container(
@@ -2139,7 +2132,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   autofocus: isTvSurface && active,
                   onActivate: selectLine,
                   borderRadius: 12,
-                  focusedScale: 1.02,
                   child: GestureDetector(
                     onTap: selectLine,
                     child: Container(
@@ -2627,7 +2619,6 @@ class _EpisodeButtonState extends State<_EpisodeButton> {
       autofocus: widget.autofocus,
       onActivate: widget.onTap,
       borderRadius: radius,
-      focusedScale: 1.04,
       child: button,
     );
   }

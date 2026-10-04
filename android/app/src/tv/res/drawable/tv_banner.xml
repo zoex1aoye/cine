@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Leanback 横幅为 16:9。方形启动图标拉进横幅会变形，所以单独给一张纯色横幅。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path
+        android:fillColor="#070708"
+        android:pathData="M0,0h320v180h-320z" />
+    <path
+        android:fillColor="#E50914"
+        android:pathData="M28,78h18v24h-18z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M64,86h148v8h-148z" />
+</vector>

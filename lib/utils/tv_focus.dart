@@ -9,7 +9,6 @@ class TvFocusable extends StatefulWidget {
   final VoidCallback onActivate;
   final bool autofocus;
   final double borderRadius;
-  final double focusedScale;
 
   const TvFocusable({
     super.key,
@@ -17,7 +16,6 @@ class TvFocusable extends StatefulWidget {
     required this.onActivate,
     this.autofocus = false,
     this.borderRadius = 12,
-    this.focusedScale = 1.06,
   });
 
   @override
@@ -69,25 +67,22 @@ class _TvFocusableState extends State<TvFocusable> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
         curve: Curves.easeOutCubic,
-        transform: _focused
-            ? (Matrix4.identity()..scale(widget.focusedScale))
-            : Matrix4.identity(),
-        transformAlignment: Alignment.center,
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(widget.borderRadius),
           border: Border.all(
             color: _focused ? const Color(0xFFE50914) : Colors.transparent,
             width: 2,
           ),
-          boxShadow: _focused
-              ? [
-                  BoxShadow(
-                    color: const Color(0xFFE50914).withOpacity(0.25),
-                    blurRadius: 12,
-                    spreadRadius: 1,
-                  ),
-                ]
-              : null,
+          boxShadow:
+              _focused
+                  ? [
+                    BoxShadow(
+                      color: const Color(0xFFE50914).withOpacity(0.25),
+                      blurRadius: 12,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                  : null,
         ),
         child: widget.child,
       ),

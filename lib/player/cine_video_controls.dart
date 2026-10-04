@@ -589,7 +589,6 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             TvFocusable(
               onActivate: () => player.playOrPause(),
               borderRadius: 24,
-              focusedScale: 1.04,
               child: _tvRoundIcon(_playing ? Icons.pause : Icons.play_arrow),
             ),
             const SizedBox(width: 8),
@@ -597,7 +596,6 @@ class _CineVideoControlsState extends State<CineVideoControls> {
           TvFocusable(
             onActivate: () => widget.state.enterFullscreen(),
             borderRadius: 24,
-            focusedScale: 1.04,
             child: _tvRoundIcon(Icons.fullscreen),
           ),
         ],

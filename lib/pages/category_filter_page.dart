@@ -671,7 +671,6 @@ class _CategoryChip extends StatelessWidget {
     return TvFocusable(
       autofocus: autofocus,
       borderRadius: 20,
-      focusedScale: 1.04,
       onActivate: onTap,
       child: GestureDetector(onTap: onTap, child: chip),
     );
@@ -722,7 +721,6 @@ class _ActiveFilterChipState extends State<_ActiveFilterChip> {
     return TvFocusable(
       onActivate: widget.onTap,
       borderRadius: 16,
-      focusedScale: 1.04,
       child: chip,
     );
   }
@@ -807,7 +805,6 @@ class _SingleFilterSheetState extends State<_SingleFilterSheet> {
                 TvFocusable(
                   onActivate: widget.onClose,
                   borderRadius: 20,
-                  focusedScale: 1.04,
                   child: GestureDetector(
                     onTap: widget.onClose,
                     child: Container(
@@ -1055,7 +1052,6 @@ class _FilterChipState extends State<_FilterChip> {
       autofocus: widget.autofocus,
       onActivate: widget.onTap,
       borderRadius: 50,
-      focusedScale: 1.04,
       child: chip,
     );
   }
