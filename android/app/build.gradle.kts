@@ -38,17 +38,14 @@ android {
     productFlavors {
         create("mobile") {
             dimension = "surface"
-            // 手机保持 arm64，避免多 ABI 包在部分天玑机上抽到 v7a 兼容库
-            ndk {
-                abiFilters += listOf("arm64-v8a")
-            }
+            // ABI 由 flutter --target-platform 决定。这里不能写 abiFilters：
+            // 电视构建开了 --split-per-abi 时，splits 是工程级的，任何 flavor 上的
+            // abiFilters 都会和它冲突。手机 workflow 只传 android-arm64。
         }
         create("tv") {
             dimension = "surface"
             applicationIdSuffix = ".tv"
             resValue("string", "app_name", "幕布 TV")
-            // 不要在这里写 abiFilters。workflow 用 --split-per-abi 打 v7a 与 arm64，
-            // AGP 不允许 abiFilters 和 splits 同时存在。
         }
     }
 
