@@ -30,11 +30,6 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        // 天玑等 arm64 真机：仅打 arm64-v8a，排除 v7a/x86 兼容库
-        ndk {
-            abiFilters.clear()
-            abiFilters += listOf("arm64-v8a")
-        }
     }
 
     // mobile = phone/tablet；tv = projector/Android TV sideload（Leanback required=false）
@@ -43,11 +38,19 @@ android {
     productFlavors {
         create("mobile") {
             dimension = "surface"
+            // 手机保持 arm64，避免多 ABI 包在部分天玑机上抽到 v7a 兼容库
+            ndk {
+                abiFilters += listOf("arm64-v8a")
+            }
         }
         create("tv") {
             dimension = "surface"
             applicationIdSuffix = ".tv"
             resValue("string", "app_name", "幕布 TV")
+            // 电视盒子含 32 位系统；与 arm64 分成两个 APK，由 workflow --split-per-abi 产出
+            ndk {
+                abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            }
         }
     }
 
@@ -63,7 +66,9 @@ android {
         val variant = this
         variant.outputs.all {
             val output = this as com.android.build.gradle.api.ApkVariantOutput
-            val abi = output.filters.find { it.filterType == "ABI" }?.identifier ?: "universal"
+            val abiFromOutput = output.filters.find { it.filterType == "ABI" }?.identifier
+            val abi = abiFromOutput
+                ?: if (variant.flavorName == "mobile") "arm64-v8a" else "universal"
             val surface = variant.flavorName.ifEmpty { "mobile" }
             output.outputFileName = "mubu_${variant.versionName}_${surface}_${abi}.apk"
         }

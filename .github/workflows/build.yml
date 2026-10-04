@@ -148,13 +148,26 @@ jobs:
         run: flutter pub get
 
       - name: Build Android APK
-        run: flutter build apk --release --target-platform android-arm64
+        run: |
+          mkdir -p dist
+          # 手机：仅 arm64。先拷走，避免下一次构建清掉 outputs。
+          flutter build apk --release --flavor mobile \
+            --dart-define=CINE_SURFACE=mobile \
+            --target-platform android-arm64
+          find build/app/outputs -name 'mubu_*.apk' -exec cp -f {} dist/ \;
+          # 电视：32 位（armeabi-v7a）与 64 位（arm64-v8a）各一个 APK。
+          flutter build apk --release --flavor tv \
+            --dart-define=CINE_SURFACE=tv \
+            --target-platform android-arm,android-arm64 \
+            --split-per-abi
+          find build/app/outputs -name 'mubu_*.apk' -exec cp -f {} dist/ \;
+          ls -la dist
 
       - name: Upload Android Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: mubu-android-build
-          path: build/app/outputs/**/mubu_*.apk
+          path: dist/mubu_*.apk
 
   create-release:
     needs: [build-linux, build-windows, build-android]
