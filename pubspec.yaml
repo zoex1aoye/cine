@@ -1,7 +1,7 @@
 name: cine
 description: "幕布 - 跨平台影视客户端"
 publish_to: 'none'
-version: 1.0.9+7
+version: 1.0.10+8
 
 environment:
   sdk: ^3.7.2
