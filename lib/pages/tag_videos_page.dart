@@ -39,6 +39,10 @@ class _TagVideosPageState extends State<TagVideosPage> {
   final List<VideoItem> _videos = [];
 
   int _page = 1;
+  int _autoFills = 0;
+
+  /// 接口按 30 条分页。一次要更多会加载失败。
+  static const _pageSize = 30;
   bool _isLoading = false;
   bool _hasMore = true;
   String? _error;
@@ -64,6 +68,7 @@ class _TagVideosPageState extends State<TagVideosPage> {
     setState(() {
       _videos.clear();
       _page = 1;
+      _autoFills = 0;
       _hasMore = true;
       _error = null;
     });
@@ -77,7 +82,7 @@ class _TagVideosPageState extends State<TagVideosPage> {
       _error = null;
     });
     try {
-      const count = 30;
+      const count = _pageSize;
       final vids = await _api.getTagVideos(
         widget.tag.id,
         tpl: widget.tag.template,
@@ -102,8 +107,9 @@ class _TagVideosPageState extends State<TagVideosPage> {
         _videos.addAll(merged);
         _page++;
         _isLoading = false;
-        if (merged.isEmpty || vids.length < 8) _hasMore = false;
+        if (merged.isEmpty || vids.length < count) _hasMore = false;
       });
+      _scheduleFillIfShort();
     } catch (e) {
       debugPrint('TAG_VIDEOS: Failed to load | tag: ${widget.tag.name} | page: $_page | error: $e');
       if (!mounted) return;
@@ -112,6 +118,18 @@ class _TagVideosPageState extends State<TagVideosPage> {
         _error = '加载数据失败';
       });
     }
+  }
+
+  /// 接口一页 30 条，不够铺满时继续翻页。
+  void _scheduleFillIfShort() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _isLoading || !_hasMore || _autoFills >= 3) return;
+      if (!_scrollController.hasClients) return;
+      if (_scrollController.position.maxScrollExtent <= 80) {
+        _autoFills++;
+        _loadMore();
+      }
+    });
   }
 
   @override

@@ -24,6 +24,24 @@ bool get isTvSurface =>
 /// 详情页方向键走焦点遍历。仅内部全屏把方向键交给 seek / 音量。
 bool tvTransportKeysEnabled(bool isFullscreen) => isTvSurface && isFullscreen;
 
+/// 内部全屏路由还在栈顶时为 true。
+///
+/// Android 返回会先 pop 全屏路由，播放页若再 pop 一次就会直接离开播放页。
+class TvFullscreenSignal {
+  static int _depth = 0;
+
+  static bool get active => _depth > 0;
+
+  static void retain() => _depth++;
+
+  static void release() {
+    if (_depth > 0) _depth--;
+  }
+
+  @visibleForTesting
+  static void debugReset() => _depth = 0;
+}
+
 @visibleForTesting
 void debugOverrideSurface(CineSurface? surface) {
   _debugOverrideSurface = surface;

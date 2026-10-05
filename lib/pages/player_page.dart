@@ -1220,6 +1220,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (targetIdx != -1) _switchSource(targetIdx);
   }
 
+  /// 全屏路由还在时，返回只留给系统 pop 那一层，避免再把播放页弹掉。
+  void _handlePlayerBack() {
+    if (TvFullscreenSignal.active) return;
+    Navigator.of(context).maybePop();
+  }
+
+  void _togglePlayPause() {
+    final player = _player;
+    if (player == null || !_playerInitialized) return;
+    if (player.isPlayingNotifier.value) {
+      player.pause();
+    } else {
+      player.play();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.of(context).size.width;
@@ -1232,10 +1248,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       canPop: true,
       child: CallbackShortcuts(
         bindings: {
-          const SingleActivator(LogicalKeyboardKey.escape):
-              () => Navigator.pop(context),
-          const SingleActivator(LogicalKeyboardKey.goBack):
-              () => Navigator.pop(context),
+          const SingleActivator(LogicalKeyboardKey.escape): _handlePlayerBack,
+          const SingleActivator(LogicalKeyboardKey.goBack): _handlePlayerBack,
+          const SingleActivator(
+            LogicalKeyboardKey.space,
+            includeRepeats: false,
+          ): _togglePlayPause,
         },
         child: Scaffold(
           backgroundColor: Colors.black,

@@ -1184,11 +1184,11 @@ class _HeroBannerState extends State<_HeroBanner> {
     // Netflix 风格：移动端短标签，大屏完整标签
     final playLabel = isSmall ? '播放' : '立即播放';
     final playMinW = isSmall ? 120.0 : UIAdapt.px(context, 150);
+    final insetH = isSmall ? 16.0 : UIAdapt.px(context, 40);
+    final insetBottom = isSmall ? 16.0 : UIAdapt.px(context, 40);
     return Container(
-      height: isSmall ? 260 : UIAdapt.px(context, 420),
       margin: const EdgeInsets.only(bottom: 8),
       child: Stack(
-        fit: StackFit.expand,
         children: [
           if (widget.video.hasCover)
             Positioned(
@@ -1245,10 +1245,8 @@ class _HeroBannerState extends State<_HeroBanner> {
               ),
             ),
           ),
-          Positioned(
-            left: isSmall ? 16.0 : UIAdapt.px(context, 40),
-            bottom: isSmall ? 16.0 : UIAdapt.px(context, 40),
-            right: isSmall ? 16.0 : UIAdapt.px(context, 40),
+          Padding(
+            padding: EdgeInsets.fromLTRB(insetH, 16, insetH, insetBottom),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1401,6 +1399,7 @@ class _TagSection extends StatefulWidget {
   final ValueChanged<VideoItem> onInfo;
   final VoidCallback onSeeAll;
   final List<VideoItem>? initialVideos;
+  final int initialRequestedCount;
 
   const _TagSection({
     super.key,
@@ -1411,24 +1410,35 @@ class _TagSection extends StatefulWidget {
     required this.onInfo,
     required this.onSeeAll,
     this.initialVideos,
+    this.initialRequestedCount = 0,
   });
 
   @override
   State<_TagSection> createState() => _TagSectionState();
 }
 
+double _homeTagContentWidth(BuildContext context) {
+  return MediaQuery.sizeOf(context).width - 48.0;
+}
+
 class _TagSectionState extends State<_TagSection> {
   List<VideoItem> _videos = [];
   bool _loading = false;
+  bool _fetching = false;
   String? _error;
   int _loadGeneration = 0;
+
+  /// 最近一次请求的条数。记下请求值，避免片源偏少时补拉死循环。
+  int _lastRequestedCount = 0;
 
   @override
   void initState() {
     super.initState();
-    _applyInitialVideos(widget.initialVideos);
+    _applyInitialVideos(widget.initialVideos, widget.initialRequestedCount);
     if (_videos.isEmpty) {
-      _loadVideos();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _videos.isEmpty) _loadVideos();
+      });
     }
   }
 
@@ -1437,7 +1447,15 @@ class _TagSectionState extends State<_TagSection> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.tag.id != widget.tag.id ||
         oldWidget.tag.template != widget.tag.template) {
-      _applyInitialVideos(widget.initialVideos);
+      _lastRequestedCount = 0;
+      if (widget.initialVideos == null || widget.initialVideos!.isEmpty) {
+        _loadGeneration++;
+        _fetching = false;
+        _videos = [];
+        _loading = false;
+        _error = null;
+      }
+      _applyInitialVideos(widget.initialVideos, widget.initialRequestedCount);
       if (_videos.isEmpty) {
         _loadVideos();
       }
@@ -1445,29 +1463,39 @@ class _TagSectionState extends State<_TagSection> {
     }
     if (widget.initialVideos != null &&
         widget.initialVideos != oldWidget.initialVideos) {
-      _applyInitialVideos(widget.initialVideos);
+      _applyInitialVideos(widget.initialVideos, widget.initialRequestedCount);
     }
   }
 
-  void _applyInitialVideos(List<VideoItem>? videos) {
+  void _applyInitialVideos(List<VideoItem>? videos, int requestedCount) {
     if (videos == null || videos.isEmpty) return;
+    _loadGeneration++;
     _videos = videos;
     _loading = false;
+    _fetching = false;
     _error = null;
+    _lastRequestedCount = requestedCount;
   }
 
   Future<void> _loadVideos() async {
+    if (!mounted || _fetching) return;
+    final count = MovieSliverGrid.homeTagRowFetchCount(
+      _homeTagContentWidth(context),
+    );
+    if (_videos.isNotEmpty && _lastRequestedCount >= count) return;
+
     final tagId = widget.tag.id;
     final tpl = widget.tag.template;
     final generation = ++_loadGeneration;
-    if (mounted) {
+    final showLoader = _videos.isEmpty;
+    _fetching = true;
+    if (showLoader) {
       setState(() {
         _loading = true;
         _error = null;
       });
     }
     try {
-      const count = 12;
       final vids = await MubuApiClient.instance.getTagVideos(
         tagId,
         tpl: tpl,
@@ -1490,16 +1518,27 @@ class _TagSectionState extends State<_TagSection> {
           tplVideos: vids,
           handData: handData,
         );
+        _lastRequestedCount = count;
         _loading = false;
+        _fetching = false;
       });
     } catch (e) {
       if (!mounted || generation != _loadGeneration || widget.tag.id != tagId) {
         return;
       }
       setState(() {
-        _error = e.toString();
-        _loading = false;
+        _fetching = false;
+        if (_videos.isEmpty) {
+          _error = e.toString();
+          _loading = false;
+        } else {
+          _lastRequestedCount = count;
+        }
       });
+    } finally {
+      if (mounted && generation == _loadGeneration && _fetching) {
+        setState(() => _fetching = false);
+      }
     }
   }
 
@@ -1512,9 +1551,28 @@ class _TagSectionState extends State<_TagSection> {
       return const SizedBox.shrink(); // Hide failed/empty tags quietly
     }
 
-    final w = MediaQuery.of(context).size.width;
-    final contentWidth = w - 48.0;
+    final contentWidth = _homeTagContentWidth(context);
     final cols = MovieSliverGrid.calculateColumns(contentWidth);
+    final needed = MovieSliverGrid.homeTagRowFetchCount(contentWidth);
+    if (MovieSliverGrid.homeTagRowNeedsRefetch(
+      lastRequestedCount: _lastRequestedCount,
+      needed: needed,
+      fetching: _fetching,
+    )) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final stillNeeded = MovieSliverGrid.homeTagRowFetchCount(
+          _homeTagContentWidth(context),
+        );
+        if (MovieSliverGrid.homeTagRowNeedsRefetch(
+          lastRequestedCount: _lastRequestedCount,
+          needed: stillNeeded,
+          fetching: _fetching,
+        )) {
+          _loadVideos();
+        }
+      });
+    }
 
     final displayVideos = _videos.take(cols).toList();
 
@@ -1722,6 +1780,7 @@ class _CategoryContentViewState extends State<CategoryContentView>
     with AutomaticKeepAliveClientMixin {
   List<TagItem> _tags = [];
   Map<int, List<VideoItem>> _tagVideos = {};
+  int _tagRequestedCount = 0;
   bool _loading = true;
   String? _error;
   int _currentLoadSession = 0;
@@ -1781,8 +1840,12 @@ class _CategoryContentViewState extends State<CategoryContentView>
       if (!mounted || session != _currentLoadSession) return;
 
       final tagVideos = <int, List<VideoItem>>{};
+      var requestedCount = 0;
       if (tags.isNotEmpty) {
-        const count = 12;
+        requestedCount = MovieSliverGrid.homeTagRowFetchCount(
+          _homeTagContentWidth(context),
+        );
+        final count = requestedCount;
         final entries = await Future.wait(
           tags.map((tag) async {
             final vids = await widget.api.getTagVideos(
@@ -1809,6 +1872,7 @@ class _CategoryContentViewState extends State<CategoryContentView>
       setState(() {
         _tags = tags;
         _tagVideos = tagVideos;
+        _tagRequestedCount = requestedCount;
         _loading = false;
       });
     } catch (e) {
@@ -1883,6 +1947,7 @@ class _CategoryContentViewState extends State<CategoryContentView>
               onPlay: widget.onPlay,
               onInfo: widget.onInfo,
               initialVideos: _tagVideos[tag.id],
+              initialRequestedCount: _tagRequestedCount,
               onSeeAll: () {
                 Navigator.push(
                   context,

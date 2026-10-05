@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import '../models/mubu_models.dart';
 import '../api/mubu_api_client.dart';
+import '../utils/cine_surface.dart';
 import 'movie_card.dart';
 
 class MovieSliverGrid extends StatelessWidget {
@@ -107,23 +110,45 @@ class MovieSliverGrid extends StatelessWidget {
     }
   }
 
-  /// 根据屏幕宽度返回最大列数限制
+  /// 根据屏幕宽度返回最大列数限制。
+  /// 电视保持 3/4/5/6/8；非电视显示屏放宽为 3/5/6/8/12。
   static int getMaxColumns(double screenWidth) {
-    if (screenWidth < 500) {
-      // 手机竖屏：最多3列
-      return 3;
-    } else if (screenWidth < 900) {
-      // 手机横屏 / 小平板：最多4列
-      return 4;
-    } else if (screenWidth < 1200) {
-      // iPad / 平板：最多5列
-      return 5;
-    } else if (screenWidth < 1600) {
-      // 笔记本：最多6列
-      return 6;
-    } else {
-      // 电视 / 大屏：最多8列
+    if (screenWidth < 500) return 3;
+    if (isTvSurface) {
+      if (screenWidth < 900) return 4;
+      if (screenWidth < 1200) return 5;
+      if (screenWidth < 1600) return 6;
       return 8;
     }
+    if (screenWidth < 900) return 5;
+    if (screenWidth < 1200) return 6;
+    if (screenWidth < 1600) return 8;
+    return 12;
+  }
+
+  static const int homeTagFetchMin = 6;
+  static const int homeTagFetchMax = 30;
+
+  /// 电视首页一行固定请求条数，够其最多 8 列。
+  static const int tvHomeTagFetchCount = 12;
+
+  /// 非电视首页一行请求条数：至少 [homeTagFetchMin]，封顶 [homeTagFetchMax]。
+  static int homeTagFetchCountForColumns(int columns) {
+    return math.min(homeTagFetchMax, math.max(columns, homeTagFetchMin));
+  }
+
+  /// 首页 tag 一行应请求的条数。电视固定 12，非电视跟着列数走。
+  static int homeTagRowFetchCount(double contentWidth) {
+    if (isTvSurface) return tvHomeTagFetchCount;
+    return homeTagFetchCountForColumns(calculateColumns(contentWidth));
+  }
+
+  /// 变宽且没有请求在飞时才补拉。变窄（needed 更小）不请求。
+  static bool homeTagRowNeedsRefetch({
+    required int lastRequestedCount,
+    required int needed,
+    required bool fetching,
+  }) {
+    return !fetching && lastRequestedCount < needed;
   }
 }

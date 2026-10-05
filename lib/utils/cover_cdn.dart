@@ -1,6 +1,29 @@
 /// 封面 CDN：URL 拼装、候选域去重置首、换域步进。
 library;
 
+import 'package:flutter/foundation.dart';
+
+/// 图片域解析结果变化时通知封面重试。签名不变则不通知。
+class CoverCdnSignals {
+  CoverCdnSignals._();
+
+  static final ValueNotifier<int> epoch = ValueNotifier<int>(0);
+  static String _signature = '';
+
+  static void publish(String domain, List<String> candidates) {
+    final signature = '$domain|${candidates.join(',')}';
+    if (signature == _signature) return;
+    _signature = signature;
+    epoch.value++;
+  }
+
+  @visibleForTesting
+  static void debugReset() {
+    _signature = '';
+    epoch.value = 0;
+  }
+}
+
 const kHardcodedImgDomainBackups = <String>[
   'static2.gutaike.com',
   'static.shaxyt.com',

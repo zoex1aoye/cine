@@ -110,4 +110,19 @@ void main() {
       );
     });
   });
+
+  group('CoverCdnSignals', () {
+    test('域名变化才通知，相同签名不重复', () {
+      CoverCdnSignals.debugReset();
+      var ticks = 0;
+      void onTick() => ticks++;
+      CoverCdnSignals.epoch.addListener(onTick);
+      addTearDown(() => CoverCdnSignals.epoch.removeListener(onTick));
+
+      CoverCdnSignals.publish('a.com', ['a.com']);
+      CoverCdnSignals.publish('a.com', ['a.com']);
+      CoverCdnSignals.publish('b.com', ['b.com', 'a.com']);
+      expect(ticks, 2);
+    });
+  });
 }

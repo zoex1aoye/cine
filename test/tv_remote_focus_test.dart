@@ -15,6 +15,20 @@ void main() {
     expect(tvTransportKeysEnabled(true), isFalse);
   });
 
+  test('全屏信号成对持有，播放页返回才不会多弹一层', () {
+    TvFullscreenSignal.debugReset();
+    expect(TvFullscreenSignal.active, isFalse);
+    TvFullscreenSignal.retain();
+    expect(TvFullscreenSignal.active, isTrue);
+    TvFullscreenSignal.retain();
+    TvFullscreenSignal.release();
+    expect(TvFullscreenSignal.active, isTrue);
+    TvFullscreenSignal.release();
+    expect(TvFullscreenSignal.active, isFalse);
+    TvFullscreenSignal.release();
+    expect(TvFullscreenSignal.active, isFalse);
+  });
+
   testWidgets('分类芯片可用方向键移动并用 OK 激活', (tester) async {
     var selected = 0;
     await tester.pumpWidget(

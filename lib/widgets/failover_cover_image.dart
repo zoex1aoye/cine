@@ -66,11 +66,25 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
   late String _url;
   bool _exhausted = false;
   bool _failoverScheduled = false;
+  int _attempt = 0;
 
   @override
   void initState() {
     super.initState();
     _bootstrap();
+    CoverCdnSignals.epoch.addListener(_onDomainChanged);
+  }
+
+  @override
+  void dispose() {
+    CoverCdnSignals.epoch.removeListener(_onDomainChanged);
+    super.dispose();
+  }
+
+  void _onDomainChanged() {
+    if (!mounted) return;
+    _attempt = 0;
+    setState(_bootstrap);
   }
 
   @override
@@ -94,17 +108,20 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
 
   List<String> _resolveCandidates() {
     List<String> package = const [];
+    var primary = widget.imgDomain;
     if (widget.candidates != null && widget.candidates!.isNotEmpty) {
       package = widget.candidates!;
     } else {
       try {
         package = MubuApiClient.instance.imgDomainCandidates;
+        final live = MubuApiClient.instance.imgDomain;
+        if (live.isNotEmpty) primary = live;
       } catch (_) {
         package = const [];
       }
     }
     return mergeImgDomainCandidates(
-      primary: widget.imgDomain,
+      primary: primary,
       fromPackage: package,
     );
   }
@@ -152,9 +169,22 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
     setState(() {
       _advanceOrExhaust();
     });
+    if (_exhausted) _scheduleRetry();
+  }
+
+  /// 冷启动时图片域或网络还没好，候选会一次耗尽。稍后再用最新域名重试。
+  void _scheduleRetry() {
+    if (_attempt >= 2) return;
+    _attempt++;
+    final wait = Duration(milliseconds: 400 * _attempt);
+    Future.delayed(wait, () {
+      if (!mounted) return;
+      setState(_bootstrap);
+    });
   }
 
   void _onLoadSuccess() {
+    _attempt = 0;
     if (_index >= 0 && _index < _candidates.length) {
       CoverDomainSessionCache.remember(widget.coverPath, _candidates[_index]);
     }
@@ -194,7 +224,7 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
     }
 
     return CachedNetworkImage(
-      key: ValueKey(_url),
+      key: ValueKey('$_url#$_attempt'),
       imageUrl: _url,
       fit: widget.fit,
       filterQuality: widget.filterQuality,

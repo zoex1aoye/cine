@@ -27,6 +27,10 @@ class MovieInfoDialog extends StatefulWidget {
     this.preloadedDetail,
   }) : super(key: key);
 
+  /// 卡片内容宽。底部弹层要按同一倍数放行，见 [show]。
+  static const double _cardWidth = 620;
+  static const double _cardMarginH = 20;
+
   static Future<void> show({
     required BuildContext context,
     required VideoItem video,
@@ -34,12 +38,16 @@ class MovieInfoDialog extends StatefulWidget {
     required bool isShort,
     required VoidCallback onPlay,
   }) {
+    // Material 3 把底部弹层卡在 640。大屏内部按整窗放大后，
+    // 海报会吃掉右栏，播放/收藏按钮溢出。弹层宽度跟着卡片走。
+    final sheetWidth = UIAdapt.px(context, _cardWidth + _cardMarginH * 2);
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withOpacity(0.7),
       elevation: 0,
+      constraints: BoxConstraints(maxWidth: sheetWidth),
       builder: (ctx) => MovieInfoDialog(
         video: video,
         imgDomain: imgDomain,
@@ -351,9 +359,9 @@ class _MovieInfoDialogState extends State<MovieInfoDialog> {
         color: Colors.transparent,
         child: Center(
           child: MubuDialogContainer(
-            maxWidth: UIAdapt.px(context, 620),
+            maxWidth: UIAdapt.px(context, MovieInfoDialog._cardWidth),
             margin: EdgeInsets.symmetric(
-              horizontal: UIAdapt.px(context, 20),
+              horizontal: UIAdapt.px(context, MovieInfoDialog._cardMarginH),
               vertical: UIAdapt.px(context, 40),
             ),
             child: SizedBox(

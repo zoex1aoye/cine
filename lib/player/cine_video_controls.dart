@@ -1,14 +1,17 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
+import '../api/mubu_ui_adapt.dart';
 import '../utils/cine_surface.dart';
+import '../widgets/mubu_button.dart';
 import '../utils/platform_utils.dart';
-import '../utils/tv_focus.dart';
+import 'seek_hold.dart';
 
 class CineVideoControls extends StatefulWidget {
   final VideoState state;
@@ -32,6 +35,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   bool _showControls = false;
   final FocusNode _tvTransportFocus = FocusNode(debugLabel: 'tv-transport');
   bool _tvTransportLatched = false;
+  bool _tvFullscreenHeld = false;
+
+  /// 路由盖住或弹掉时元素是 inactive，mounted 仍为 true。
+  /// 这时不能再查祖先。
+  bool _ancestorLookupSafe = true;
+  final SeekHold _seekHold = SeekHold();
+  final Stopwatch _seekClock = Stopwatch();
 
   /// 用户已经开始过播放后，窗口态才提供播放/暂停焦点，避免绕过详情页开播。
   bool _tvWindowPlaybackEngaged = false;
@@ -109,6 +119,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   @override
   void initState() {
     super.initState();
+    _seekClock.start();
+    HardwareKeyboard.instance.addHandler(_onSeekKeyUp);
     _volume = player.state.volume;
     _playing = player.state.playing;
     _position = player.state.position;
@@ -149,7 +161,27 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   @override
+  void activate() {
+    super.activate();
+    _ancestorLookupSafe = true;
+  }
+
+  @override
+  void deactivate() {
+    _ancestorLookupSafe = false;
+    super.deactivate();
+  }
+
+  /// 用本控件的 context。`VideoState.isFullscreen()` 查的是共享 notifier，
+  /// 全屏路由切走时那个 context 已经 inactive。
+  bool _isControlsFullscreen() {
+    if (!_ancestorLookupSafe || !mounted) return false;
+    return FullscreenInheritedWidget.maybeOf(context) != null;
+  }
+
+  @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onSeekKeyUp);
     _returnTipTimer?.cancel();
     _seekDebounceTimer?.cancel();
     ScreenBrightness().resetScreenBrightness();
@@ -162,8 +194,41 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     _durationSub.cancel();
     _volumeSub.cancel();
     _bufferingSub.cancel();
+    if (_tvFullscreenHeld) {
+      TvFullscreenSignal.release();
+      _tvFullscreenHeld = false;
+    }
     _tvTransportFocus.dispose();
     super.dispose();
+  }
+
+  /// 全屏控件是另一条路由上的新实例。抓住焦点，左右/确认才会进 [_onTvKey]。
+  void _holdTvFullscreen(bool on) {
+    if (on == _tvFullscreenHeld) return;
+    _tvFullscreenHeld = on;
+    if (on) {
+      TvFullscreenSignal.retain();
+      _scheduleTvTransportFocus();
+    } else {
+      TvFullscreenSignal.release();
+    }
+  }
+
+  void _scheduleTvTransportFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !tvTransportKeysEnabled(_isControlsFullscreen())) {
+        return;
+      }
+      _tvTransportFocus.requestFocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !tvTransportKeysEnabled(_isControlsFullscreen())) {
+          return;
+        }
+        if (!_tvTransportFocus.hasPrimaryFocus) {
+          _tvTransportFocus.requestFocus();
+        }
+      });
+    });
   }
 
   void _armBufferSpeedHud() {
@@ -438,7 +503,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   void _onVerticalDragStart(DragStartDetails details, double screenWidth) {
-    if (!widget.state.isFullscreen()) return;
+    if (!_isControlsFullscreen()) return;
     _verticalDragDistancePx = 0.0;
     _activeVerticalGesture = _verticalGestureKindForX(
       details.globalPosition.dx,
@@ -447,7 +512,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details, double screenWidth) {
-    if (!widget.state.isFullscreen()) return;
+    if (!_isControlsFullscreen()) return;
     if (_activeVerticalGesture == _VerticalGestureKind.none) return;
 
     _verticalDragDistancePx += details.delta.dy.abs();
@@ -494,7 +559,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   void _onDoubleTapDown(TapDownDetails details, double screenWidth) {
-    if (!widget.state.isFullscreen()) return;
+    if (!_isControlsFullscreen()) return;
 
     if (_hasAnchorSession) _clearAnchorSession();
 
@@ -512,11 +577,37 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             ? Duration.zero
             : (target > _duration ? _duration : target);
     player.seek(clamped);
-    if (delta.isNegative) {
-      _showActionIndicator(Icons.replay_10, '-${delta.abs().inSeconds}s');
-    } else {
-      _showActionIndicator(Icons.forward_10, '+${delta.inSeconds}s');
+    final seconds = delta.abs().inSeconds;
+    final backward = delta.isNegative;
+    final icon =
+        backward
+            ? (seconds == 10 ? Icons.replay_10 : Icons.fast_rewind)
+            : (seconds == 10 ? Icons.forward_10 : Icons.fast_forward);
+    _showActionIndicator(icon, '${backward ? '-' : '+'}${seconds}s');
+  }
+
+  /// 电视只在内部全屏把左右键交给进度。桌面键盘一直可以。
+  bool _seekKeysEnabled() {
+    if (isTvSurface) return tvTransportKeysEnabled(_isControlsFullscreen());
+    return _ancestorLookupSafe && mounted;
+  }
+
+  bool _onSeekKeyUp(KeyEvent event) {
+    if (event is! KeyUpEvent) return false;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight) {
+      _seekHold.reset();
     }
+    return false;
+  }
+
+  void _applySeekHold(int sign) {
+    if (!_seekKeysEnabled()) return;
+    final step = _seekHold.take(sign, _seekClock.elapsed);
+    if (step == null) return;
+    _showControlsTransiently();
+    _seekBy(Duration(seconds: step));
   }
 
   void _nudgeVolume(double delta) {
@@ -531,22 +622,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   KeyEventResult _onTvKey(FocusNode node, KeyEvent event) {
-    if (!tvTransportKeysEnabled(widget.state.isFullscreen()) ||
+    if (!tvTransportKeysEnabled(_isControlsFullscreen()) ||
         event is! KeyDownEvent) {
       return KeyEventResult.ignored;
     }
 
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.arrowLeft) {
-      _showControlsTransiently();
-      _seekBy(const Duration(seconds: -10));
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowRight) {
-      _showControlsTransiently();
-      _seekBy(const Duration(seconds: 10));
-      return KeyEventResult.handled;
-    }
     if (key == LogicalKeyboardKey.arrowUp) {
       _showControlsTransiently();
       _nudgeVolume(5);
@@ -557,16 +638,18 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _nudgeVolume(-5);
       return KeyEventResult.handled;
     }
-    if (key == LogicalKeyboardKey.select ||
-        key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.space) {
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter) {
       _showControlsTransiently();
       player.playOrPause();
       return KeyEventResult.handled;
     }
     if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
-      if (widget.state.isFullscreen()) {
-        widget.state.exitFullscreen();
+      if (_isControlsFullscreen()) {
+        // Android 返回还会走 popRoute，这里再 exitFullscreen 会把播放页一起弹掉。
+        // 桌面 Escape 没有 popRoute，仍要自己退全屏。
+        if (defaultTargetPlatform != TargetPlatform.android) {
+          widget.state.exitFullscreen();
+        }
         return KeyEventResult.handled;
       }
       return KeyEventResult.ignored;
@@ -574,41 +657,93 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     return KeyEventResult.ignored;
   }
 
-  Widget _tvRoundIcon(IconData icon) {
-    return Container(
-      width: 44,
-      height: 44,
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.55),
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.white24),
-      ),
-      child: Icon(icon, color: Colors.white, size: 22),
-    );
-  }
+  /// 窗口态遥控按钮夹在自带圆键两侧。左右槽同宽，圆键保持在屏幕中心。
+  Widget _centerPlaybackRow(Color primaryColor) {
+    final tvWindow = isTvSurface && !_isControlsFullscreen();
+    final fullscreen = _isControlsFullscreen();
+    final gap = tvWindow ? 28.0 : 40.0;
+    final slot = UIAdapt.px(context, 150);
+    final height = UIAdapt.px(context, 48);
 
-  Widget _tvWindowActions() {
-    return Positioned(
-      right: 12,
-      bottom: 12,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (_tvWindowPlaybackEngaged) ...[
-            TvFocusable(
-              onActivate: () => player.playOrPause(),
-              borderRadius: 24,
-              child: _tvRoundIcon(_playing ? Icons.pause : Icons.play_arrow),
+    final Widget? leading = tvWindow
+        ? SizedBox(
+            width: slot,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _tvWindowPlaybackEngaged
+                  ? MubuButton(
+                      label: _playing ? '暂停' : '播放',
+                      icon: _playing
+                          ? Icons.pause_circle_filled_rounded
+                          : Icons.play_circle_fill_rounded,
+                      type: MubuButtonType.primary,
+                      onPressed: () => player.playOrPause(),
+                      customWidth: slot,
+                      customHeight: height,
+                    )
+                  : const SizedBox.shrink(),
             ),
-            const SizedBox(width: 8),
-          ],
-          TvFocusable(
-            onActivate: () => widget.state.enterFullscreen(),
-            borderRadius: 24,
-            child: _tvRoundIcon(Icons.fullscreen),
+          )
+        : fullscreen
+        ? IconButton(
+            icon: const Icon(Icons.replay_10, color: Colors.white, size: 48),
+            onPressed: () {
+              _startHideTimer();
+              final target = _position - const Duration(seconds: 10);
+              player.seek(target < Duration.zero ? Duration.zero : target);
+            },
+          )
+        : null;
+
+    final Widget? trailing = tvWindow
+        ? SizedBox(
+            width: slot,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: MubuButton(
+                label: '全屏',
+                icon: Icons.fullscreen,
+                type: MubuButtonType.secondary,
+                onPressed: () => widget.state.enterFullscreen(),
+                customHeight: height,
+              ),
+            ),
+          )
+        : fullscreen
+        ? IconButton(
+            icon: const Icon(Icons.forward_10, color: Colors.white, size: 48),
+            onPressed: () {
+              _startHideTimer();
+              final target = _position + const Duration(seconds: 10);
+              player.seek(target > _duration ? _duration : target);
+            },
+          )
+        : null;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (leading != null) ...[leading, SizedBox(width: gap)],
+        GestureDetector(
+          onTap: () {
+            _startHideTimer();
+            player.playOrPause();
+          },
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: primaryColor.withOpacity(0.8),
+            ),
+            padding: const EdgeInsets.all(16),
+            child: Icon(
+              _playing ? Icons.pause : Icons.play_arrow,
+              color: Colors.white,
+              size: 48,
+            ),
           ),
-        ],
-      ),
+        ),
+        if (trailing != null) ...[SizedBox(width: gap), trailing],
+      ],
     );
   }
 
@@ -617,6 +752,29 @@ class _CineVideoControlsState extends State<CineVideoControls> {
     final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
     final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
     return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  }
+
+  /// 进度条两侧时间。宽度按 `00:00:00` 留足，避免贴边或被挤成两行。
+  Widget _playbackTimeLabel(
+    String text, {
+    required Color color,
+    TextAlign align = TextAlign.start,
+  }) {
+    return SizedBox(
+      width: _playbackTimeLabelWidth,
+      child: Text(
+        text,
+        maxLines: 1,
+        softWrap: false,
+        textAlign: align,
+        style: TextStyle(
+          color: color,
+          fontSize: 13,
+          height: 1.0,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
   }
 
   @override
@@ -633,11 +791,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
               : 1.0,
         );
 
-    final transport = tvTransportKeysEnabled(widget.state.isFullscreen());
+    final transport = tvTransportKeysEnabled(_isControlsFullscreen());
+    final seekByArrows = _seekKeysEnabled();
+    _holdTvFullscreen(transport);
     if (transport && !_tvTransportLatched) {
       _tvTransportLatched = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && tvTransportKeysEnabled(widget.state.isFullscreen())) {
+        if (mounted && tvTransportKeysEnabled(_isControlsFullscreen())) {
           _tvTransportFocus.requestFocus();
         }
       });
@@ -645,477 +805,459 @@ class _CineVideoControlsState extends State<CineVideoControls> {
       _tvTransportLatched = false;
     }
 
-    return Focus(
-      focusNode: _tvTransportFocus,
-      autofocus: transport,
-      canRequestFocus: transport,
-      skipTraversal: !transport,
-      descendantsAreFocusable: !transport,
-      onKeyEvent: _onTvKey,
-      child: MouseRegion(
-        onEnter: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
-        onHover: isDesktopPlatform ? (_) => _showControlsTransiently() : null,
-        onExit: isDesktopPlatform ? (_) => _hideControlsImmediate() : null,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: GestureDetector(
-                onTap: _onSurfaceTap,
-                onDoubleTapDown:
-                    (details) => _onDoubleTapDown(details, screenWidth),
-                onVerticalDragStart:
-                    (details) => _onVerticalDragStart(details, screenWidth),
-                onVerticalDragUpdate:
-                    (details) => _onVerticalDragUpdate(details, screenWidth),
-                onVerticalDragEnd: _onVerticalDragEnd,
-                behavior: HitTestBehavior.opaque,
-              ),
-            ),
-
-            if (_showIndicator)
-              Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 24,
-                    vertical: 16,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.7),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (_indicatorIcon != null)
-                        Icon(_indicatorIcon, color: Colors.white, size: 36),
-                      const SizedBox(height: 8),
-                      Text(
-                        _indicatorText,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
+    final shortcuts = <ShortcutActivator, Intent>{
+      const SingleActivator(LogicalKeyboardKey.space, includeRepeats: false):
+          const _PlayPauseIntent(),
+      if (seekByArrows) ..._seekShortcuts,
+    };
+    return Shortcuts(
+      shortcuts: shortcuts,
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          _PlayPauseIntent: CallbackAction<_PlayPauseIntent>(
+            onInvoke: (_) {
+              _showControlsTransiently();
+              player.playOrPause();
+              return null;
+            },
+          ),
+          _SeekIntent: CallbackAction<_SeekIntent>(
+            onInvoke: (intent) {
+              _applySeekHold(intent.sign);
+              return null;
+            },
+          ),
+        },
+        child: Focus(
+          focusNode: _tvTransportFocus,
+          autofocus: seekByArrows,
+          canRequestFocus: seekByArrows,
+          skipTraversal: !seekByArrows,
+          descendantsAreFocusable: !transport,
+          onKeyEvent: _onTvKey,
+          child: MouseRegion(
+            onEnter:
+                isDesktopPlatform ? (_) => _showControlsTransiently() : null,
+            onHover:
+                isDesktopPlatform ? (_) => _showControlsTransiently() : null,
+            onExit: isDesktopPlatform ? (_) => _hideControlsImmediate() : null,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: _onSurfaceTap,
+                    onDoubleTapDown:
+                        (details) => _onDoubleTapDown(details, screenWidth),
+                    onVerticalDragStart:
+                        (details) => _onVerticalDragStart(details, screenWidth),
+                    onVerticalDragUpdate:
+                        (details) =>
+                            _onVerticalDragUpdate(details, screenWidth),
+                    onVerticalDragEnd: _onVerticalDragEnd,
+                    behavior: HitTestBehavior.opaque,
                   ),
                 ),
-              ),
 
-            // 偏下避开中心播控；控件显示时转圈+速度不再压在播放按钮上。
-            if (_isBuffering && !_isScrubbing)
-              Align(
-                alignment: const Alignment(0, 0.42),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 3,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.white70,
-                        ),
+                if (_showIndicator)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 16,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.7),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_indicatorIcon != null)
+                            Icon(_indicatorIcon, color: Colors.white, size: 36),
+                          const SizedBox(height: 8),
+                          Text(
+                            _indicatorText,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    if (_showBufferSpeed) ...[
-                      const SizedBox(height: 12),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 7,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.65),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          '加载中 ${_cacheSpeedText ?? '—'}',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
+                  ),
 
-            ExcludeFocus(
-              excluding: !_showControls || transport,
-              child: AnimatedOpacity(
-                opacity: _showControls ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 300),
-                child: IgnorePointer(
-                  ignoring: !_showControls,
-                  child: Stack(
-                    children: [
-                      // 中间播控在下层；全屏顶栏必须更高 z-order，否则安卓上返回键点击被吞。
-                      // 拖进度条时彻底去掉中心键（勿仅靠叠层遮挡）。
-                      if (!_isScrubbing)
-                        Center(
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (widget.state.isFullscreen()) ...[
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.replay_10,
-                                    color: Colors.white,
-                                    size: 48,
-                                  ),
-                                  onPressed: () {
-                                    _startHideTimer();
-                                    final target =
-                                        _position - const Duration(seconds: 10);
-                                    player.seek(
-                                      target < Duration.zero
-                                          ? Duration.zero
-                                          : target,
-                                    );
-                                  },
-                                ),
-                                const SizedBox(width: 40),
-                              ],
-                              GestureDetector(
-                                onTap: () {
-                                  _startHideTimer();
-                                  player.playOrPause();
-                                },
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: primaryColor.withOpacity(0.8),
-                                  ),
-                                  padding: const EdgeInsets.all(16),
-                                  child: Icon(
-                                    _playing ? Icons.pause : Icons.play_arrow,
-                                    color: Colors.white,
-                                    size: 48,
-                                  ),
-                                ),
-                              ),
-                              if (widget.state.isFullscreen()) ...[
-                                const SizedBox(width: 40),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.forward_10,
-                                    color: Colors.white,
-                                    size: 48,
-                                  ),
-                                  onPressed: () {
-                                    _startHideTimer();
-                                    final target =
-                                        _position + const Duration(seconds: 10);
-                                    player.seek(
-                                      target > _duration ? _duration : target,
-                                    );
-                                  },
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-
-                      Positioned(
-                        bottom: 0,
-                        left: 0,
-                        right: 0,
-                        child: Container(
-                          padding: EdgeInsets.only(
-                            top: 8,
-                            bottom: MediaQuery.of(context).padding.bottom + 8,
-                            left: 16,
-                            right: 16,
-                          ),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.bottomCenter,
-                              end: Alignment.topCenter,
-                              colors: [
-                                Colors.black.withOpacity(0.8),
-                                Colors.transparent,
-                              ],
+                // 偏下避开中心播控；控件显示时转圈+速度不再压在播放按钮上。
+                if (_isBuffering && !_isScrubbing)
+                  Align(
+                    alignment: const Alignment(0, 0.42),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 40,
+                          height: 40,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 3,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.white70,
                             ),
                           ),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (_isScrubbing) ...[
-                                Text(
-                                  _formatDuration(_scrubTarget),
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 28,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 1.2,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                              ],
-                              Row(
-                                children: [
-                                  // 拖动时只保留上方大号时间，左侧不再重复同一时刻。
-                                  SizedBox(
-                                    width: 48,
-                                    child:
-                                        _isScrubbing
-                                            ? const SizedBox.shrink()
-                                            : Text(
-                                              _formatDuration(_position),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: SliderTheme(
-                                      data: SliderThemeData(
-                                        activeTrackColor: primaryColor,
-                                        inactiveTrackColor: Colors.white24,
-                                        thumbColor: primaryColor,
-                                        trackHeight: 4.0,
-                                        // 关掉系统拖动气泡，避免与上方大号时间重复。
-                                        showValueIndicator:
-                                            ShowValueIndicator.never,
-                                        thumbShape: const RoundSliderThumbShape(
-                                          enabledThumbRadius: 6.0,
-                                        ),
-                                        overlayShape:
-                                            const RoundSliderOverlayShape(
-                                              overlayRadius: 14.0,
-                                            ),
-                                      ),
-                                      child: Slider(
-                                        value: sliderValue,
-                                        min: 0.0,
-                                        max:
-                                            _duration.inMilliseconds
-                                                        .toDouble() >
-                                                    0
-                                                ? _duration.inMilliseconds
-                                                    .toDouble()
-                                                : 1.0,
-                                        onChangeStart: _onScrubStart,
-                                        onChanged: _onScrubUpdate,
-                                        onChangeEnd: (_) {
-                                          unawaited(_onScrubEnd());
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Text(
-                                    _formatDuration(_duration),
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    icon: Icon(
-                                      widget.state.isFullscreen()
-                                          ? Icons.fullscreen_exit
-                                          : Icons.fullscreen,
-                                      color: Colors.white,
-                                    ),
-                                    onPressed: () {
-                                      _startHideTimer();
-                                      if (widget.state.isFullscreen()) {
-                                        widget.state.exitFullscreen();
-                                      } else {
-                                        widget.state.enterFullscreen();
-                                      }
-                                    },
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
                         ),
-                      ),
-
-                      if (widget.state.isFullscreen())
-                        Positioned(
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          child: Container(
-                            padding: EdgeInsets.only(
-                              top: MediaQuery.of(context).padding.top + 4,
-                              bottom: 8,
-                              left: 8,
-                              right: 16,
+                        if (_showBufferSpeed) ...[
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 7,
                             ),
                             decoration: BoxDecoration(
-                              gradient: LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [
-                                  Colors.black.withOpacity(0.7),
-                                  Colors.transparent,
-                                ],
+                              color: Colors.black.withOpacity(0.65),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Text(
+                              '加载中 ${_cacheSpeedText ?? '—'}',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
                               ),
                             ),
-                            child: Row(
-                              children: [
-                                // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
-                                // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
-                                // opaque 热区避免点在图标边缘时被渐变条吞掉且无回调。
-                                GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () {
-                                    _startHideTimer();
-                                    if (widget.state.isFullscreen()) {
-                                      widget.state.exitFullscreen();
-                                    }
-                                  },
-                                  child: const SizedBox(
-                                    width: 48,
-                                    height: 48,
-                                    child: Icon(
-                                      Icons.arrow_back_ios_new,
-                                      color: Colors.white,
-                                    ),
-                                  ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+
+                ExcludeFocus(
+                  excluding: !_showControls || transport,
+                  child: AnimatedOpacity(
+                    opacity: _showControls ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 300),
+                    child: IgnorePointer(
+                      ignoring: !_showControls,
+                      child: Stack(
+                        children: [
+                          // 中间播控在下层；全屏顶栏必须更高 z-order，否则安卓上返回键点击被吞。
+                          // 拖进度条时彻底去掉中心键（勿仅靠叠层遮挡）。
+                          if (!_isScrubbing && !(isTvSurface && !transport))
+                            Center(child: _centerPlaybackRow(primaryColor)),
+
+                          Positioned(
+                            bottom: 0,
+                            left: 0,
+                            right: 0,
+                            child: Container(
+                              padding: EdgeInsets.only(
+                                top: 8,
+                                bottom:
+                                    MediaQuery.of(context).padding.bottom + 12,
+                                left: MediaQuery.of(context).padding.left + 20,
+                                right:
+                                    MediaQuery.of(context).padding.right + 20,
+                              ),
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.bottomCenter,
+                                  end: Alignment.topCenter,
+                                  colors: [
+                                    Colors.black.withOpacity(0.8),
+                                    Colors.transparent,
+                                  ],
                                 ),
-                                if (widget.title != null) ...[
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      widget.title!,
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (_isScrubbing) ...[
+                                    Text(
+                                      _formatDuration(_scrubTarget),
                                       style: const TextStyle(
                                         color: Colors.white,
-                                        fontSize: 18,
+                                        fontSize: 28,
                                         fontWeight: FontWeight.bold,
+                                        letterSpacing: 1.2,
                                       ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                  ),
-                                ],
-                                if (widget.onToggleDecodeMode != null &&
-                                    widget.isHardwareDecodeListenable !=
-                                        null) ...[
-                                  const SizedBox(width: 8),
-                                  ValueListenableBuilder<bool>(
-                                    valueListenable:
-                                        widget.isHardwareDecodeListenable!,
-                                    builder: (context, isHw, _) {
-                                      return TextButton.icon(
-                                        style: TextButton.styleFrom(
-                                          backgroundColor: Colors.white
-                                              .withOpacity(0.12),
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 10,
-                                            vertical: 6,
+                                    const SizedBox(height: 8),
+                                  ],
+                                  Row(
+                                    children: [
+                                      // 拖动时只保留上方大号时间，左侧不再重复同一时刻。
+                                      _isScrubbing
+                                          ? const SizedBox(
+                                            width: _playbackTimeLabelWidth,
+                                          )
+                                          : _playbackTimeLabel(
+                                            _formatDuration(_position),
+                                            color: Colors.white,
                                           ),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(
-                                              16,
-                                            ),
-                                            side: BorderSide(
-                                              color:
-                                                  isHw
-                                                      ? primaryColor
-                                                      : Colors.white30,
-                                            ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: SliderTheme(
+                                          data: SliderThemeData(
+                                            activeTrackColor: primaryColor,
+                                            inactiveTrackColor: Colors.white24,
+                                            thumbColor: primaryColor,
+                                            trackHeight: 4.0,
+                                            // 关掉系统拖动气泡，避免与上方大号时间重复。
+                                            showValueIndicator:
+                                                ShowValueIndicator.never,
+                                            thumbShape:
+                                                const RoundSliderThumbShape(
+                                                  enabledThumbRadius: 6.0,
+                                                ),
+                                            overlayShape:
+                                                const RoundSliderOverlayShape(
+                                                  overlayRadius: 14.0,
+                                                ),
+                                          ),
+                                          child: Slider(
+                                            value: sliderValue,
+                                            min: 0.0,
+                                            max:
+                                                _duration.inMilliseconds
+                                                            .toDouble() >
+                                                        0
+                                                    ? _duration.inMilliseconds
+                                                        .toDouble()
+                                                    : 1.0,
+                                            onChangeStart: _onScrubStart,
+                                            onChanged: _onScrubUpdate,
+                                            onChangeEnd: (_) {
+                                              unawaited(_onScrubEnd());
+                                            },
                                           ),
                                         ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      _playbackTimeLabel(
+                                        _formatDuration(_duration),
+                                        color: Colors.white70,
+                                        align: TextAlign.end,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      IconButton(
                                         icon: Icon(
-                                          isHw
-                                              ? Icons.memory
-                                              : Icons.developer_board,
-                                          size: 16,
-                                          color:
-                                              isHw
-                                                  ? primaryColor
-                                                  : Colors.white70,
-                                        ),
-                                        label: Text(
-                                          isHw ? '硬解' : '软解',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color:
-                                                isHw
-                                                    ? primaryColor
-                                                    : Colors.white70,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                          _isControlsFullscreen()
+                                              ? Icons.fullscreen_exit
+                                              : Icons.fullscreen,
+                                          color: Colors.white,
                                         ),
                                         onPressed: () {
                                           _startHideTimer();
-                                          widget.onToggleDecodeMode!();
+                                          if (_isControlsFullscreen()) {
+                                            widget.state.exitFullscreen();
+                                          } else {
+                                            widget.state.enterFullscreen();
+                                          }
                                         },
-                                      );
-                                    },
+                                      ),
+                                    ],
                                   ),
                                 ],
-                              ],
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-
-            if (isTvSurface && !transport) _tvWindowActions(),
-
-            if (_showReturnTip && _anchorPosition != null)
-              Positioned(
-                top:
-                    widget.state.isFullscreen()
-                        ? MediaQuery.of(context).padding.top + 56
-                        : 16,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: GestureDetector(
-                    onTap: _returnToAnchor,
-                    child: Material(
-                      color: Colors.transparent,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.75),
-                          borderRadius: BorderRadius.circular(24),
-                          border: Border.all(
-                            color: primaryColor.withOpacity(0.6),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.undo, color: primaryColor, size: 18),
-                            const SizedBox(width: 8),
-                            Text(
-                              '回到 ${_formatDuration(_anchorPosition!)}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+
+                          if (_isControlsFullscreen())
+                            Positioned(
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              child: Container(
+                                padding: EdgeInsets.only(
+                                  top: MediaQuery.of(context).padding.top + 4,
+                                  bottom: 8,
+                                  left: 8,
+                                  right: 16,
+                                ),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withOpacity(0.7),
+                                      Colors.transparent,
+                                    ],
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    // 全屏返回只退内部全屏，禁止走页面级 Navigator.pop：
+                                    // 后者在全屏路由已卸掉后的二次触发会把 PlayerPage 一并弹出。
+                                    // opaque 热区避免点在图标边缘时被渐变条吞掉且无回调。
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () {
+                                        _startHideTimer();
+                                        if (_isControlsFullscreen()) {
+                                          widget.state.exitFullscreen();
+                                        }
+                                      },
+                                      child: const SizedBox(
+                                        width: 48,
+                                        height: 48,
+                                        child: Icon(
+                                          Icons.arrow_back_ios_new,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                    if (widget.title != null) ...[
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          widget.title!,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                    if (widget.onToggleDecodeMode != null &&
+                                        widget.isHardwareDecodeListenable !=
+                                            null) ...[
+                                      const SizedBox(width: 8),
+                                      ValueListenableBuilder<bool>(
+                                        valueListenable:
+                                            widget.isHardwareDecodeListenable!,
+                                        builder: (context, isHw, _) {
+                                          return TextButton.icon(
+                                            style: TextButton.styleFrom(
+                                              backgroundColor: Colors.white
+                                                  .withOpacity(0.12),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                    vertical: 6,
+                                                  ),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(16),
+                                                side: BorderSide(
+                                                  color:
+                                                      isHw
+                                                          ? primaryColor
+                                                          : Colors.white30,
+                                                ),
+                                              ),
+                                            ),
+                                            icon: Icon(
+                                              isHw
+                                                  ? Icons.memory
+                                                  : Icons.developer_board,
+                                              size: 16,
+                                              color:
+                                                  isHw
+                                                      ? primaryColor
+                                                      : Colors.white70,
+                                            ),
+                                            label: Text(
+                                              isHw ? '硬解' : '软解',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color:
+                                                    isHw
+                                                        ? primaryColor
+                                                        : Colors.white70,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            onPressed: () {
+                                              _startHideTimer();
+                                              widget.onToggleDecodeMode!();
+                                            },
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                   ),
                 ),
-              ),
-          ],
+
+                if (!_isScrubbing && isTvSurface && !transport)
+                  Center(child: _centerPlaybackRow(primaryColor)),
+
+                if (_showReturnTip && _anchorPosition != null)
+                  Positioned(
+                    top:
+                        _isControlsFullscreen()
+                            ? MediaQuery.of(context).padding.top + 56
+                            : 16,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: GestureDetector(
+                        onTap: _returnToAnchor,
+                        child: Material(
+                          color: Colors.transparent,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 10,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.75),
+                              borderRadius: BorderRadius.circular(24),
+                              border: Border.all(
+                                color: primaryColor.withOpacity(0.6),
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.undo, color: primaryColor, size: 18),
+                                const SizedBox(width: 8),
+                                Text(
+                                  '回到 ${_formatDuration(_anchorPosition!)}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
+class _SeekIntent extends Intent {
+  const _SeekIntent(this.sign);
+  final int sign;
+}
+
+class _PlayPauseIntent extends Intent {
+  const _PlayPauseIntent();
+}
+
+const _seekShortcuts = <ShortcutActivator, Intent>{
+  SingleActivator(LogicalKeyboardKey.arrowLeft): _SeekIntent(-1),
+  SingleActivator(LogicalKeyboardKey.arrowRight): _SeekIntent(1),
+};
+
 enum _VerticalGestureKind { none, brightness, volume }
+
+/// 够放下 `00:00:00`，进度条两侧时间不换行。
+const double _playbackTimeLabelWidth = 108;

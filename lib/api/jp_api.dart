@@ -90,6 +90,7 @@ class JpApi {
           _imgDomain = 'static2.gutaike.com';
         }
         _imgDomainCandidates = mergeImgDomainCandidates(primary: _imgDomain);
+        CoverCdnSignals.publish(_imgDomain, _imgDomainCandidates);
         _initialized = true;
         unawaited(_backgroundRefresh(isFirstInit: false));
         return;
@@ -430,6 +431,7 @@ class JpApi {
         primary: _imgDomain,
         fromPackage: packageDomains,
       );
+      CoverCdnSignals.publish(_imgDomain, _imgDomainCandidates);
 
       jpLog('CDN', 'Final active imgDomain resolved to: $_imgDomain');
       jpLog('CDN', 'imgDomainCandidates: $_imgDomainCandidates');
