@@ -649,15 +649,16 @@ class _CategoryChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 两端半圆的胶囊。圆角必须不小于高度的一半，否则两字标题会变成圆角方块。
-    // 焦点红框只由 TvFocusable 画一层，半径与胶囊一致。
+    // 横向列表会把子项拉满行高。Align 让胶囊按自身高度居中，两端才是半圆。
+    const height = 34.0;
     final chip = AnimatedContainer(
       duration: const Duration(milliseconds: 160),
-      // 中文字身落在行盒上半部，对称 padding 会让字看起来偏上。
-      padding: const EdgeInsets.fromLTRB(18, 13, 18, 0),
+      height: height,
+      padding: const EdgeInsets.symmetric(horizontal: 18),
+      alignment: Alignment.center,
       decoration: BoxDecoration(
         color: _kGlassPanel,
-        borderRadius: BorderRadius.circular(999),
+        borderRadius: BorderRadius.circular(height / 2),
         border: Border.all(
           color: Colors.white.withOpacity(selected ? 0.22 : 0.08),
         ),
@@ -678,11 +679,14 @@ class _CategoryChip extends StatelessWidget {
         ),
       ),
     );
-    return TvFocusable(
-      autofocus: autofocus,
-      borderRadius: 999,
-      onActivate: onTap,
-      child: GestureDetector(onTap: onTap, child: chip),
+    return Align(
+      alignment: Alignment.center,
+      child: TvFocusable(
+        autofocus: autofocus,
+        borderRadius: height / 2,
+        onActivate: onTap,
+        child: GestureDetector(onTap: onTap, child: chip),
+      ),
     );
   }
 }
