@@ -14,6 +14,7 @@ import '../api/mubu_ui_adapt.dart';
 import '../utils/cine_surface.dart';
 import '../utils/platform_utils.dart';
 import '../utils/device_profile.dart';
+import '../utils/playback_cover_gate.dart';
 import '../utils/tv_focus.dart';
 import '../utils/episode_utils.dart';
 import '../utils/source_picker.dart';
@@ -112,12 +113,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   // 防止并行测速期间多次并发 init；切后台后用于判断是否可重试
   Future<void>? _initPlayerFuture;
   bool _wasPlayingBeforeBackground = false;
+  bool _releasedBrowseCovers = false;
 
   @override
   void initState() {
     super.initState();
-    // 进播放页先主动修剪图片缓存，为视频解码内核腾出物理内存。
-    DeviceProfile.trimImageCacheOnPlayerEnter();
+    // 先卸掉仍挂在下层树上的封面，下一帧再 clear，否则 live image 清不掉。
+    if (DeviceProfile.isConstrained) {
+      _releasedBrowseCovers = true;
+      PlaybackCoverGate.acquire();
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      DeviceProfile.trimImageCacheOnPlayerEnter();
+    });
     _innerAspectRatio = PlayerSlotLayout.defaultInnerAspectRatio(
       isShortDrama: _isShortDramaPage,
     );
@@ -386,6 +394,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _disposed = true;
+    if (_releasedBrowseCovers) {
+      PlaybackCoverGate.release();
+      _releasedBrowseCovers = false;
+    }
     WidgetsBinding.instance.removeObserver(this);
     _progressTimer?.cancel();
     _bufferingWatchdog?.cancel();
@@ -1055,6 +1067,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               coverPath: widget.video.coverPath,
               imgDomain: imgDomain,
               fit: BoxFit.cover,
+              holdDuringPlayback: true,
               errorBuilder: (_) => const SizedBox.shrink(),
               placeholderBuilder: (_) => const SizedBox.shrink(),
             ),
@@ -1488,6 +1501,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           coverPath: coverPath,
           imgDomain: imgDomain,
           fit: BoxFit.cover,
+          holdDuringPlayback: true,
           errorBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
           placeholderBuilder: (_) => const ColoredBox(color: Color(0xFF070708)),
         ),
@@ -1561,6 +1575,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         coverPath: widget.video.coverPath,
                         imgDomain: imgDomain,
                         fit: BoxFit.cover,
+                        holdDuringPlayback: true,
                         errorBuilder: (_) => const SizedBox.shrink(),
                         placeholderBuilder: (_) => const SizedBox.shrink(),
                       ),
