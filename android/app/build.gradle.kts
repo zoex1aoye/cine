@@ -38,9 +38,9 @@ android {
     productFlavors {
         create("mobile") {
             dimension = "surface"
-            // ABI 由 flutter --target-platform 决定。这里不能写 abiFilters：
-            // 电视构建开了 --split-per-abi 时，splits 是工程级的，任何 flavor 上的
-            // abiFilters 都会和它冲突。手机 workflow 只传 android-arm64。
+            // 不能在这里写 ndk.abiFilters：电视构建的 --split-per-abi 是工程级的，
+            // 任一 flavor 上的 abiFilters 都会让 splits 配置失败。
+            // 非 arm64 的插件 .so（media_kit 的 libmpv）在 androidComponents 里排除。
         }
         create("tv") {
             dimension = "surface"
@@ -66,6 +66,23 @@ android {
                 ?: if (variant.flavorName == "mobile") "arm64-v8a" else "universal"
             val surface = variant.flavorName.ifEmpty { "mobile" }
             output.outputFileName = "mubu_${variant.versionName}_${surface}_${abi}.apk"
+        }
+    }
+}
+
+// 手机包只留 arm64。--target-platform 只编译 libflutter / libapp，
+// 滤不掉 AAR 里自带的 armeabi-v7a、x86_64 libmpv.so。
+androidComponents {
+    onVariants(selector().withFlavor(dimension = "surface", flavorName = "mobile")) { variant ->
+        listOf(
+            "**/armeabi/**",
+            "**/armeabi-v7a/**",
+            "**/x86/**",
+            "**/x86_64/**",
+            "**/mips/**",
+            "**/mips64/**",
+        ).forEach { pattern ->
+            variant.packaging.jniLibs.excludes.add(pattern)
         }
     }
 }

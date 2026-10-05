@@ -50,11 +50,14 @@ description: >-
 
 ```bash
 flutter build apk --release --flavor mobile \
-  --dart-define=CINE_SURFACE=mobile --target-platform android-arm64
+  --dart-define=CINE_SURFACE=mobile --target-platform android-arm64 \
+  --split-per-abi
 flutter build apk --release --flavor tv \
   --dart-define=CINE_SURFACE=tv \
   --target-platform android-arm,android-arm64 --split-per-abi
 ```
+
+手机包必须 `--split-per-abi`。只传 `--target-platform android-arm64` 滤不掉 AAR 里的 `libmpv.so`（v7a / x86_64），包会从约 35MB 涨到约 62MB。Gradle 里手机 variant 另外 exclude 这些 ABI，且仍然禁止 `ndk.abiFilters`。
 
 发版打 tag `v*`（推 `main` 不会出 Release）。核对资产里有 `mubu_*_tv_armeabi-v7a.apk` 和 `mubu_*_tv_arm64-v8a.apk`。
 

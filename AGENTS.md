@@ -29,7 +29,7 @@
 1. **密钥与签名**：API secret、签名盐、硬编码口令禁止入库外泄；改签名逻辑须对照 `lib/api/jp_api.dart` 现有口径，禁止凭记忆重写
 2. **平台条件编译**：`*_native.dart` / `*_stub.dart` 成对出现；改平台 API 须同步 stub，并验证 `dart.library.html` 导出入口
 3. **播放器边界**：seek-preview 缩略图仅在**内部全屏**（`VideoState.isFullscreen()`）渲染，不是窗口管理器全屏；TV 未全屏时方向键走焦点，seek/音量只在内部全屏；硬解/locale 改动须分平台核对
-4. **Android ABI**：禁止写 `ndk.abiFilters`（与 `--split-per-abi` 冲突，且 splits 是工程级的）。电视 32/64 位只通过 workflow 的 `--target-platform` 产出
+4. **Android ABI**：禁止写 `ndk.abiFilters`（与 `--split-per-abi` 冲突，且 splits 是工程级的）。电视 32/64 位只通过 workflow 的 `--target-platform` 产出。手机 flavor 用 `packaging.jniLibs.excludes` 丢掉非 arm64 的插件 `.so`；`--target-platform` 滤不掉 AAR 里的 `libmpv`
 5. **API 客户端初始化**：测试或独立 pump Widget 前必须完成 `MubuApiClient.instance` 赋值（`main()` 里设的）；禁止直接 pump `MubuApp` 而不初始化
 6. **提交**：AI 不自动 commit——须用户明确指令；commit 格式 `type(scope): 中文描述`，有任务单时附 `[#specs/tickets/…]`
 7. **规范治理**：rules / skills / AGENTS.md 变更走 PR 或用户确认；同一坑出现 2 次当场写回规范（飞轮）
