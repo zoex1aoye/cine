@@ -1,9 +1,38 @@
+import java.util.Properties
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
+
+// CI 用环境变量；本机 release 用 android/key.properties（已 gitignore）。
+// 两者都没有时，debug 构建仍可用；release 任务在执行前失败，禁止退回 debug 证书。
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+}
+
+fun signingProp(envName: String, propertyName: String): String? {
+    System.getenv(envName)?.takeIf { it.isNotBlank() }?.let { return it }
+    return keystoreProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+}
+
+val releaseStoreFile: File? = signingProp("ANDROID_KEYSTORE_PATH", "storeFile")?.let { path ->
+    val candidate = File(path)
+    if (candidate.isAbsolute) candidate else file(path)
+}
+val releaseStorePassword = signingProp("ANDROID_KEYSTORE_PASSWORD", "storePassword")
+val releaseKeyAlias = signingProp("ANDROID_KEY_ALIAS", "keyAlias")
+val releaseKeyPassword = signingProp("ANDROID_KEY_PASSWORD", "keyPassword")
+val hasReleaseSigning = releaseStoreFile != null &&
+    releaseStoreFile.exists() &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
 
 android {
     namespace = "com.example.cine"
@@ -49,11 +78,25 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                // 仅让工程能同步、debug 能编。真正的 release 任务在下方 whenReady 里拒绝执行。
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -89,4 +132,19 @@ androidComponents {
 
 flutter {
     source = "../.."
+}
+
+if (!hasReleaseSigning) {
+    gradle.taskGraph.whenReady {
+        val releaseRequested = allTasks.any { task ->
+            task.name.matches(Regex("(assemble|bundle|package).*Release"))
+        }
+        if (releaseRequested) {
+            throw GradleException(
+                "Release 包必须使用固定签名，不能退回 debug 证书，否则手机无法覆盖安装。" +
+                    "本机配置 android/key.properties；CI 设置 ANDROID_KEYSTORE_PATH、" +
+                    "ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD。",
+            )
+        }
+    }
 }

@@ -1,6 +1,6 @@
 ---
-description: Android mobile/tv 打包与 ABI。改 Gradle、TV Manifest 或 release workflow 时生效。
-globs: android/**,.github/workflows/build.yml
+description: Android mobile/tv 打包、ABI 与 versionCode。改 Gradle、TV Manifest、pubspec 版本或 release workflow 时生效。
+globs: android/**,.github/workflows/build.yml,pubspec.yaml,scripts/check_android_version_code.sh
 alwaysApply: false
 ---
 
@@ -37,6 +37,13 @@ flutter build apk --release --flavor tv \
 - 两次 `flutter build` 之间把 `build/app/outputs` 里的 `mubu_*.apk` 拷到 `dist/`。后一次构建会清掉 outputs
 - 期望文件名：`mubu_<version>_mobile_arm64-v8a.apk`、`mubu_<version>_tv_armeabi-v7a.apk`、`mubu_<version>_tv_arm64-v8a.apk`
 - Release workflow 由 tag `v*` 触发，不是推 `main` 就发版
+
+## versionCode
+
+- `pubspec.yaml` 的 `version` 必须是 `名称+整数`，例如 `1.0.10+8`。Android 覆盖安装只看 `+` 后面的整数
+- 该整数必须严格大于所有已有 `v*` tag 里的 versionCode。只改 `+` 前面的版本名，手机仍无法覆盖
+- 门禁是 `scripts/check_android_version_code.sh`，由 release workflow 的 Android job 执行。不通过则 Android 构建失败，不会出 Release
+- 禁止删掉这道检查，或改成“记得加大版本号”
 
 ## TV 清单
 

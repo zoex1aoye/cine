@@ -59,7 +59,7 @@ flutter build apk --release --flavor tv \
 
 手机包必须 `--split-per-abi`。只传 `--target-platform android-arm64` 滤不掉 AAR 里的 `libmpv.so`（v7a / x86_64），包会从约 35MB 涨到约 62MB。Gradle 里手机 variant 另外 exclude 这些 ABI，且仍然禁止 `ndk.abiFilters`。
 
-发版打 tag `v*`（推 `main` 不会出 Release）。核对资产里有 `mubu_*_tv_armeabi-v7a.apk` 和 `mubu_*_tv_arm64-v8a.apk`。
+发版打 tag `v*`（推 `main` 不会出 Release）。打 tag 前 `pubspec.yaml` 的 `+versionCode` 必须大于已有 `v*` tag，workflow 会跑 `scripts/check_android_version_code.sh`，不通过不出 Android 包。核对资产里有 `mubu_*_tv_armeabi-v7a.apk` 和 `mubu_*_tv_arm64-v8a.apk`。
 
 ## 验证命令
 
