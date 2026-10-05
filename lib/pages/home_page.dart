@@ -1,6 +1,7 @@
-import 'package:flutter/material.dart';
-
+import 'dart:async';
 import 'dart:ui';
+
+import 'package:flutter/material.dart';
 
 import '../api/mubu_api_client.dart';
 import '../api/mubu_storage.dart';
@@ -1402,6 +1403,9 @@ class _TagSection extends StatefulWidget {
   final VoidCallback onSeeAll;
   final List<VideoItem>? initialVideos;
 
+  /// 父级按板块逐步灌入 [initialVideos]。为 true 时自己不再请求。
+  final bool suppliedByParent;
+
   const _TagSection({
     super.key,
     required this.tag,
@@ -1411,6 +1415,7 @@ class _TagSection extends StatefulWidget {
     required this.onInfo,
     required this.onSeeAll,
     this.initialVideos,
+    this.suppliedByParent = false,
   });
 
   @override
@@ -1426,6 +1431,10 @@ class _TagSectionState extends State<_TagSection> {
   @override
   void initState() {
     super.initState();
+    if (widget.suppliedByParent) {
+      _ingestParentVideos(widget.initialVideos);
+      return;
+    }
     _applyInitialVideos(widget.initialVideos);
     if (_videos.isEmpty) {
       _loadVideos();
@@ -1435,6 +1444,13 @@ class _TagSectionState extends State<_TagSection> {
   @override
   void didUpdateWidget(covariant _TagSection oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.suppliedByParent) {
+      if (oldWidget.tag.id != widget.tag.id ||
+          widget.initialVideos != oldWidget.initialVideos) {
+        _ingestParentVideos(widget.initialVideos);
+      }
+      return;
+    }
     if (oldWidget.tag.id != widget.tag.id ||
         oldWidget.tag.template != widget.tag.template) {
       _applyInitialVideos(widget.initialVideos);
@@ -1447,6 +1463,18 @@ class _TagSectionState extends State<_TagSection> {
         widget.initialVideos != oldWidget.initialVideos) {
       _applyInitialVideos(widget.initialVideos);
     }
+  }
+
+  void _ingestParentVideos(List<VideoItem>? videos) {
+    if (videos == null) {
+      _videos = [];
+      _loading = true;
+      _error = null;
+      return;
+    }
+    _videos = videos;
+    _loading = false;
+    _error = null;
   }
 
   void _applyInitialVideos(List<VideoItem>? videos) {
@@ -1748,6 +1776,18 @@ class _CategoryContentViewState extends State<CategoryContentView>
     super.dispose();
   }
 
+  Map<int, List<VideoItem>> _snapshotFeed(
+    HomeTagFeed feed,
+    List<TagItem> tags,
+  ) {
+    final out = <int, List<VideoItem>>{};
+    for (final tag in tags) {
+      if (!feed.hasRaw(tag.id)) continue;
+      out[tag.id] = feed.videosFor(tag.id) ?? const [];
+    }
+    return out;
+  }
+
   void _onTabChanged() {
     if (widget.tabController.index == widget.index &&
         _tags.isEmpty &&
@@ -1772,45 +1812,47 @@ class _CategoryContentViewState extends State<CategoryContentView>
       final tags = await tagsFuture;
       if (!mounted || session != _currentLoadSession) return;
 
-      var handData = <int, List<VideoItem>>{};
-      try {
-        handData = await handFuture;
-      } catch (_) {
-        handData = {};
-      }
-      if (!mounted || session != _currentLoadSession) return;
+      const count = 12;
+      final feed = HomeTagFeed(count: count);
+      setState(() {
+        _tags = tags;
+        _tagVideos = {};
+        _loading = false;
+      });
 
-      final tagVideos = <int, List<VideoItem>>{};
-      if (tags.isNotEmpty) {
-        const count = 12;
-        final entries = await Future.wait(
-          tags.map((tag) async {
-            final vids = await widget.api.getTagVideos(
+      unawaited(() async {
+        Map<int, List<VideoItem>> handData = {};
+        try {
+          handData = await handFuture;
+        } catch (_) {
+          handData = {};
+        }
+        if (!mounted || session != _currentLoadSession) return;
+        feed.setHand(handData);
+        setState(() {
+          _tagVideos = _snapshotFeed(feed, tags);
+        });
+      }());
+
+      await Future.wait(
+        tags.map((tag) async {
+          List<VideoItem> vids = const [];
+          try {
+            vids = await widget.api.getTagVideos(
               tag.id,
               tpl: tag.template,
               count: count,
             );
-            return MapEntry(
-              tag.id,
-              mergeHomeHandFirstPage(
-                tagId: tag.id,
-                page: 1,
-                count: count,
-                tplVideos: vids,
-                handData: handData,
-              ),
-            );
-          }),
-        );
-        if (!mounted || session != _currentLoadSession) return;
-        tagVideos.addEntries(entries);
-      }
-
-      setState(() {
-        _tags = tags;
-        _tagVideos = tagVideos;
-        _loading = false;
-      });
+          } catch (_) {
+            vids = const [];
+          }
+          if (!mounted || session != _currentLoadSession) return;
+          feed.setRaw(tag.id, vids);
+          setState(() {
+            _tagVideos = _snapshotFeed(feed, tags);
+          });
+        }),
+      );
     } catch (e) {
       if (!mounted || session != _currentLoadSession) return;
       setState(() {
@@ -1882,7 +1924,9 @@ class _CategoryContentViewState extends State<CategoryContentView>
               imgDomain: widget.api.imgDomain,
               onPlay: widget.onPlay,
               onInfo: widget.onInfo,
-              initialVideos: _tagVideos[tag.id],
+              suppliedByParent: true,
+              initialVideos:
+                  _tagVideos.containsKey(tag.id) ? _tagVideos[tag.id] : null,
               onSeeAll: () {
                 Navigator.push(
                   context,

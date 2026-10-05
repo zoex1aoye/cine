@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cine/utils/cover_cdn.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -98,6 +100,37 @@ void main() {
       );
       expect(second?.domain, 'b.com');
       expect(second?.url, 'https://b.com/upload/a.jpg');
+    });
+
+    test('404 does not blacklist a domain, 403 and DNS do', () {
+      expect(
+        coverFailureMarksDomainDead(
+          Exception('NetworkImageLoadException: HTTP request failed, statusCode: 404'),
+        ),
+        isFalse,
+      );
+      expect(
+        coverFailureMarksDomainDead(
+          Exception('NetworkImageLoadException: HTTP request failed, statusCode: 403'),
+        ),
+        isTrue,
+      );
+      expect(
+        coverFailureMarksDomainDead(
+          const SocketException("Failed host lookup: 'static.example'"),
+        ),
+        isTrue,
+      );
+      expect(
+        imageProbeAccepts(statusCode: 200, mimeType: 'image/jpeg'),
+        isTrue,
+      );
+      expect(
+        imageProbeAccepts(statusCode: 200, mimeType: 'application/xml'),
+        isFalse,
+      );
+      expect(imageProbeAccepts(statusCode: 200, mimeType: null), isTrue);
+      expect(imageProbeAccepts(statusCode: 403, mimeType: 'image/jpeg'), isFalse);
     });
 
     test('empty path yields null', () {
