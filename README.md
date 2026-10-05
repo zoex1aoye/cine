@@ -37,10 +37,11 @@
 Android 使用 `mobile` / `tv` 两个 **flavor**（dimension `surface`）。构建或 `flutter run` **必须**带 `--flavor`，并同步传入 `--dart-define=CINE_SURFACE=…`（与 flavor 同名），否则 UI/焦点策略会与包体不一致。
 
 ```bash
-# 手机 / 平板（仅 arm64）
+# 手机 / 平板（仅 arm64；--split-per-abi 避免把插件的 v7a/x86_64 .so 打进同一个包）
 flutter build apk --release --flavor mobile \
   --dart-define=CINE_SURFACE=mobile \
-  --target-platform android-arm64
+  --target-platform android-arm64 \
+  --split-per-abi
 
 # TV / 投影：32 位与 64 位各一个 APK（遥控器优先；Leanback required=false）
 flutter build apk --release --flavor tv \
