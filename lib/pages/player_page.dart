@@ -2129,113 +2129,116 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   }
                 }
 
-                return TvFocusable(
-                  autofocus: isTvSurface && active,
-                  onActivate: selectLine,
-                  borderRadius: 12,
-                  child: GestureDetector(
-                    onTap: selectLine,
-                    child: Container(
-                      margin: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
-                      padding: EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: isSmallHeight ? 8 : 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color:
-                            active
-                                ? _primaryRed
-                                : Colors.white.withOpacity(0.04),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
+                return Padding(
+                  padding: EdgeInsets.only(bottom: isSmallHeight ? 4 : 8),
+                  child: TvFocusable(
+                    autofocus: isTvSurface && active,
+                    onActivate: selectLine,
+                    // 外沿 = 按钮圆角 12 + 焦点线宽 2，内沿才贴住按钮圆弧。
+                    borderRadius: 14,
+                    child: GestureDetector(
+                      onTap: selectLine,
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: isSmallHeight ? 8 : 12,
+                        ),
+                        decoration: BoxDecoration(
                           color:
                               active
                                   ? _primaryRed
-                                  : Colors.white.withOpacity(0.05),
+                                  : Colors.white.withOpacity(0.04),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color:
+                                active
+                                    ? _primaryRed
+                                    : Colors.white.withOpacity(0.05),
+                          ),
                         ),
-                      ),
-                      child: Row(
-                        children: [
-                          _speedDot(speed),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                        child: Row(
+                          children: [
+                            _speedDot(speed),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    style: TextStyle(
+                                      color:
+                                          active
+                                              ? Colors.white
+                                              : Colors.white.withOpacity(0.85),
+                                      fontSize: 14,
+                                      fontWeight:
+                                          active
+                                              ? FontWeight.bold
+                                              : FontWeight.w500,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _lineQualityCaption(name),
+                                    style: TextStyle(
+                                      color: _lineQualityColor(
+                                        name,
+                                      ).withOpacity(0.9),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Text(
-                                  name,
+                                  _speedLabel(speed),
                                   style: TextStyle(
                                     color:
                                         active
-                                            ? Colors.white
-                                            : Colors.white.withOpacity(0.85),
-                                    fontSize: 14,
-                                    fontWeight:
-                                        active
-                                            ? FontWeight.bold
-                                            : FontWeight.w500,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  _lineQualityCaption(name),
-                                  style: TextStyle(
-                                    color: _lineQualityColor(
-                                      name,
-                                    ).withOpacity(0.9),
-                                    fontSize: 11,
+                                            ? Colors.white70
+                                            : _speedColor(speed),
+                                    fontSize: 12,
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                _speedLabel(speed),
-                                style: TextStyle(
-                                  color:
-                                      active
-                                          ? Colors.white70
-                                          : _speedColor(speed),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              if (isRecommended || isFastest) ...[
-                                const SizedBox(height: 4),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: (isRecommended
-                                            ? _primaryRed
-                                            : Colors.green)
-                                        .withOpacity(0.2),
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    isRecommended ? '推荐' : '最快',
-                                    style: TextStyle(
-                                      color:
-                                          isRecommended
+                                if (isRecommended || isFastest) ...[
+                                  const SizedBox(height: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: (isRecommended
                                               ? _primaryRed
-                                              : Colors.greenAccent,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
+                                              : Colors.green)
+                                          .withOpacity(0.2),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      isRecommended ? '推荐' : '最快',
+                                      style: TextStyle(
+                                        color:
+                                            isRecommended
+                                                ? _primaryRed
+                                                : Colors.greenAccent,
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
                                     ),
                                   ),
-                                ),
+                                ],
                               ],
-                            ],
-                          ),
-                        ],
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),

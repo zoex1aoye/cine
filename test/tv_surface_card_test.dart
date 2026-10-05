@@ -24,6 +24,12 @@ void main() {
         score: '8.8',
       );
 
+      // 触摸高亮模式下 onShowFocusHighlight 不会亮，红框仍须跟着获焦出现。
+      FocusManager.instance.highlightStrategy = FocusHighlightStrategy.alwaysTouch;
+      addTearDown(() {
+        FocusManager.instance.highlightStrategy = FocusHighlightStrategy.automatic;
+      });
+
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -43,6 +49,27 @@ void main() {
         ),
       );
       await tester.pump();
+
+      bool hasTvFocusBorder(Widget widget) {
+        final decoration = switch (widget) {
+          DecoratedBox(:final decoration) => decoration,
+          AnimatedContainer(:final decoration) => decoration,
+          _ => null,
+        };
+        if (decoration is! BoxDecoration) return false;
+        final border = decoration.border;
+        return border is Border && border.top.color == const Color(0xFFE50914);
+      }
+
+      expect(find.byWidgetPredicate(hasTvFocusBorder), findsNothing);
+
+      final scaleFinder = find.descendant(
+        of: find.byType(FocusableActionDetector),
+        matching: find.byType(AnimatedScale),
+      );
+      Focus.of(tester.element(scaleFinder.first)).requestFocus();
+      await tester.pump();
+      expect(find.byWidgetPredicate(hasTvFocusBorder), findsOneWidget);
 
       // 在 TV 模式下，MovieCard 被 FocusableActionDetector 包裹
       final detectorFinder = find.byType(FocusableActionDetector);

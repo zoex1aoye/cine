@@ -38,8 +38,17 @@ class _MovieCardState extends State<MovieCard> {
 
   bool _hovered = false;
 
+  /// TV 方向键焦点。与 [_hovered] 分开：触摸屏上系统不会走
+  /// `onShowFocusHighlight`，只靠悬停标志画不出红框。
+  bool _tvFocused = false;
+
   /// Only show hover buttons on desktop platforms
   bool get _isDesktop => isDesktopPlatform;
+
+  void _setTvFocused(bool focused) {
+    if (_tvFocused == focused) return;
+    setState(() => _tvFocused = focused);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -68,10 +77,12 @@ class _MovieCardState extends State<MovieCard> {
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
               color:
-                  _hovered
+                  _tvFocused
+                      ? _kRed
+                      : _hovered
                       ? _kRed.withOpacity(0.5)
                       : Colors.white.withOpacity(0.05),
-              width: _hovered ? 1.5 : 1.0,
+              width: _tvFocused ? 2.5 : (_hovered ? 1.5 : 1.0),
             ),
             boxShadow:
                 _hovered
@@ -419,23 +430,12 @@ class _MovieCardState extends State<MovieCard> {
             },
           ),
         },
-        onShowFocusHighlight: (focused) {
-          if (_hovered != focused) setState(() => _hovered = focused);
-        },
+        onFocusChange: _setTvFocused,
         child: AnimatedScale(
-          scale: _hovered ? 1.06 : 1.0,
+          scale: _tvFocused ? 1.06 : 1.0,
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: _hovered ? _kRed : Colors.transparent,
-                width: 2.5,
-              ),
-            ),
-            child: card,
-          ),
+          child: card,
         ),
       ),
     );
