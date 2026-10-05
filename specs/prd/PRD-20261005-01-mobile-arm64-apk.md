@@ -7,9 +7,9 @@ v1.0.9 为让电视 `--split-per-abi` 能编过，删掉了手机 flavor 的 `nd
 
 ## 用户故事与验收标准
 作为侧载手机包的用户，我想要手机 APK 只含 arm64 原生库，以便体积回到约 35MB，且不会在多 ABI 包里抽到 v7a 兼容库。
-- [ ] 手机 release APK 的 `lib/` 只有 `arm64-v8a`，不含 `armeabi-v7a`、`x86`、`x86_64`
-- [ ] 电视 `--split-per-abi` 仍能同时产出 `armeabi-v7a` 与 `arm64-v8a` 两个 APK
-- [ ] Gradle 中没有 `ndk.abiFilters`
+- [x] 手机 release APK 的 `lib/` 只有 `arm64-v8a`，不含 `armeabi-v7a`、`x86`、`x86_64`
+- [x] 电视 `--split-per-abi` 仍能同时产出 `armeabi-v7a` 与 `arm64-v8a` 两个 APK
+- [x] Gradle 中没有 `ndk.abiFilters`
 
 ## ATDD
 | 场景 | 给定条件 | 操作 | 预期结果 |
