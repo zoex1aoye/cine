@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../api/mubu_api_client.dart';
+import '../utils/device_profile.dart';
 import '../api/mubu_constants.dart';
 import '../models/mubu_models.dart';
 import '../widgets/movie_sliver_grid.dart';
@@ -406,6 +407,7 @@ class _SearchPageState extends State<SearchPage> {
     // Search Results Grid
     return CustomScrollView(
       controller: _scrollController,
+      scrollCacheExtent: DeviceProfile.posterCacheExtent,
       slivers: [
         SliverToBoxAdapter(
           child: Padding(

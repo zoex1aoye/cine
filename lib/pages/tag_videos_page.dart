@@ -8,6 +8,7 @@ import '../widgets/movie_info_dialog.dart';
 import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
+import '../utils/device_profile.dart';
 import '../utils/home_hand_data.dart';
 import '../utils/list_viewport_fill.dart';
 import '../widgets/load_more_button.dart';
@@ -288,6 +289,7 @@ class _TagVideosPageState extends State<TagVideosPage> {
       child: CustomScrollView(
         controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(),
+        scrollCacheExtent: DeviceProfile.posterCacheExtent,
         slivers: [
           // Results count
           SliverToBoxAdapter(
