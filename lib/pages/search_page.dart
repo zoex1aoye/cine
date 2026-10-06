@@ -8,6 +8,7 @@ import '../widgets/movie_info_dialog.dart';
 import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
+import '../utils/search_viewport_fill.dart';
 import '../widgets/load_more_button.dart';
 import '../widgets/mubu_error_widget.dart';
 
@@ -38,6 +39,9 @@ class _SearchPageState extends State<SearchPage> {
   int _currentPage = 1;
   bool _hasMore = false;
   bool _loadingMore = false;
+  int _autoFills = 0;
+  int _fillWaits = 0;
+  int _searchGen = 0;
 
   @override
   void initState() {
@@ -67,6 +71,7 @@ class _SearchPageState extends State<SearchPage> {
     final kw = _ctrl.text.trim();
     if (kw.isEmpty) return;
 
+    final gen = ++_searchGen;
     setState(() {
       _loading = true;
       _searched = true;
@@ -75,19 +80,26 @@ class _SearchPageState extends State<SearchPage> {
       _currentPage = 1;
       _hasMore = false;
       _loadingMore = false;
+      _autoFills = 0;
+      _fillWaits = 0;
     });
 
     try {
       final result = await _api.search(kw, page: 1);
-      if (!mounted) return;
+      if (!mounted || gen != _searchGen) return;
       setState(() {
         _results = result.videos;
-        _hasMore = _results.length < result.total;
+        _hasMore = SearchViewportFill.hasMore(
+          loadedCount: _results.length,
+          total: result.total,
+          latestPageCount: result.videos.length,
+        );
         _loading = false;
       });
+      _scheduleFillIfShort(gen);
     } catch (e) {
       debugPrint('SEARCH: Failed to search | keyword: $kw | error: $e');
-      if (!mounted) return;
+      if (!mounted || gen != _searchGen) return;
       setState(() {
         _loading = false;
         _error = '搜索失败，请重试';
@@ -117,6 +129,7 @@ class _SearchPageState extends State<SearchPage> {
 
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore) return;
+    final gen = _searchGen;
     setState(() {
       _loadingMore = true;
     });
@@ -124,20 +137,52 @@ class _SearchPageState extends State<SearchPage> {
     final nextPage = _currentPage + 1;
     try {
       final result = await _api.search(kw, page: nextPage);
-      if (!mounted) return;
+      if (!mounted || gen != _searchGen) return;
       setState(() {
         _currentPage = nextPage;
         _results.addAll(result.videos);
-        _hasMore = _results.length < result.total;
+        _hasMore = SearchViewportFill.hasMore(
+          loadedCount: _results.length,
+          total: result.total,
+          latestPageCount: result.videos.length,
+        );
         _loadingMore = false;
       });
+      _scheduleFillIfShort(gen);
     } catch (e) {
       debugPrint('SEARCH: Failed to load more | error: $e');
-      if (!mounted) return;
+      if (!mounted || gen != _searchGen) return;
       setState(() {
         _loadingMore = false;
       });
     }
+  }
+
+  /// 第一页不够铺满窗口时继续翻页。搜索每页固定 10 条，加大 count 不会多返回。
+  void _scheduleFillIfShort(int gen) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || gen != _searchGen || _loading) return;
+      if (!_scrollController.hasClients) {
+        if (_fillWaits < 4) {
+          _fillWaits++;
+          _scheduleFillIfShort(gen);
+        }
+        return;
+      }
+      _fillWaits = 0;
+      final position = _scrollController.position;
+      if (!SearchViewportFill.needsAnotherPage(
+        busy: _loadingMore,
+        hasMore: _hasMore,
+        autoFills: _autoFills,
+        maxScrollExtent: position.maxScrollExtent,
+        viewportDimension: position.viewportDimension,
+      )) {
+        return;
+      }
+      _autoFills++;
+      _loadMore();
+    });
   }
 
   // ── Build ──────────────────────────────────────────────────────────────

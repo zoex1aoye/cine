@@ -9,6 +9,7 @@ import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
 import '../utils/home_hand_data.dart';
+import '../utils/list_viewport_fill.dart';
 import '../widgets/load_more_button.dart';
 import '../widgets/mubu_error_widget.dart';
 
@@ -40,9 +41,13 @@ class _TagVideosPageState extends State<TagVideosPage> {
 
   int _page = 1;
   int _autoFills = 0;
+  int _fillWaits = 0;
 
   /// 接口按 30 条分页。一次要更多会加载失败。
   static const _pageSize = 30;
+
+  /// 30 条一页，最多再自动翻这么多次。
+  static const _maxAutoFills = 3;
   bool _isLoading = false;
   bool _hasMore = true;
   String? _error;
@@ -69,6 +74,7 @@ class _TagVideosPageState extends State<TagVideosPage> {
       _videos.clear();
       _page = 1;
       _autoFills = 0;
+      _fillWaits = 0;
       _hasMore = true;
       _error = null;
     });
@@ -120,15 +126,31 @@ class _TagVideosPageState extends State<TagVideosPage> {
     }
   }
 
-  /// 接口一页 30 条，不够铺满时继续翻页。
+  /// 一页 30 条仍不够铺满时继续翻页。不加大单次 count。
   void _scheduleFillIfShort() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _isLoading || !_hasMore || _autoFills >= 3) return;
-      if (!_scrollController.hasClients) return;
-      if (_scrollController.position.maxScrollExtent <= 80) {
-        _autoFills++;
-        _loadMore();
+      if (!mounted) return;
+      if (!_scrollController.hasClients) {
+        if (_fillWaits < 4) {
+          _fillWaits++;
+          _scheduleFillIfShort();
+        }
+        return;
       }
+      _fillWaits = 0;
+      final position = _scrollController.position;
+      if (!ListViewportFill.needsAnotherPage(
+        busy: _isLoading,
+        hasMore: _hasMore,
+        autoFills: _autoFills,
+        maxAutoFills: _maxAutoFills,
+        maxScrollExtent: position.maxScrollExtent,
+        viewportDimension: position.viewportDimension,
+      )) {
+        return;
+      }
+      _autoFills++;
+      _loadMore();
     });
   }
 
