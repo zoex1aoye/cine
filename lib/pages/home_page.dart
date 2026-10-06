@@ -387,26 +387,29 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
     return Stack(
       children: [
-        TabBarView(
-          controller: _tabController,
-          physics: isTvSurface ? const NeverScrollableScrollPhysics() : null,
-          children: _categories.asMap().entries.map((entry) {
-            final idx = entry.key;
-            final cat = entry.value;
-            return ExcludeFocus(
-              excluding: _tabController!.index != idx,
-              child: CategoryContentView(
-                category: cat,
-                api: _api,
-                onPlay: _playVideo,
-                onInfo: _showVideoInfo,
-                hasTopPadding: !isDesktop,
-                tabController: _tabController!,
-                index: idx,
-              ),
-            );
-          }).toList(),
-        ),
+        if (DeviceProfile.isConstrained)
+          _buildConstrainedCategory(hasTopPadding: !isDesktop)
+        else
+          TabBarView(
+            controller: _tabController,
+            physics: isTvSurface ? const NeverScrollableScrollPhysics() : null,
+            children: _categories.asMap().entries.map((entry) {
+              final idx = entry.key;
+              final cat = entry.value;
+              return ExcludeFocus(
+                excluding: _tabController!.index != idx,
+                child: CategoryContentView(
+                  category: cat,
+                  api: _api,
+                  onPlay: _playVideo,
+                  onInfo: _showVideoInfo,
+                  hasTopPadding: !isDesktop,
+                  tabController: _tabController!,
+                  index: idx,
+                ),
+              );
+            }).toList(),
+          ),
         if (!isDesktop)
           Positioned(
             top: 0,
@@ -449,6 +452,31 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  /// 受限档不走 [TabBarView]：相邻分类页不会被预建，左右滑切换一并关掉。
+  /// 顶部分类条仍通过 [TabController] 切换当前这一页。
+  Widget _buildConstrainedCategory({required bool hasTopPadding}) {
+    return AnimatedBuilder(
+      animation: _tabController!,
+      builder: (context, _) {
+        final idx = _tabController!.index;
+        if (idx < 0 || idx >= _categories.length) {
+          return const SizedBox.shrink();
+        }
+        final cat = _categories[idx];
+        return CategoryContentView(
+          key: ValueKey('home-cat-${cat.id}'),
+          category: cat,
+          api: _api,
+          onPlay: _playVideo,
+          onInfo: _showVideoInfo,
+          hasTopPadding: hasTopPadding,
+          tabController: _tabController!,
+          index: idx,
+        );
+      },
+    );
+  }
+
   Widget _buildBookmarksView() {
     if (_bookmarksList.isEmpty) {
       return Center(
@@ -467,6 +495,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
     return CustomScrollView(
       controller: _bookmarkScrollController,
+      scrollCacheExtent: DeviceProfile.posterCacheExtent,
       slivers: [
         SliverAppBar(
           pinned: true,
@@ -561,6 +590,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
     return CustomScrollView(
       controller: _historyScrollController,
+      scrollCacheExtent: DeviceProfile.posterCacheExtent,
       slivers: [
         SliverAppBar(
           pinned: true,
@@ -1919,6 +1949,7 @@ class _CategoryContentViewState extends State<CategoryContentView>
 
     return CustomScrollView(
       physics: const BouncingScrollPhysics(),
+      scrollCacheExtent: DeviceProfile.posterCacheExtent,
       slivers: [
         if (widget.hasTopPadding)
           const SliverPadding(padding: EdgeInsets.only(top: 60)),

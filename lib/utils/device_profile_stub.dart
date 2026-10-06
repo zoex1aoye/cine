@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart';
 
 import 'device_budget.dart';
 
@@ -16,6 +17,8 @@ class DeviceProfile {
   static int? get availMemBytes => null;
 
   static const constrainedProbeEarlyBatch = 2;
+
+  static ScrollCacheExtent? get posterCacheExtent => null;
 
   static Future<void> ensureInitialized() async {}
 
