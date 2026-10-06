@@ -8,6 +8,7 @@ import '../models/jp_models.dart';
 import '../models/mubu_hive.dart';
 import '../utils/detail_source_parse.dart';
 import '../utils/cover_cdn.dart';
+import '../utils/img_domain_probe.dart';
 import 'jp_domain_discovery.dart';
 import 'jp_log.dart';
 
@@ -304,22 +305,29 @@ class JpApi {
     }
   }
 
-  /// 测试指定图片/封面 CDN 域名的连通性
-  /// 
-  /// 使用共享的 HttpClient (Keep-Alive) 进行测速，提升后续请求的连接复用率
+  /// 测试指定图片/封面 CDN 域名的连通性。
+  ///
+  /// 只看状态码和 Content-Type，拿到响应头后关掉连接，不把测速图正文下完。
   Future<bool> _testImgDomain(String domain, String path) async {
     if (domain.isEmpty) return false;
     try {
-      final request = await _cdnHttpClient.getUrl(Uri.parse('https://$domain$path'))
+      final request = await _cdnHttpClient
+          .getUrl(Uri.parse('https://$domain$path'))
           .timeout(const Duration(seconds: 2));
-      // 移除 'Connection: close'，允许复用
       final response = await request.close().timeout(const Duration(seconds: 2));
-      final success = response.statusCode == HttpStatus.ok;
-      
-      // 读空响应体让连接能够放回池中复用
-      await response.drain().timeout(const Duration(seconds: 1));
-      
-      jpLog('CDN', 'Tested domain: $domain | success: $success | statusCode: ${response.statusCode}');
+      final success = imageProbeAccepts(
+        statusCode: response.statusCode,
+        mimeType: response.headers.contentType?.mimeType,
+      );
+      try {
+        final socket = await response.detachSocket();
+        socket.destroy();
+      } catch (_) {}
+
+      jpLog(
+        'CDN',
+        'Tested domain: $domain | success: $success | statusCode: ${response.statusCode}',
+      );
       return success;
     } catch (e) {
       jpLog('CDN', 'Tested domain: $domain | failed with exception: $e');
@@ -327,7 +335,11 @@ class JpApi {
     }
   }
 
-  Future<String?> _raceImgDomains(List<String> domains, String path) async {
+  Future<String?> _raceImgDomains(
+    List<String> domains,
+    String path, {
+    String prefer = '',
+  }) async {
     if (domains.isEmpty) return null;
     final nodeBox = Hive.box<NodeSpeedRecord>('node_speeds');
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -349,26 +361,24 @@ class JpApi {
       return bestCachedDomain;
     }
 
-    final completer = Completer<String?>();
-    int failedCount = 0;
-
-    for (final domain in domains) {
-      final start = DateTime.now().millisecondsSinceEpoch;
-      _testImgDomain(domain, path).then((success) {
+    return pickImgDomain(
+      prefer: prefer,
+      domains: domains,
+      probe: (domain) async {
+        final start = DateTime.now().millisecondsSinceEpoch;
+        final success = await _testImgDomain(domain, path);
         final latency = DateTime.now().millisecondsSinceEpoch - start;
-        if (success) {
-          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: latency, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
-          if (!completer.isCompleted) completer.complete(domain);
-        } else {
-          nodeBox.put(domain, NodeSpeedRecord(domainOrUrl: domain, latencyMs: 99999, testedAtEpoch: DateTime.now().millisecondsSinceEpoch));
-          failedCount++;
-          if (failedCount == domains.length && !completer.isCompleted) {
-            completer.complete(null);
-          }
-        }
-      });
-    }
-    return completer.future;
+        await nodeBox.put(
+          domain,
+          NodeSpeedRecord(
+            domainOrUrl: domain,
+            latencyMs: success ? latency : 99999,
+            testedAtEpoch: DateTime.now().millisecondsSinceEpoch,
+          ),
+        );
+        return success;
+      },
+    );
   }
 
   /// 加载系统配置（重点获取图片 CDN 域名与解密/防爬 Secret）
@@ -403,28 +413,26 @@ class JpApi {
       }
       jpLog('CDN', 'Package img domains: $packageDomains');
 
-      // 验证默认图片域名是否可以连通
-      final defaultOk = await _testImgDomain(_imgDomain, testPath);
-      jpLog('CDN', 'Default domain check: $_imgDomain is working: $defaultOk');
-
-      if (!defaultOk) {
-        jpLog('CDN', 'Default domain failed. Racing backup domains...');
-        final backupDomains = mergeImgDomainCandidates(
-          primary: '',
-          fromPackage: packageDomains,
+      // 主域和备用域一起探。主域已死时不必等满它自己的超时。
+      final probeDomains = mergeImgDomainCandidates(
+        primary: _imgDomain,
+        fromPackage: packageDomains,
+      );
+      jpLog('CDN', 'Racing img domains: $probeDomains prefer=$_imgDomain');
+      final bestDomain = await _raceImgDomains(
+        probeDomains,
+        testPath,
+        prefer: _imgDomain,
+      );
+      if (bestDomain != null) {
+        _imgDomain = bestDomain;
+        jpLog('CDN', 'Selected img domain: $_imgDomain');
+      } else if (probeDomains.isNotEmpty) {
+        _imgDomain = probeDomains.first;
+        jpLog(
+          'CDN',
+          'No img domain probe succeeded. Using first candidate: $_imgDomain',
         );
-        jpLog('CDN', 'Final testing list (including hardcoded fallback): $backupDomains');
-
-        // 并发进行备选域名测速 (竞速模式)
-        final bestDomain = await _raceImgDomains(backupDomains, testPath);
-        
-        if (bestDomain != null) {
-          _imgDomain = bestDomain;
-          jpLog('CDN', 'Selected backup domain: $_imgDomain');
-        } else if (backupDomains.isNotEmpty) {
-          _imgDomain = backupDomains.first;
-          jpLog('CDN', 'None of the tested backup domains succeeded. Using first backup domain: $_imgDomain');
-        }
       }
 
       _imgDomainCandidates = mergeImgDomainCandidates(
