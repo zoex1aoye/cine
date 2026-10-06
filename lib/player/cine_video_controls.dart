@@ -11,6 +11,7 @@ import '../api/mubu_ui_adapt.dart';
 import '../utils/cine_surface.dart';
 import '../widgets/mubu_button.dart';
 import '../utils/platform_utils.dart';
+import 'center_play_button.dart';
 import 'seek_hold.dart';
 
 class CineVideoControls extends StatefulWidget {
@@ -658,10 +659,14 @@ class _CineVideoControlsState extends State<CineVideoControls> {
   }
 
   /// 窗口态遥控按钮夹在自带圆键两侧。左右槽同宽，圆键保持在屏幕中心。
-  Widget _centerPlaybackRow(Color primaryColor) {
+  /// 圆键和全屏 ±10 秒跟播放器短边缩放，不跟屏幕宽。
+  Widget _centerPlaybackRow(
+    Color primaryColor,
+    CenterPlayButtonMetrics metrics,
+  ) {
     final tvWindow = isTvSurface && !_isControlsFullscreen();
     final fullscreen = _isControlsFullscreen();
-    final gap = tvWindow ? 28.0 : 40.0;
+    final gap = tvWindow ? 28.0 : 40.0 * metrics.scale;
     final slot = UIAdapt.px(context, 150);
     final height = UIAdapt.px(context, 48);
 
@@ -686,7 +691,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
           )
         : fullscreen
         ? IconButton(
-            icon: const Icon(Icons.replay_10, color: Colors.white, size: 48),
+            icon: Icon(Icons.replay_10, color: Colors.white, size: metrics.icon),
             onPressed: () {
               _startHideTimer();
               final target = _position - const Duration(seconds: 10);
@@ -711,7 +716,7 @@ class _CineVideoControlsState extends State<CineVideoControls> {
           )
         : fullscreen
         ? IconButton(
-            icon: const Icon(Icons.forward_10, color: Colors.white, size: 48),
+            icon: Icon(Icons.forward_10, color: Colors.white, size: metrics.icon),
             onPressed: () {
               _startHideTimer();
               final target = _position + const Duration(seconds: 10);
@@ -734,11 +739,11 @@ class _CineVideoControlsState extends State<CineVideoControls> {
               shape: BoxShape.circle,
               color: primaryColor.withOpacity(0.8),
             ),
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(metrics.padding),
             child: Icon(
               _playing ? Icons.pause : Icons.play_arrow,
               color: Colors.white,
-              size: 48,
+              size: metrics.icon,
             ),
           ),
         ),
@@ -841,7 +846,13 @@ class _CineVideoControlsState extends State<CineVideoControls> {
             onHover:
                 isDesktopPlatform ? (_) => _showControlsTransiently() : null,
             onExit: isDesktopPlatform ? (_) => _hideControlsImmediate() : null,
-            child: Stack(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final playMetrics = CenterPlayButtonMetrics.forPlayer(
+                  constraints.maxWidth,
+                  constraints.maxHeight,
+                );
+                return Stack(
               children: [
                 Positioned.fill(
                   child: GestureDetector(
@@ -941,7 +952,12 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                           // 中间播控在下层；全屏顶栏必须更高 z-order，否则安卓上返回键点击被吞。
                           // 拖进度条时彻底去掉中心键（勿仅靠叠层遮挡）。
                           if (!_isScrubbing && !(isTvSurface && !transport))
-                            Center(child: _centerPlaybackRow(primaryColor)),
+                            Center(
+                              child: _centerPlaybackRow(
+                                primaryColor,
+                                playMetrics,
+                              ),
+                            ),
 
                           Positioned(
                             bottom: 0,
@@ -1187,7 +1203,9 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                 ),
 
                 if (!_isScrubbing && isTvSurface && !transport)
-                  Center(child: _centerPlaybackRow(primaryColor)),
+                  Center(
+                    child: _centerPlaybackRow(primaryColor, playMetrics),
+                  ),
 
                 if (_showReturnTip && _anchorPosition != null)
                   Positioned(
@@ -1235,6 +1253,8 @@ class _CineVideoControlsState extends State<CineVideoControls> {
                     ),
                   ),
               ],
+                );
+              },
             ),
           ),
         ),

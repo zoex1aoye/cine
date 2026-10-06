@@ -10,6 +10,19 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
+    let windowChannel = FlutterMethodChannel(
+      name: "cine/macos_window",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    windowChannel.setMethodCallHandler { [weak self] call, result in
+      switch call.method {
+      case "isNativeFullscreen":
+        result(self?.styleMask.contains(.fullScreen) ?? false)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
     super.awakeFromNib()
   }
 }

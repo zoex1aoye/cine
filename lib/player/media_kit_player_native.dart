@@ -12,6 +12,7 @@ import '../utils/device_profile.dart';
 import 'cine_video_controls.dart';
 import 'hwdec_policy.dart';
 import 'hwdec_watchdog.dart';
+import 'native_fullscreen_ownership.dart';
 import 'playback_open_gate.dart';
 
 /// 基于 `media_kit` 实现的原生桌面/移动端播放控制器实现类
@@ -37,6 +38,12 @@ class MediaKitPlayerImpl implements JpPlayer {
 
   /// 上次 reopen 用 `start` 属性定位后，下次 open 前要清回 0。
   bool _startOverridden = false;
+
+  /// 这次系统全屏是播放器自己打开的。用户先开的 macOS 全屏不算。
+  bool _ownsNativeFullscreen = false;
+
+  static const _videoChannel = MethodChannel('com.alexmercerind/media_kit_video');
+  static const _windowChannel = MethodChannel('cine/macos_window');
 
   /// 首次 open 的完成信号：日志触发的软解回退必须等它结束后再 reopen，
   /// 禁止与 initialize() 进行中的 open 并发（双重重载/状态不一致）。
@@ -601,7 +608,8 @@ class MediaKitPlayerImpl implements JpPlayer {
       await sub.cancel();
     }
 
-    // 容错处理：若销毁时处于全屏/沉浸状态，安全重置系统栏与屏幕方向以防丢失
+    // 只退出播放器自己打开的系统全屏。用户用 macOS 全屏（无红绿灯）时，
+    // 返回播放页不能把窗口一起退出全屏。
     try {
       if (Platform.isAndroid || Platform.isIOS) {
         SystemChrome.setEnabledSystemUIMode(
@@ -609,10 +617,9 @@ class MediaKitPlayerImpl implements JpPlayer {
           overlays: SystemUiOverlay.values,
         );
         SystemChrome.setPreferredOrientations([]);
-      } else if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-        const MethodChannel(
-          'com.alexmercerind/media_kit_video',
-        ).invokeMethod('Utils.ExitNativeFullscreen');
+      } else if (_ownsNativeFullscreen) {
+        _ownsNativeFullscreen = false;
+        _videoChannel.invokeMethod('Utils.ExitNativeFullscreen');
       }
     } catch (e) {
       debugPrint('Reset fullscreen during dispose error: $e');
@@ -627,6 +634,77 @@ class MediaKitPlayerImpl implements JpPlayer {
     _videoWidth.dispose();
     _videoHeight.dispose();
     _isHardwareDecode.dispose();
+  }
+
+  Future<bool> _windowAlreadyNativeFullscreen() async {
+    if (!Platform.isMacOS) return false;
+    try {
+      return await _windowChannel.invokeMethod<bool>('isNativeFullscreen') ??
+          false;
+    } catch (e) {
+      debugPrint('isNativeFullscreen failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _enterDesktopFullscreen() async {
+    final already = await _windowAlreadyNativeFullscreen();
+    _ownsNativeFullscreen = playerOwnsNativeFullscreen(
+      windowAlreadyFullscreen: already,
+    );
+    await _videoChannel.invokeMethod('Utils.EnterNativeFullscreen');
+  }
+
+  Future<void> _exitDesktopFullscreenIfOwned() async {
+    if (!_ownsNativeFullscreen) return;
+    _ownsNativeFullscreen = false;
+    await _videoChannel.invokeMethod('Utils.ExitNativeFullscreen');
+  }
+
+  Future<void> _onEnterFullscreen() async {
+    try {
+      if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+        await _enterDesktopFullscreen();
+        return;
+      }
+      if (isShort) {
+        await Future.wait([
+          SystemChrome.setEnabledSystemUIMode(
+            SystemUiMode.immersiveSticky,
+            overlays: [],
+          ),
+          SystemChrome.setPreferredOrientations([
+            DeviceOrientation.portraitUp,
+          ]),
+        ]);
+        return;
+      }
+      await defaultEnterNativeFullscreen();
+    } catch (e) {
+      debugPrint('Enter native fullscreen error: $e');
+    }
+  }
+
+  Future<void> _onExitFullscreen() async {
+    try {
+      if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+        await _exitDesktopFullscreenIfOwned();
+        return;
+      }
+      if (isShort) {
+        await Future.wait([
+          SystemChrome.setEnabledSystemUIMode(
+            SystemUiMode.manual,
+            overlays: SystemUiOverlay.values,
+          ),
+          SystemChrome.setPreferredOrientations([]),
+        ]);
+        return;
+      }
+      await defaultExitNativeFullscreen();
+    } catch (e) {
+      debugPrint('Exit native fullscreen error: $e');
+    }
   }
 
   @override
@@ -648,56 +726,8 @@ class MediaKitPlayerImpl implements JpPlayer {
                 isHardwareDecodeListenable:
                     supportsDecodeToggle ? _isHardwareDecode : null,
               ),
-      onEnterFullscreen:
-          isShort
-              ? () async {
-                try {
-                  if (Platform.isAndroid || Platform.isIOS) {
-                    await Future.wait([
-                      SystemChrome.setEnabledSystemUIMode(
-                        SystemUiMode.immersiveSticky,
-                        overlays: [],
-                      ),
-                      SystemChrome.setPreferredOrientations([
-                        DeviceOrientation.portraitUp,
-                      ]),
-                    ]);
-                  } else if (Platform.isMacOS ||
-                      Platform.isWindows ||
-                      Platform.isLinux) {
-                    await const MethodChannel(
-                      'com.alexmercerind/media_kit_video',
-                    ).invokeMethod('Utils.EnterNativeFullscreen');
-                  }
-                } catch (e) {
-                  debugPrint('Enter native fullscreen error: $e');
-                }
-              }
-              : defaultEnterNativeFullscreen,
-      onExitFullscreen:
-          isShort
-              ? () async {
-                try {
-                  if (Platform.isAndroid || Platform.isIOS) {
-                    await Future.wait([
-                      SystemChrome.setEnabledSystemUIMode(
-                        SystemUiMode.manual,
-                        overlays: SystemUiOverlay.values,
-                      ),
-                      SystemChrome.setPreferredOrientations([]),
-                    ]);
-                  } else if (Platform.isMacOS ||
-                      Platform.isWindows ||
-                      Platform.isLinux) {
-                    await const MethodChannel(
-                      'com.alexmercerind/media_kit_video',
-                    ).invokeMethod('Utils.ExitNativeFullscreen');
-                  }
-                } catch (e) {
-                  debugPrint('Exit native fullscreen error: $e');
-                }
-              }
-              : defaultExitNativeFullscreen,
+      onEnterFullscreen: _onEnterFullscreen,
+      onExitFullscreen: _onExitFullscreen,
     );
 
     if (isShort) {
