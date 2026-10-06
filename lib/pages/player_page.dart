@@ -125,6 +125,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       DeviceProfile.trimImageCacheOnPlayerEnter();
+      // 桌面端额外清一次未引用缓存，释放首页旧海报（PRD-20261003-04 验收项）。
+      if (isDesktopPlatform) {
+        PaintingBinding.instance.imageCache.clear();
+      }
     });
     _innerAspectRatio = PlayerSlotLayout.defaultInnerAspectRatio(
       isShortDrama: _isShortDramaPage,
@@ -567,9 +571,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   String get _currentEpisodeRef =>
       _sources.isNotEmpty ? episodeRef(_sources[_selectedSource]) : '';
-
-  String get _currentEpisodeName =>
-      _sources.isNotEmpty ? _sources[_selectedSource].sourceName : '';
 
   /// 测速完成后按「延迟优先 + 接近时分辨率 tie-break」选定推荐源。
   /// 电影（无「第N集」式标签）忽略集名，在全部 usable 源里全局选。
@@ -1416,6 +1417,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          // 顶栏线路切换快捷入口（桌面端）
+          if (isDesktopPlatform && _sources.isNotEmpty) ...[
+            TextButton.icon(
+              onPressed: _showAdaptiveLineSelector,
+              icon: const Icon(Icons.tune_rounded, size: 16, color: Colors.white70),
+              label: Text(
+                _selectedLineName.isNotEmpty ? _selectedLineName : '线路',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0x0FFFFFFF),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
           // 收藏胶囊按钮
           TvFocusable(
             onActivate: _toggleBookmark,
@@ -1558,8 +1576,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             alignment: Alignment.center,
             fit: StackFit.expand,
             children: [
-              // B2: persistent blurred poster fills letterbox/pillarbox areas
-              _buildBlurredPosterBase(widget.video.coverPath, imgDomain),
+              // B2: persistent blurred poster fills letterbox/pillarbox areas before playback;
+              // once playback starts, replace with solid black to completely avoid offscreen blur compositing.
+              if (!showVideo)
+                _buildBlurredPosterBase(widget.video.coverPath, imgDomain)
+              else
+                const ColoredBox(color: Color(0xFF070708)),
 
               // Inner video viewport (contain, silent 200ms resize)
               if (showVideo)
@@ -1608,9 +1630,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     duration: const Duration(milliseconds: 600),
                     opacity: showForegroundOverlay ? 1.0 : 0.0,
                     curve: Curves.easeOutCubic,
-                    child: _staticOrBlurOverlay(
-                      sigma: 20,
-                      color: const Color(0xFF070708).withOpacity(0.45),
+                    // 起播/唤出前景遮罩不再做离屏高斯模糊（PRD-20261003-04 决策 2）。
+                    child: const ColoredBox(
+                      color: Color(0x73070708),
                     ),
                   ),
                 ),
@@ -2102,6 +2124,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               const Spacer(),
               if (!isDialog && !isBottomSheet)
                 GestureDetector(
+                  behavior: HitTestBehavior.opaque,
                   onTap: () => setState(() => _expanded = false),
                   child: const Icon(
                     Icons.close,
@@ -2109,9 +2132,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     size: 18,
                   ),
                 )
-              else if (isBottomSheet)
+              else
                 GestureDetector(
-                  onTap: () => Navigator.pop(context),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context, rootNavigator: true).pop(),
                   child: Container(
                     padding: const EdgeInsets.all(6),
                     decoration: BoxDecoration(
@@ -2463,6 +2487,7 @@ class _BreathingPlayPulseState extends State<BreathingPlayPulse>
         );
 
         return GestureDetector(
+          behavior: HitTestBehavior.opaque,
           onTap: widget.onTap,
           child: AnimatedBuilder(
             animation: _controller,
