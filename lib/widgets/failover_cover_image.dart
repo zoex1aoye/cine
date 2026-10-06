@@ -86,6 +86,9 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
 
   @override
   void dispose() {
+    if (!widget.holdDuringPlayback) {
+      PlaybackCoverGate.listenable.removeListener(_onPlaybackCover);
+    }
     CoverCdnSignals.epoch.removeListener(_onDomainChanged);
     super.dispose();
   }
@@ -108,14 +111,6 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
         !_listEq(oldWidget.candidates, widget.candidates)) {
       _bootstrap();
     }
-  }
-
-  @override
-  void dispose() {
-    if (!widget.holdDuringPlayback) {
-      PlaybackCoverGate.listenable.removeListener(_onPlaybackCover);
-    }
-    super.dispose();
   }
 
   bool _listEq(List<String>? a, List<String>? b) {
