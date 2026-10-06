@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:cine/utils/device_profile.dart';
@@ -19,6 +20,23 @@ void main() {
       totalMemBytes: null,
       resetInitialized: true,
     );
+  });
+
+  group('海报视口', () {
+    test('受限档 cacheExtent 为 0，常规档沿用框架默认', () {
+      DeviceProfile.debugOverride(tier: DeviceProfileTier.ultra);
+      expect(
+        DeviceProfile.posterCacheExtent,
+        const ScrollCacheExtent.pixels(0),
+      );
+      DeviceProfile.debugOverride(tier: DeviceProfileTier.constrained);
+      expect(
+        DeviceProfile.posterCacheExtent,
+        const ScrollCacheExtent.pixels(0),
+      );
+      DeviceProfile.debugOverride(tier: DeviceProfileTier.normal);
+      expect(DeviceProfile.posterCacheExtent, isNull);
+    });
   });
 
   group('档位推导 tierFor', () {

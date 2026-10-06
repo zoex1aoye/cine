@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 
 import '../api/mubu_api_client.dart';
 import '../utils/cover_cdn.dart';
+import '../utils/device_profile.dart';
+import '../utils/playback_cover_gate.dart';
 
 /// 会话内记住某 `coverPath` 在哪个图片域加载成功。
 class CoverDomainSessionCache {
@@ -41,6 +43,9 @@ class FailoverCoverImage extends StatefulWidget {
   final int? memCacheWidth;
   final int? memCacheHeight;
 
+  /// 播放页自己的背景封面。为 true 时，下层列表卸封面期间这一张仍解码。
+  final bool holdDuringPlayback;
+
   const FailoverCoverImage({
     super.key,
     required this.coverPath,
@@ -54,6 +59,7 @@ class FailoverCoverImage extends StatefulWidget {
     this.errorBuilder,
     this.memCacheWidth,
     this.memCacheHeight,
+    this.holdDuringPlayback = false,
   });
 
   @override
@@ -71,12 +77,18 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
   @override
   void initState() {
     super.initState();
+    if (!widget.holdDuringPlayback) {
+      PlaybackCoverGate.listenable.addListener(_onPlaybackCover);
+    }
     _bootstrap();
     CoverCdnSignals.epoch.addListener(_onDomainChanged);
   }
 
   @override
   void dispose() {
+    if (!widget.holdDuringPlayback) {
+      PlaybackCoverGate.listenable.removeListener(_onPlaybackCover);
+    }
     CoverCdnSignals.epoch.removeListener(_onDomainChanged);
     super.dispose();
   }
@@ -85,6 +97,10 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
     if (!mounted) return;
     _attempt = 0;
     setState(_bootstrap);
+  }
+
+  void _onPlaybackCover() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -219,6 +235,11 @@ class _FailoverCoverImageState extends State<FailoverCoverImage> {
 
   @override
   Widget build(BuildContext context) {
+    if (!widget.holdDuringPlayback &&
+        DeviceProfile.isConstrained &&
+        PlaybackCoverGate.isHeld) {
+      return const ColoredBox(color: Color(0xFF1A1A1E));
+    }
     if (widget.coverPath.isEmpty || _exhausted || _url.isEmpty) {
       return (widget.errorBuilder ?? _defaultError)(context);
     }

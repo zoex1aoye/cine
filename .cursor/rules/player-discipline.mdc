@@ -1,6 +1,6 @@
 ---
 description: 播放器、硬解、TV 遥控与低端内存档。改 player、焦点或设备档时生效。
-globs: lib/player/**/*.dart,lib/utils/platform_utils*.dart,lib/utils/tv_focus.dart,lib/utils/cine_surface.dart,lib/utils/device_profile*.dart,lib/utils/device_budget.dart,lib/pages/player_page.dart,lib/pages/category_filter_page.dart,lib/pages/home_page.dart
+globs: lib/player/**/*.dart,lib/utils/platform_utils*.dart,lib/utils/tv_focus.dart,lib/utils/cine_surface.dart,lib/utils/device_profile*.dart,lib/utils/device_budget.dart,lib/utils/playback_cover_gate.dart,lib/pages/player_page.dart,lib/pages/category_filter_page.dart,lib/pages/home_page.dart
 alwaysApply: false
 ---
 
@@ -30,7 +30,8 @@ alwaysApply: false
 
 - 档位只看内存，不看 surface：`ultra`（≤1.2GiB 或 `lowRam`）/ `constrained`（<2GiB）/ `normal`。预算只放 `DeviceBudget`
 - 封面只设 `memCacheWidth`。同时设宽高会被拉成 2:3
-- 进播放页，受限档只 `ImageCache.clear()`。禁止 `clearLiveImages()`
+- 进播放页，受限档先 `PlaybackCoverGate.acquire()` 卸掉仍在树上的封面，下一帧再 `ImageCache.clear()`。禁止 `clearLiveImages()`；禁止在封面 Widget 还挂着时指望 `clear()` 放掉位图
+- 受限档海报列表 `scrollCacheExtent` 用 `DeviceProfile.posterCacheExtent`（0 像素）。首页只建当前分类，不预建相邻 Tab
 - 切后台只在 `hidden` / `paused` 暂停解码。禁止把 `inactive`（通知栏、过渡）当成后台
 
 ## 硬解与 locale

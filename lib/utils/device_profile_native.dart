@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import 'device_budget.dart';
@@ -26,6 +27,10 @@ class DeviceProfile {
 
   /// 受限档下首屏测速的并行批大小。
   static const constrainedProbeEarlyBatch = 2;
+
+  /// 受限档海报列表不预建视口外的行。`null` 用框架默认 cache extent。
+  static ScrollCacheExtent? get posterCacheExtent =>
+      isConstrained ? const ScrollCacheExtent.pixels(0) : null;
 
   static Future<void> ensureInitialized() async {
     if (_initialized) return;
@@ -81,8 +86,8 @@ class DeviceProfile {
 
   /// 进入播放页时释放首页不再展示的封面，给视频解码留物理内存。
   ///
-  /// 只做 `clear()`：驱逐未被任何 Widget 引用的缓存项。仍在屏幕下层显示的
-  /// 封面是 live image，不受影响。不用 `clearLiveImages()`。
+  /// 调用方须先让封面停下 `ImageStream`，再在下一帧调用本方法。
+  /// 只做 `clear()`：驱逐已经没有 Widget 引用的缓存项。不用 `clearLiveImages()`。
   static void trimImageCacheOnPlayerEnter() {
     if (!isConstrained) return;
     PaintingBinding.instance.imageCache.clear();

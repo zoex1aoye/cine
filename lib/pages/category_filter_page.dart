@@ -13,6 +13,7 @@ import '../widgets/mubu_dialog.dart';
 import 'player_page.dart';
 
 import '../utils/cine_surface.dart';
+import '../utils/device_profile.dart';
 import '../utils/tv_focus.dart';
 import '../widgets/load_more_button.dart';
 
@@ -346,6 +347,7 @@ class _CategoryFilterPageState extends State<CategoryFilterPage> {
         Expanded(
           child: CustomScrollView(
             controller: _scrollController,
+            scrollCacheExtent: DeviceProfile.posterCacheExtent,
             slivers: [
               SliverPadding(
                 padding: const EdgeInsets.symmetric(
