@@ -180,6 +180,10 @@ class MediaKitPlayerImpl implements JpPlayer {
         }
 
         await native.setProperty('cache', 'yes');
+        // media_kit 默认 cache-on-disk=yes，mpv 默认写 ~/Library/Caches/io.mpv；
+        // 沙盒 app 对该路径无写权限会持续刷 "Failed to create file cache"。
+        // 显式指到进程临时目录（沙盒内 TMPDIR 已映射进容器）。
+        await native.setProperty('cache-dir', Directory.systemTemp.path);
         await native.setProperty('cache-secs', cacheSecs);
         await native.setProperty('demuxer-readahead-secs', readaheadSecs);
         await native.setProperty('demuxer-max-bytes', fwdBytes);
