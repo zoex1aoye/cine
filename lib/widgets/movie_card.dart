@@ -132,7 +132,15 @@ class _MovieCardState extends State<MovieCard> {
                             if (widget.video.category.isNotEmpty)
                               widget.video.category,
                           ].join(' • ');
+                  final cardW = constraints.maxWidth;
                   final scrimH = constraints.maxHeight * 0.30;
+                  // 随卡片宽度缩放字号：小卡约 10/8.5，大卡封顶约 16/13。
+                  // 参考宽 ~160 时标题约 12（与旧固定字号对齐）。
+                  final titleFs = (cardW * 0.075).clamp(10.0, 16.0);
+                  final subtitleFs = (titleFs * 0.82).clamp(8.5, 13.0);
+                  final textPadH = (cardW * 0.055).clamp(6.0, 12.0);
+                  final textPadB = (cardW * 0.05).clamp(6.0, 12.0);
+                  final titleSubtitleGap = (titleFs * 0.18).clamp(1.5, 3.0);
 
                   return Stack(
                     fit: StackFit.expand,
@@ -207,27 +215,34 @@ class _MovieCardState extends State<MovieCard> {
                           ),
                         ),
                       ),
-                      // 叠字：贴底部深色区
+                      // 叠字：水平居中，字号随卡片宽度缩放
                       Positioned(
                         left: 0,
                         right: 0,
                         bottom: 0,
                         child: IgnorePointer(
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                            padding: EdgeInsets.fromLTRB(
+                              textPadH,
+                              0,
+                              textPadH,
+                              textPadB,
+                            ),
                             child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                              crossAxisAlignment: CrossAxisAlignment.center,
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
                                   widget.video.title,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
                                     color: Colors.white,
-                                    fontSize: 12,
+                                    fontSize: titleFs,
                                     fontWeight: FontWeight.w700,
-                                    shadows: [
+                                    height: 1.15,
+                                    shadows: const [
                                       Shadow(
                                         color: Color(0x66000000),
                                         blurRadius: 4,
@@ -236,15 +251,17 @@ class _MovieCardState extends State<MovieCard> {
                                   ),
                                 ),
                                 if (subtitle.isNotEmpty) ...[
-                                  const SizedBox(height: 2),
+                                  SizedBox(height: titleSubtitleGap),
                                   Text(
                                     subtitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
                                     style: TextStyle(
                                       color: Colors.white.withOpacity(0.75),
-                                      fontSize: 10,
+                                      fontSize: subtitleFs,
                                       fontWeight: FontWeight.w500,
+                                      height: 1.15,
                                       shadows: const [
                                         Shadow(
                                           color: Color(0x66000000),
